@@ -17,7 +17,7 @@ from pydantic import (
 )
 from pydantic_core import ErrorDetails, PydanticCustomError
 
-PROMPT_VERSION = "architecture-v2"
+PROMPT_VERSION = "architecture-v3"
 
 
 class ProposalStatus(StrEnum):

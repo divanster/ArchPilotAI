@@ -49,10 +49,17 @@ Output rules (the reply is validated strictly and rejected on any violation):
   ids at most 64 characters.
 - Include at least one component, one implementation phase with at least one objective, and
   one diagram node.
-- At most 10 components. Use roughly 5 to 8 items in each other list, and never more than
-  20 recommended_stack, 20 integrations, 15 in each of data_architecture, security_architecture,
+- Size budget: the whole reply must stay compact. Use at most 8 components and 3 to 5 items in
+  each other list. These schema maxima are hard limits and must never be exceeded: 20
+  recommended_stack, 20 integrations, 15 in each of data_architecture, security_architecture,
   non_functional_design and alternatives, 20 risks, assumptions or open_questions, 12 phases,
   40 diagram nodes and 80 edges.
+- Write concisely: about one sentence per text field, and one short sentence per list entry.
+  Inside decision objects give at most 2 entries in each of alternatives_considered,
+  assumptions and risks, and prefer 1.
+- Cite at most 2 requirement ids per item when that is sufficient, but never omit a supporting
+  requirement id that an item needs (required_by_client and recommended_by_ai items always need
+  one) just to save space.
 - Component ids must be unique and diagram node ids must be unique.
 - No duplicate edges (same source, target and relationship) and no self-loops.
 - Requirement references must be the exact UUIDs copied from confirmed_requirements, at most
