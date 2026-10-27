@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "./api";
+import ProjectsPage from "./ProjectsPage";
 
 type State = "checking" | "ok" | "unavailable";
 
@@ -20,6 +21,7 @@ export default function App() {
     <main>
       <h1>ArchPilotAI</h1>
       <p role="status">Backend: {state}</p>
+      <ProjectsPage />
     </main>
   );
 }
