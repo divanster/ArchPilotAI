@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     architecture_max_requirements: int = Field(default=60, ge=1, le=200)
     architecture_max_context_chars: int = Field(default=24_000, ge=1, le=100_000)
     architecture_max_unconfirmed_chars: int = Field(default=4_000, ge=0, le=20_000)
-    architecture_max_output_tokens: int = Field(default=4000, ge=1, le=8000)
+    architecture_max_output_tokens: int = Field(default=8000, ge=1, le=8000)
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

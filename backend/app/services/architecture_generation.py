@@ -7,11 +7,15 @@ from typing import Any
 
 from app.domain.architecture import (
     PROMPT_VERSION,
+    RESPONSE_CHARS_PER_TOKEN,
+    ArchitectureError,
     ContextTooLargeError,
     NoConfirmedRequirementsError,
     ProposalStatus,
+    ProviderMetadata,
     content_to_json,
     parse_generated,
+    safe_finish_reason,
     verify_references,
 )
 from app.llm.architecture_prompt import SYSTEM_PROMPT, build_prompt, new_nonce
@@ -129,14 +133,41 @@ class ArchitectureGenerationService:
         )
         started = time.perf_counter()
         response = self._provider.generate(request)
+        metadata = ProviderMetadata(
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            finish_reason=safe_finish_reason(response.finish_reason),
+        )
         logger.info(
-            "architecture response project=%s latency_ms=%d",
+            "architecture response project=%s latency_ms=%d finish_reason=%s",
             project_id,
             int((time.perf_counter() - started) * 1000),
+            metadata.finish_reason,
         )
 
-        generated = parse_generated(response.text)
-        verify_references(generated, confirmed_ids)
+        try:
+            generated = parse_generated(
+                response.text,
+                finish_reason=metadata.finish_reason,
+                max_chars=self._max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
+            )
+            verify_references(generated, confirmed_ids)
+        except ArchitectureError as exc:
+            exc.metadata = metadata
+            # Only fixed labels, counts, schema paths and provider numbers: never content.
+            logger.warning(
+                "architecture validation failed project=%s code=%s category=%s "
+                "diagnostics=%s provider_metadata=%s",
+                project_id,
+                exc.code,
+                exc.category.value if exc.category else None,
+                json.dumps(exc.diagnostics, sort_keys=True),
+                json.dumps(metadata.as_dict(), sort_keys=True),
+            )
+            raise
 
         proposal = ArchitectureProposal(
             project_id=project_id,

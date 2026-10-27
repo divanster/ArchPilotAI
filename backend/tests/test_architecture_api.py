@@ -84,7 +84,7 @@ def test_generates_a_draft_from_confirmed_requirements(client: TestClient, engin
     assert body["status"] == "draft"
     assert body["version"] == 1
     assert (body["provider"], body["model"]) == ("fake", "fake-model-1")
-    assert body["prompt_version"] == "architecture-v1"
+    assert body["prompt_version"] == "architecture-v2"
     assert body["stale_requirement_ids"] == []
     content = ArchitectureContent.model_validate(body["content"])
     assert content.diagram.nodes and content.implementation_phases

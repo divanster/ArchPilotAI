@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -47,6 +48,10 @@ def _retry_after(response: httpx.Response) -> float | None:
     if raw.isdigit():
         return min(float(raw), MAX_RETRY_AFTER_SECONDS)
     return None
+
+
+# Finish reasons are short fixed words ("stop", "length", ...); anything else is dropped.
+_FINISH_REASON = re.compile(r"^[a-z_]{1,32}$")
 
 
 def _count(value: object) -> int | None:
@@ -194,6 +199,8 @@ class WorkbenchProvider:
         usage_raw = data.get("usage")
         usage_raw = usage_raw if isinstance(usage_raw, dict) else {}
         model = data.get("model")
+        finish = data["choices"][0].get("finish_reason")
+        finish = finish if isinstance(finish, str) and _FINISH_REASON.match(finish) else None
         return LLMResponse(
             text=content,
             provider=PROVIDER_NAME,
@@ -205,4 +212,5 @@ class WorkbenchProvider:
                 total_tokens=_count(usage_raw.get("total_tokens")),
             ),
             http_status=response.status_code,
+            finish_reason=finish,
         )

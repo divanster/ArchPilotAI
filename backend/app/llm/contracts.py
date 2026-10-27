@@ -27,6 +27,7 @@ class LLMResponse(BaseModel):
     latency_ms: int = Field(ge=0)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     http_status: int | None = None  # None for providers without HTTP
+    finish_reason: str | None = None  # as reported by the provider (e.g. "stop", "length")
 
 
 @runtime_checkable

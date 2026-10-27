@@ -32,12 +32,31 @@ required_by_client and recommended_by_ai need at least one supporting requiremen
 recommended_stack items are decision objects plus layer and technology.
 components: id, name, type, responsibility, technology (optional), requirement_ids.
 risks: description, severity (low|medium|high), mitigation, requirement_ids.
-assumptions: statement, requirement_ids. open_questions: question, why_it_matters,
+assumptions: statement, requirement_ids. open_questions: question, why_it_matters (optional),
 requirement_ids. alternatives: title, description, trade_offs, requirement_ids.
 implementation_phases: name, objectives (list of strings), requirement_ids.
 diagram: {{"nodes": [{{"id","name","type"}}], "edges": [{{"source","target","relationship"}}]}}
 with node type one of client|api|service|database|storage|queue|cache|identity|external|other;
 edges must reference node ids. Only cite requirement ids that appear in confirmed_requirements.
+Output rules (the reply is validated strictly and rejected on any violation):
+- Strict JSON only: no Markdown, no code fences, no text before or after the object.
+- Use only the keys named above; do not add any additional fields anywhere.
+- Every required field must be present in every object.
+- Strings must be non-empty; null is allowed only for the optional fields (a component's
+  technology and an open question's why_it_matters). Never use "" for an absent value.
+- Respect length limits: names, titles, layers, technologies and relationships at most 200
+  characters; other text fields at most 1500; summary and solution_overview at most 5000;
+  ids at most 64 characters.
+- Include at least one component, one implementation phase with at least one objective, and
+  one diagram node.
+- At most 10 components. Use roughly 5 to 8 items in each other list, and never more than
+  20 recommended_stack, 20 integrations, 15 in each of data_architecture, security_architecture,
+  non_functional_design and alternatives, 20 risks, assumptions or open_questions, 12 phases,
+  40 diagram nodes and 80 edges.
+- Component ids must be unique and diagram node ids must be unique.
+- No duplicate edges (same source, target and relationship) and no self-loops.
+- Requirement references must be the exact UUIDs copied from confirmed_requirements, at most
+  50 per list; never shorten, alter or invent an id.
 Keep every list short and every text concise."""
 
 
