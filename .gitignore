@@ -1,0 +1,29 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+coverage/
+
+# IDE
+.idea/workspace.xml
+.vscode/
+
+# Client / confidential material must never be committed
+client-data/
+client-documents/
+sample-data/private/
+*.pem
+*.key

@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${ARCHPILOT_DB_NAME:-archpilot}
+      POSTGRES_USER: ${ARCHPILOT_DB_USER:-archpilot}
+      POSTGRES_PASSWORD: ${ARCHPILOT_DB_PASSWORD:?set ARCHPILOT_DB_PASSWORD in .env}
+    volumes:
+      - archpilot_db_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${ARCHPILOT_DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      ARCHPILOT_ENVIRONMENT: local
+      ARCHPILOT_DB_HOST: db
+      ARCHPILOT_DB_PORT: "5432"
+      ARCHPILOT_DB_NAME: ${ARCHPILOT_DB_NAME:-archpilot}
+      ARCHPILOT_DB_USER: ${ARCHPILOT_DB_USER:-archpilot}
+      ARCHPILOT_DB_PASSWORD: ${ARCHPILOT_DB_PASSWORD:?set ARCHPILOT_DB_PASSWORD in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  archpilot_db_data:

@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/ArchPilotAI.iml" filepath="$PROJECT_DIR$/.idea/ArchPilotAI.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/archpilotai-backend.iml" filepath="$PROJECT_DIR$/.idea/archpilotai-backend.iml" />
     </modules>
   </component>
 </project>
