@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchHealth, type HealthResponse } from "./api";
+import AIPlayground from "./AIPlayground";
 import ProjectsPage from "./ProjectsPage";
 
 type State = "checking" | "ok" | "unavailable";
@@ -34,6 +35,7 @@ export default function App() {
         </p>
       )}
       <ProjectsPage />
+      <AIPlayground />
     </main>
   );
 }

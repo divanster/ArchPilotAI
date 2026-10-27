@@ -106,3 +106,26 @@ export function uploadDocument(projectId: string, file: File) {
 
 export const deleteDocument = (projectId: string, documentId: string) =>
   request<void>(`${documentsPath(projectId)}/${documentId}`, { method: "DELETE" });
+
+export interface AIUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+}
+
+export interface AIGenerateResponse {
+  answer: string;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  usage: AIUsage;
+}
+
+export const AI_MAX_PROMPT_CHARS = 4000;
+
+export function generateAI(prompt: string): Promise<AIGenerateResponse> {
+  return request<AIGenerateResponse>("/api/ai/generate", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}

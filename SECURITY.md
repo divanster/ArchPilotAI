@@ -22,6 +22,17 @@
 All model access goes through the `LLMProvider` abstraction. Do not send client data to any
 external service unless explicitly approved.
 
+- Default provider is `fake` (offline). `kpmg_workbench` must be selected explicitly and never
+  silently falls back to the fake after a failure.
+- The Workbench API key and charge code live only in the git-ignored local `.env`, and only
+  credentials provisioned and approved for ArchPilotAI may be used (never another project's).
+- Secrets, prompts, authorization headers and model responses are never logged; Workbench error
+  bodies are never returned to the frontend. TLS verification is never disabled.
+- `POST /api/ai/generate` is a local prototype: synthetic/public prompts only, size and rate
+  limited, and it returns 403 when `ARCHPILOT_ENVIRONMENT=production`. It must not be enabled
+  anywhere shared without authentication and authorization.
+- The real-Workbench smoke command is opt-in, never run in CI, and makes at most one request.
+
 ## Authentication
 
 Not implemented yet. The app is a local-development prototype and is **not safe for public

@@ -42,6 +42,8 @@ export default defineConfig({
       env: {
         ...(process.env as Record<string, string>),
         ARCHPILOT_ENVIRONMENT: "test",
+        ARCHPILOT_LLM_PROVIDER: "fake",
+        ARCHPILOT_AI_MIN_INTERVAL_SECONDS: "0",
         ARCHPILOT_CORS_ORIGINS: JSON.stringify([frontendOrigin]),
       },
     },

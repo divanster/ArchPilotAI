@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from app.domain.project import ProjectStatus
+from app.llm.contracts import TokenUsage
 
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 ProjectDescription = Annotated[str, StringConstraints(max_length=10_000)]
@@ -59,3 +60,17 @@ class DocumentSummary(BaseModel):
 
 class DocumentDetail(DocumentSummary):
     text: str = Field(validation_alias="extracted_text")
+
+
+class AIGenerateRequest(BaseModel):
+    prompt: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)
+    ]
+
+
+class AIGenerateResponse(BaseModel):
+    answer: str
+    provider: str
+    model: str
+    latency_ms: int
+    usage: TokenUsage

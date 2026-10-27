@@ -124,6 +124,28 @@ npm run test:e2e
 CI runs both against ephemeral PostgreSQL service containers with test-only credentials and
 uploads `playwright-report/` and `test-results/` (traces, screenshots) when E2E fails.
 
+## AI Playground and LLM providers
+
+The UI has an AI Playground backed by `POST /api/ai/generate` (local prototype, no
+authentication, synthetic/public prompts only, disabled with 403 in production).
+
+- `ARCHPILOT_LLM_PROVIDER=fake` (default): deterministic, offline; used by tests and E2E.
+- `ARCHPILOT_LLM_PROVIDER=kpmg_workbench`: set the `ARCHPILOT_WORKBENCH_*` variables listed in
+  `.env.example`. Put `ARCHPILOT_WORKBENCH_API_KEY`, `ARCHPILOT_WORKBENCH_CHARGE_CODE` and
+  `ARCHPILOT_WORKBENCH_ENDPOINT` in your git-ignored `.env`. Missing values give a clear
+  configuration error (HTTP 503); there is no fallback to the fake provider.
+
+Opt-in real smoke test (one request, never run in CI, not run automatically):
+
+```powershell
+cd backend
+$env:ARCHPILOT_WORKBENCH_SMOKE_TEST = "1"
+python -m app.llm.smoke --confirm-authorized-for-archpilotai
+```
+
+It prints only status, provider, model, latency and token counts. Run it only with credentials
+and a charge code authorized for ArchPilotAI. See `docs/adr/0003-llm-provider-and-workbench.md`.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md). Never commit client documents or secrets.

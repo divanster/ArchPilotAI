@@ -27,6 +27,26 @@ class Settings(BaseSettings):
     # Same variable the PostgreSQL-required test setup already uses.
     require_postgres: bool = False
 
+    # LLM access (see ADR 0003). Default is the offline fake provider.
+    llm_provider: Literal["fake", "kpmg_workbench"] = "fake"
+    workbench_api_key: SecretStr = SecretStr("")
+    workbench_auth_type: Literal["subscription_key"] = "subscription_key"
+    workbench_endpoint: str = ""
+    workbench_deployment: str = ""
+    workbench_api_version: str = ""
+    workbench_region: str = ""
+    workbench_charge_code: str = ""
+    # Accepted for configuration compatibility; the documented contract has no header for it.
+    workbench_approval_group: str = ""
+    workbench_proxy: str = ""
+    workbench_timeout: float = Field(default=90.0, gt=0, le=300)
+    workbench_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # Local-prototype guard rails for POST /api/ai/generate.
+    ai_max_prompt_chars: int = Field(default=4000, ge=1, le=20_000)
+    ai_max_output_tokens: int = Field(default=400, ge=1, le=4000)
+    ai_min_interval_seconds: float = Field(default=2.0, ge=0, le=60)
+
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
 

@@ -6,7 +6,7 @@
         v
  Frontend (React/Vite)  --HTTP-->  Backend (FastAPI modular monolith)  --SQL-->  PostgreSQL
                                           |
-                                          +--(future) LLMProvider --> Workbench
+                                          +--LLMProvider --> Workbench
 ```
 
 ## Backend modules
@@ -19,7 +19,7 @@
 | `models` | SQLAlchemy ORM models |
 | `repositories` | Persistence access |
 | `services` | Use-case orchestration |
-| `llm` | `LLMProvider` abstraction and future implementations |
+| `llm` | `LLMProvider` abstraction, fake and KPMG Workbench providers, factory (ADR 0003) |
 
 ## Constraints
 
