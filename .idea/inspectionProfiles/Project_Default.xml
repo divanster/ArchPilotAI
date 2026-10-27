@@ -1,0 +1,90 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="asgiref" />
+          <option value="aspose-cells-python" />
+          <option value="ast-serialize" />
+          <option value="attrs" />
+          <option value="azure-core" />
+          <option value="azure-identity" />
+          <option value="certifi" />
+          <option value="cffi" />
+          <option value="charset-normalizer" />
+          <option value="colorama" />
+          <option value="coverage" />
+          <option value="cryptography" />
+          <option value="django" />
+          <option value="django-cors-headers" />
+          <option value="django-environ" />
+          <option value="django-extensions" />
+          <option value="django-filter" />
+          <option value="django-storages" />
+          <option value="djangorestframework" />
+          <option value="djangorestframework-simplejwt" />
+          <option value="drf-spectacular" />
+          <option value="drf-yasg" />
+          <option value="et-xmlfile" />
+          <option value="execnet" />
+          <option value="factory-boy" />
+          <option value="faker" />
+          <option value="gunicorn" />
+          <option value="idna" />
+          <option value="inflection" />
+          <option value="iniconfig" />
+          <option value="jsonschema" />
+          <option value="jsonschema-specifications" />
+          <option value="librt" />
+          <option value="msal" />
+          <option value="msal-extensions" />
+          <option value="mypy" />
+          <option value="mypy-extensions" />
+          <option value="numpy" />
+          <option value="openpyxl" />
+          <option value="packaging" />
+          <option value="pandas" />
+          <option value="parameterized" />
+          <option value="pathspec" />
+          <option value="pluggy" />
+          <option value="psutil" />
+          <option value="psycopg2-binary" />
+          <option value="pycountry" />
+          <option value="pycparser" />
+          <option value="pygments" />
+          <option value="pyjwt" />
+          <option value="pytest" />
+          <option value="pytest-cov" />
+          <option value="pytest-django" />
+          <option value="pytest-xdist" />
+          <option value="python-calamine" />
+          <option value="python-dateutil" />
+          <option value="python-dotenv" />
+          <option value="pytz" />
+          <option value="pyyaml" />
+          <option value="referencing" />
+          <option value="requests" />
+          <option value="rpds-py" />
+          <option value="ruff" />
+          <option value="six" />
+          <option value="sqlparse" />
+          <option value="typing-extensions" />
+          <option value="tzdata" />
+          <option value="uritemplate" />
+          <option value="urllib3" />
+          <option value="xlsxwriter" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyStubPackagesAdvertiser" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="pandas" />
+          <option value="djangorestframework" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
