@@ -36,3 +36,10 @@ def test_invalid_environment_rejected() -> None:
 def test_env_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ARCHPILOT_DB_HOST", "db")
     assert _settings().db_host == "db"
+
+
+def test_max_upload_bytes_default_and_validation() -> None:
+    assert _settings().max_upload_bytes == 1_048_576
+    assert _settings(max_upload_bytes=2048).max_upload_bytes == 2048
+    with pytest.raises(ValidationError):
+        _settings(max_upload_bytes=0)

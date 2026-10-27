@@ -4,8 +4,9 @@ ArchPilotAI converts project ideas and requirements documents (later: existing r
 meetings and communications) into traceable requirements, architecture proposals and
 client-ready solution documents.
 
-Status: **foundation only** – a health endpoint, a minimal UI and tooling. No RAG, agents,
-cloud or authentication yet. See [docs/product/mvp-scope.md](docs/product/mvp-scope.md).
+Status: **early prototype** – health endpoint, project workspace and `.txt`/`.md` document
+upload per project (text stored in PostgreSQL, see ADR 0002). No RAG, agents, cloud or
+authentication yet; this is a local-development prototype, not safe for public deployment. See [docs/product/mvp-scope.md](docs/product/mvp-scope.md).
 
 ## Layout
 
@@ -51,14 +52,41 @@ The database uses the named volume `archpilot_db_data`.
 
 | Area     | Command |
 |----------|---------|
-| Backend tests | `cd backend; pytest` |
+| Backend tests | `cd backend; pytest` (PostgreSQL tests skip unless `ARCHPILOT_TEST_DATABASE_URL` is set) |
+| Backend tests incl. PostgreSQL | see "Testing against PostgreSQL" below |
 | Backend lint/format | `ruff check .` / `ruff format .` |
 | Backend types | `mypy` |
 | Migrations | `alembic upgrade head` (needs a running database) |
 | Frontend types | `npm run typecheck` |
 | Frontend lint | `npm run lint` |
 | Frontend tests | `npm test` |
+| Browser E2E | `npm run test:e2e` (see below) |
 | Hooks | `pre-commit install` |
+
+## Testing against PostgreSQL and in the browser
+
+Use a **local, empty, throwaway** database whose name ends in `_test`. The test fixtures and
+the Playwright config refuse non-local hosts and names not ending in `_test`. Never point
+them at a real database.
+
+```powershell
+# Backend: migrates the empty DB with Alembic, then runs API/persistence tests on SQLite + PostgreSQL
+$env:ARCHPILOT_TEST_DATABASE_URL = "postgresql+psycopg://<user>:<password>@localhost:5432/archpilot_test"
+$env:ARCHPILOT_REQUIRE_POSTGRES = "1"   # fail instead of skip when the URL is missing
+cd backend; pytest
+
+# E2E: Playwright starts the real backend (alembic upgrade head) on :8100 and the UI on :5183
+cd frontend
+npx playwright install chromium         # once
+$env:ARCHPILOT_DB_HOST = "localhost"; $env:ARCHPILOT_DB_PORT = "5432"
+$env:ARCHPILOT_DB_NAME = "archpilot_e2e_test"; $env:ARCHPILOT_DB_USER = "<user>"
+$env:ARCHPILOT_DB_PASSWORD = "<password>"
+# `python` must resolve to the backend virtualenv; optionally set E2E_BROWSER_CHANNEL=msedge
+npm run test:e2e
+```
+
+CI runs both against ephemeral PostgreSQL service containers with test-only credentials and
+uploads `playwright-report/` and `test-results/` (traces, screenshots) when E2E fails.
 
 ## Security
 

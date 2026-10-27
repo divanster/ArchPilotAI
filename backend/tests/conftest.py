@@ -1,26 +1,79 @@
+import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
+from alembic import command
 from app.api.deps import get_session
 from app.main import app
 from app.models import project as _project  # noqa: F401
 from app.models.base import Base
 
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+TEST_DB_URL_ENV = "ARCHPILOT_TEST_DATABASE_URL"
+REQUIRE_PG_ENV = "ARCHPILOT_REQUIRE_POSTGRES"
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def alembic_config(url: str) -> Config:
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return cfg
+
+
+@pytest.fixture(scope="session")
+def postgres_url() -> Iterator[str]:
+    """Empty, local, test-only PostgreSQL database migrated to head via Alembic."""
+    url = os.environ.get(TEST_DB_URL_ENV)
+    if not url:
+        if os.environ.get(REQUIRE_PG_ENV) == "1":
+            pytest.fail(f"{TEST_DB_URL_ENV} must be set when {REQUIRE_PG_ENV}=1")
+        pytest.skip(f"{TEST_DB_URL_ENV} not set; PostgreSQL tests skipped")
+
+    parsed = make_url(url)
+    # Safety guards: never run against a non-local or non-test database.
+    assert parsed.get_backend_name() == "postgresql", "test URL must be PostgreSQL"
+    assert parsed.host in LOCAL_HOSTS, f"refusing non-local test database host: {parsed.host}"
+    assert (parsed.database or "").endswith("_test"), "test database name must end with '_test'"
+
+    engine = create_engine(url)
+    try:
+        existing = inspect(engine).get_table_names()
+        assert existing == [], f"test database is not empty: {existing}"
+        command.upgrade(alembic_config(url), "head")
+    finally:
+        engine.dispose()
+    yield url
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
+    if request.param == "sqlite":
+        url = f"sqlite+pysqlite:///{tmp_path / 'test.db'}"
+        engine = create_engine(url)
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        return url
+
+    url = str(request.getfixturevalue("postgres_url"))
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE documents, projects"))
+    engine.dispose()
+    return url
+
 
 @pytest.fixture
-def engine() -> Iterator[Engine]:
-    # Isolated in-memory database; never touches a configured/external database.
-    eng = create_engine(
-        "sqlite+pysqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(eng)
+def engine(database_url: str) -> Iterator[Engine]:
+    kwargs = {"connect_args": {"check_same_thread": False}} if "sqlite" in database_url else {}
+    eng = create_engine(database_url, **kwargs)
     yield eng
     eng.dispose()
 

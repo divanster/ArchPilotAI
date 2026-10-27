@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectsPage from "./ProjectsPage";
 import type { Project } from "./api";
 
+// Documents have their own tests; keep these tests focused on project behaviour.
+vi.mock("./DocumentsSection", () => ({ default: () => null }));
+
 const base: Project = {
   id: "11111111-1111-1111-1111-111111111111",
   name: "Alpha",

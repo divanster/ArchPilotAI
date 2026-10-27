@@ -1,11 +1,15 @@
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, String, Text, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.project import ProjectStatus
 from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.document import Document
 
 
 def _utcnow() -> datetime:
@@ -35,3 +39,5 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
+    # ORM-level cascade so deletes also work on databases without enforced FKs (SQLite tests).
+    documents: Mapped[list["Document"]] = relationship(cascade="all, delete-orphan", lazy="select")

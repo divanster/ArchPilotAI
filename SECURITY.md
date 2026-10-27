@@ -24,7 +24,13 @@ external service unless explicitly approved.
 
 ## Authentication
 
-Not implemented yet; do not expose this foundation beyond localhost.
+Not implemented yet. The app is a local-development prototype and is **not safe for public
+deployment**: anyone who can reach it can read, upload and delete projects and documents.
+Do not expose it beyond localhost.
+
+Uploaded documents are treated as inert data: never executed, never rendered as HTML, never
+logged, and filenames are metadata only. Upload size is capped by `ARCHPILOT_MAX_UPLOAD_BYTES`
+(default 1 MiB); a reverse proxy must also limit request bodies in any real deployment.
 
 ## Reporting
 

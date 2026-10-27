@@ -9,10 +9,12 @@ from app.models.base import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+# A URL set programmatically (e.g. by tests) wins over application settings.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

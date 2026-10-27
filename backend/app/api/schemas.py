@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from app.domain.project import ProjectStatus
 
@@ -43,3 +43,19 @@ class ProjectResponse(BaseModel):
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    filename: str = Field(validation_alias="original_filename")
+    media_type: str
+    size_bytes: int
+    content_sha256: str
+    created_at: datetime
+
+
+class DocumentDetail(DocumentSummary):
+    text: str = Field(validation_alias="extracted_text")

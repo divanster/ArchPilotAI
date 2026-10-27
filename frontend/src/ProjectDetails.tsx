@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ProjectForm from "./ProjectForm";
+import DocumentsSection from "./DocumentsSection";
 import { deleteProject, updateProject, type Project } from "./api";
 
 interface Props {
@@ -55,6 +56,7 @@ export default function ProjectDetails({ project, onUpdated, onDeleted, onClose 
       <p>{project.description ?? "No description"}</p>
       <p>Created: {new Date(project.created_at).toLocaleString()}</p>
       <p>Updated: {new Date(project.updated_at).toLocaleString()}</p>
+      <DocumentsSection projectId={project.id} />
       {error && <p role="alert">{error}</p>}
       {confirmingDelete ? (
         <div role="alertdialog" aria-label="Confirm delete">

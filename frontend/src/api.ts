@@ -52,7 +52,7 @@ async function errorMessage(response: Response): Promise<string> {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+    headers: typeof init?.body === "string" ? { "Content-Type": "application/json" } : undefined,
   });
   if (!response.ok) {
     throw new Error(await errorMessage(response));
@@ -71,3 +71,36 @@ export const updateProject = (id: string, input: Partial<ProjectInput>) =>
 
 export const deleteProject = (id: string) =>
   request<void>(`/api/projects/${id}`, { method: "DELETE" });
+
+export const MAX_UPLOAD_BYTES = 1_048_576;
+
+export interface DocumentSummary {
+  id: string;
+  project_id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  content_sha256: string;
+  created_at: string;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  text: string;
+}
+
+const documentsPath = (projectId: string) => `/api/projects/${projectId}/documents`;
+
+export const listDocuments = (projectId: string) =>
+  request<DocumentSummary[]>(documentsPath(projectId));
+
+export const getDocument = (projectId: string, documentId: string) =>
+  request<DocumentDetail>(`${documentsPath(projectId)}/${documentId}`);
+
+export function uploadDocument(projectId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return request<DocumentSummary>(documentsPath(projectId), { method: "POST", body });
+}
+
+export const deleteDocument = (projectId: string, documentId: string) =>
+  request<void>(`${documentsPath(projectId)}/${documentId}`, { method: "DELETE" });

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     db_user: str = "archpilot"
     db_password: SecretStr = SecretStr("")
 
+    # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
+    max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
+
     @field_validator("db_host", "db_name", "db_user")
     @classmethod
     def _not_blank(cls, value: str) -> str:
