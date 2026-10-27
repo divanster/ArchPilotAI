@@ -30,3 +30,6 @@ client-documents/
 sample-data/private/
 *.pem
 *.key
+
+# Local SQLite development database
+backend/data/

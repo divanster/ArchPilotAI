@@ -9,4 +9,11 @@ def test_health_returns_typed_ok() -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["service"] == "ArchPilotAI"
-    assert set(body) == {"status", "service", "environment", "version"}
+    assert set(body) == {
+        "status",
+        "service",
+        "environment",
+        "version",
+        "database",
+        "database_fallback",
+    }

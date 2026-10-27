@@ -1,5 +1,4 @@
 from collections.abc import Iterator
-from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
@@ -7,19 +6,17 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
-from app.core.db import make_engine, make_session_factory
+from app.core.db import get_database, make_session_factory
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
 from app.services.document import DocumentService
 from app.services.project import ProjectService
 
 
-@lru_cache
 def get_engine() -> Engine:
-    return make_engine()
+    return get_database().engine
 
 
-@lru_cache
 def get_session_factory() -> sessionmaker[Session]:
     return make_session_factory(get_engine())
 

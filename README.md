@@ -48,6 +48,42 @@ docker compose config --quiet        # validate (requires ARCHPILOT_DB_PASSWORD 
 
 The database uses the named volume `archpilot_db_data`.
 
+## Database selection (PostgreSQL / SQLite)
+
+`ARCHPILOT_DATABASE_MODE` selects the database once per process, at startup:
+
+| Mode | Behaviour |
+|------|-----------|
+| `postgres` (default) | PostgreSQL is required; startup fails with a clear error if unreachable. |
+| `sqlite` | Persistent local file at `ARCHPILOT_SQLITE_PATH` (default `backend/data/archpilot.db`). No in-memory database. |
+| `auto` | **Local development only** (`ARCHPILOT_ENVIRONMENT=local`). Tries PostgreSQL once (timeout `ARCHPILOT_DB_CONNECT_TIMEOUT_SECONDS`, default 3); if the connection fails, uses SQLite and logs a warning without credentials. |
+
+- The choice never changes after startup. Migration errors, schema mismatches and failed
+  queries are reported, never retried on another database.
+- `auto` is rejected outside `local`; `production` requires `postgres`; and
+  `ARCHPILOT_REQUIRE_POSTGRES=1` (used by PostgreSQL CI tests) rejects `sqlite` and `auto`.
+- `GET /health` exposes only the active type (`database`: `sqlite` | `postgresql`) and
+  `database_fallback`. The UI shows a development warning when fallback is active.
+- **PostgreSQL and SQLite hold separate data.** Nothing is copied, synchronized or migrated
+  between them.
+- Migrations are never run automatically. Run them explicitly for the database you chose
+  (`auto` is refused by Alembic because it must not guess):
+
+```powershell
+cd backend
+$env:ARCHPILOT_DATABASE_MODE = "sqlite";   alembic upgrade head   # creates/updates the SQLite file
+$env:ARCHPILOT_DATABASE_MODE = "postgres"; alembic upgrade head   # uses ARCHPILOT_DB_* settings
+```
+
+Example (no secrets; set the password only in your untracked `.env`):
+
+```
+ARCHPILOT_DATABASE_MODE=sqlite
+ARCHPILOT_SQLITE_PATH=data/archpilot.db
+```
+
+SQLite is a development convenience, not a supported production database.
+
 ## Commands
 
 | Area     | Command |

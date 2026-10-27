@@ -3,6 +3,8 @@ export interface HealthResponse {
   service: string;
   environment: string;
   version: string;
+  database?: "sqlite" | "postgresql" | null;
+  database_fallback?: boolean;
 }
 
 const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
