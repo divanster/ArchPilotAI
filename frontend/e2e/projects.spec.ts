@@ -1,16 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const unique = (label: string) => `${label} ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const unique = (label: string) =>
+  `${label} ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 async function createProject(page: Page, name: string, description?: string) {
-  await page.getByLabel("Name").fill(name);
-  if (description) await page.getByLabel("Description").fill(description);
-  await page.getByRole("button", { name: "Create project" }).click();
+  await page.getByRole("button", { name: "New project" }).click();
+  const dialog = page.getByRole("dialog", { name: "New project" });
+  await dialog.getByLabel("Name").fill(name);
+  if (description) await dialog.getByLabel("Description").fill(description);
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/#/projects");
   await expect(page.getByText("Backend: ok")).toBeVisible();
 });
 
@@ -19,7 +23,7 @@ test("creates a project and shows it in the list", async ({ page }) => {
   await createProject(page, name, "Synthetic description");
 
   const item = page.getByRole("listitem").filter({ hasText: name });
-  await expect(item).toContainText("(draft)");
+  await expect(item).toContainText("draft");
 
   await page.reload();
   await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
@@ -32,7 +36,7 @@ test("edits a project and keeps changes after refresh", async ({ page }) => {
 
   await page.getByRole("button", { name, exact: true }).click();
   await page.getByRole("button", { name: "Edit", exact: true }).click();
-  const form = page.getByRole("region", { name: "Edit project" });
+  const form = page.getByRole("dialog", { name: "Edit project" });
   await form.getByLabel("Name").fill(renamed);
   await form.getByLabel("Description").fill("Updated description");
   await form.getByLabel("Status").selectOption("active");
@@ -44,22 +48,26 @@ test("edits a project and keeps changes after refresh", async ({ page }) => {
   await page.reload();
   await page.getByRole("button", { name: renamed, exact: true }).click();
   const reloaded = page.getByRole("region", { name: "Project details" });
-  await expect(reloaded.getByText("Status: active")).toBeVisible();
+  await expect(reloaded.getByText("active", { exact: true })).toBeVisible();
   await expect(reloaded.getByText("Updated description")).toBeVisible();
 });
 
-test("rejects an invalid name in the UI without calling the API", async ({ page }) => {
+test("rejects an invalid name in the UI without calling the API", async ({
+  page,
+}) => {
   const posts: string[] = [];
   page.on("request", (r) => {
     if (r.method() === "POST") posts.push(r.url());
   });
 
-  await page.getByRole("button", { name: "Create project" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Name is required");
+  await page.getByRole("button", { name: "New project" }).click();
+  const dialog = page.getByRole("dialog", { name: "New project" });
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Name is required");
 
-  await page.getByLabel("Name").fill("   ");
-  await page.getByRole("button", { name: "Create project" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Name is required");
+  await dialog.getByLabel("Name").fill("   ");
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Name is required");
   expect(posts).toHaveLength(0);
 });
 
@@ -76,7 +84,9 @@ test("cancels deletion, then confirms it", async ({ page }) => {
   await page.getByRole("button", { name, exact: true }).click();
 
   await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(page.getByRole("alertdialog", { name: "Confirm delete" })).toBeVisible();
+  await expect(
+    page.getByRole("alertdialog", { name: "Confirm delete" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Keep project" }).click();
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
   await page.reload();

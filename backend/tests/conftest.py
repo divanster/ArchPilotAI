@@ -1,11 +1,12 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -16,6 +17,21 @@ from app.models import project as _project  # noqa: F401
 from app.models.base import Base
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+# Process environment beats backend/.env: tests must never reach a real LLM provider,
+# whatever a developer keeps in their local .env.
+for _name in (
+    "ARCHPILOT_WORKBENCH_API_KEY",
+    "ARCHPILOT_WORKBENCH_ENDPOINT",
+    "ARCHPILOT_WORKBENCH_DEPLOYMENT",
+    "ARCHPILOT_WORKBENCH_API_VERSION",
+    "ARCHPILOT_WORKBENCH_REGION",
+    "ARCHPILOT_WORKBENCH_CHARGE_CODE",
+    "ARCHPILOT_WORKBENCH_PROXY",
+):
+    os.environ[_name] = ""
+os.environ["ARCHPILOT_LLM_PROVIDER"] = "fake"
+os.environ["ARCHPILOT_EXTRACTION_ALLOW_REAL_PROVIDER"] = "false"
 TEST_DB_URL_ENV = "ARCHPILOT_TEST_DATABASE_URL"
 REQUIRE_PG_ENV = "ARCHPILOT_REQUIRE_POSTGRES"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -65,7 +81,12 @@ def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
     url = str(request.getfixturevalue("postgres_url"))
     engine = create_engine(url)
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE documents, projects"))
+        conn.execute(
+            text(
+                "TRUNCATE TABLE architecture_proposals, requirements, extraction_runs, "
+                "documents, projects"
+            )
+        )
     engine.dispose()
     return url
 
@@ -74,6 +95,12 @@ def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
 def engine(database_url: str) -> Iterator[Engine]:
     kwargs = {"connect_args": {"check_same_thread": False}} if "sqlite" in database_url else {}
     eng = create_engine(database_url, **kwargs)
+    if eng.dialect.name == "sqlite":
+
+        @event.listens_for(eng, "connect")
+        def _foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     yield eng
     eng.dispose()
 

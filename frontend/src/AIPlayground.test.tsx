@@ -23,13 +23,17 @@ describe("AIPlayground", () => {
   });
 
   function submit(text: string) {
-    fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: text } });
+    fireEvent.change(screen.getByLabelText("Prompt"), {
+      target: { value: text },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
   }
 
   it("renders the prompt form", () => {
     render(<AIPlayground />);
-    expect(screen.getByRole("heading", { name: "AI Playground" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "AI Playground" }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("Prompt")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Generate" })).toBeEnabled();
   });
@@ -45,7 +49,9 @@ describe("AIPlayground", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getAllByText("not reported")).toHaveLength(2);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ prompt: "Explain a modular monolith." });
+    expect(JSON.parse(init.body as string)).toEqual({
+      prompt: "Explain a modular monolith.",
+    });
   });
 
   it("shows a loading state and blocks repeat clicks", async () => {
@@ -61,10 +67,14 @@ describe("AIPlayground", () => {
   });
 
   it("shows the server error message", async () => {
-    fetchMock.mockResolvedValue(json({ detail: "The AI provider timed out." }, 504));
+    fetchMock.mockResolvedValue(
+      json({ detail: "The AI provider timed out." }, 504),
+    );
     render(<AIPlayground />);
     submit("hello");
-    expect(await screen.findByRole("alert")).toHaveTextContent("The AI provider timed out.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The AI provider timed out.",
+    );
     expect(screen.queryByLabelText("AI result")).not.toBeInTheDocument();
   });
 

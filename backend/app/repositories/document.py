@@ -41,4 +41,8 @@ class DocumentRepository:
 
     def delete(self, document: Document) -> None:
         self._session.delete(document)
-        self._session.commit()
+        try:
+            self._session.commit()
+        except Exception:
+            self._session.rollback()
+            raise

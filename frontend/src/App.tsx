@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 import { fetchHealth, type HealthResponse } from "./api";
 import AIPlayground from "./AIPlayground";
+import AppShell, { type BackendState } from "./AppShell";
+import Dashboard from "./Dashboard";
+import DocumentsSection from "./DocumentsSection";
+import ProjectScopedPage from "./ProjectScopedPage";
 import ProjectsPage from "./ProjectsPage";
-
-type State = "checking" | "ok" | "unavailable";
+import ArchitectureSection from "./ArchitectureSection";
+import RequirementsSection from "./RequirementsSection";
+import { navigate, useRoute } from "./routes";
 
 export default function App() {
-  const [state, setState] = useState<State>("checking");
+  const [state, setState] = useState<BackendState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const route = useRoute();
 
   useEffect(() => {
     let active = true;
@@ -15,7 +21,8 @@ export default function App() {
       .then((h) => {
         if (!active) return;
         setHealth(h);
-        setState("ok");
+        // Another service answering on the API address is not the ArchPilotAI backend.
+        setState(h.service ? "ok" : "unexpected");
       })
       .catch(() => active && setState("unavailable"));
     return () => {
@@ -24,18 +31,69 @@ export default function App() {
   }, []);
 
   return (
-    <main>
-      <h1>ArchPilotAI</h1>
-      <p role="status">Backend: {state}</p>
-      {health?.database && <p>Database: {health.database}</p>}
-      {health?.database_fallback && (
+    <AppShell current={route.page} backend={state} database={health?.database}>
+      {state === "unexpected" && (
         <p role="alert">
-          Development warning: PostgreSQL was unavailable at startup, so this backend is using a
-          local SQLite database. Its data is separate from PostgreSQL.
+          The service at the configured API address is not the ArchPilotAI
+          backend, so requests will fail. Start the ArchPilotAI backend on that
+          address or set VITE_API_URL.
         </p>
       )}
-      <ProjectsPage />
-      <AIPlayground />
-    </main>
+      {health?.database_fallback && (
+        <p role="alert">
+          Development warning: PostgreSQL was unavailable at startup, so this
+          backend is using a local SQLite database. Its data is separate from
+          PostgreSQL.
+        </p>
+      )}
+      {route.page === "dashboard" && (
+        <Dashboard
+          backend={state}
+          database={health?.database}
+          databaseFallback={health?.database_fallback}
+        />
+      )}
+      {route.page === "projects" && (
+        <ProjectsPage
+          key={route.arg ?? "none"}
+          initialCreate={route.arg === "new"}
+          initialSelectedId={
+            route.arg && route.arg !== "new" ? route.arg : null
+          }
+          onOpenSection={(section, id) => navigate(section, id)}
+        />
+      )}
+      {route.page === "documents" && (
+        <ProjectScopedPage
+          page="documents"
+          title="Documents"
+          subtitle="Upload .txt or .md files and preview their text."
+          projectId={route.arg}
+        >
+          {(id) => <DocumentsSection key={id} projectId={id} />}
+        </ProjectScopedPage>
+      )}
+      {route.page === "requirements" && (
+        <ProjectScopedPage
+          page="requirements"
+          title="Requirements"
+          subtitle="AI-proposed requirements with their source quotes, awaiting human review."
+          projectId={route.arg}
+        >
+          {(id) => <RequirementsSection key={id} projectId={id} />}
+        </ProjectScopedPage>
+      )}
+      {route.page === "architecture" && (
+        <ProjectScopedPage
+          page="architecture"
+          title="Architecture"
+          subtitle="Draft architecture proposals generated from confirmed requirements, pending human review."
+          projectId={route.arg}
+        >
+          {(id) => <ArchitectureSection key={id} projectId={id} />}
+        </ProjectScopedPage>
+      )}
+      {route.page === "playground" && <AIPlayground />}
+    </AppShell>
   );
 }

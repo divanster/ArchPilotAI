@@ -1,7 +1,9 @@
 import time
 
+from app.llm.architecture_prompt import fake_architecture_answer, is_architecture_request
 from app.llm.contracts import LLMRequest, LLMResponse, TokenUsage
 from app.llm.exceptions import LLMError
+from app.llm.extraction_prompt import fake_extraction_answer, is_extraction_request
 
 
 class FakeLLMProvider:
@@ -13,10 +15,16 @@ class FakeLLMProvider:
         *,
         model: str = "fake-model-1",
         error: LLMError | None = None,
+        extraction_text: str | None = None,
+        architecture_text: str | None = None,
     ) -> None:
         self._responses = dict(responses or {})
         self._model = model
         self._error = error
+        # Fixed answer for requirements-extraction prompts; None derives one from the document.
+        self._extraction_text = extraction_text
+        # Fixed answer for architecture prompts; None derives one from the supplied context.
+        self._architecture_text = architecture_text
         self.requests: list[LLMRequest] = []
 
     @property
@@ -33,6 +41,18 @@ class FakeLLMProvider:
         if self._error is not None:
             raise self._error
         text = self._responses.get(request.prompt)
+        if text is None and is_extraction_request(request.system_prompt):
+            text = (
+                self._extraction_text
+                if self._extraction_text is not None
+                else fake_extraction_answer(request.prompt)
+            )
+        if text is None and is_architecture_request(request.system_prompt):
+            text = (
+                self._architecture_text
+                if self._architecture_text is not None
+                else fake_architecture_answer(request.prompt)
+            )
         if text is None:
             text = f"Fake answer to: {request.prompt[:100]}"
         input_tokens = len(request.prompt.split())

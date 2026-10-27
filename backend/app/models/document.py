@@ -12,6 +12,8 @@ class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
         UniqueConstraint("project_id", "content_sha256", name="uq_documents_project_hash"),
+        # Target for composite foreign keys that bind a child row to the document's project.
+        UniqueConstraint("id", "project_id", name="uq_documents_id_project"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

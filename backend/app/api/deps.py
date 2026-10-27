@@ -8,13 +8,20 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
+from app.llm.contracts import LLMProvider
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.factory import create_provider
+from app.repositories.architecture import ArchitectureRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
+from app.repositories.requirement import RequirementRepository
 from app.services.ai_service import AIService
+from app.services.architecture import ArchitectureService
+from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.document import DocumentService
 from app.services.project import ProjectService
+from app.services.requirement import RequirementService
+from app.services.requirement_extraction import RequirementExtractionService
 
 
 def get_engine() -> Engine:
@@ -73,3 +80,83 @@ def get_ai_service() -> AIService:
 
 
 AIServiceDep = Annotated[AIService, Depends(get_ai_service)]
+
+
+@lru_cache
+def _build_provider() -> LLMProvider:
+    return create_provider(get_settings())
+
+
+def get_llm_provider() -> LLMProvider:
+    """Provider for document extraction. A real provider needs an explicit opt-in."""
+    settings = get_settings()
+    if settings.llm_provider != "fake" and not settings.extraction_allow_real_provider:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Requirements extraction with a real provider is disabled. "
+            "Set ARCHPILOT_EXTRACTION_ALLOW_REAL_PROVIDER=true to opt in.",
+        )
+    try:
+        return _build_provider()
+    except LLMConfigurationError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, exc.public_message) from exc
+
+
+LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]
+
+
+def get_requirement_service(session: SessionDep) -> RequirementService:
+    return RequirementService(RequirementRepository(session), ProjectRepository(session))
+
+
+RequirementServiceDep = Annotated[RequirementService, Depends(get_requirement_service)]
+
+
+def get_extraction_service(
+    session: SessionDep, provider: LLMProviderDep
+) -> RequirementExtractionService:
+    settings = get_settings()
+    return RequirementExtractionService(
+        provider,
+        DocumentRepository(session),
+        ProjectRepository(session),
+        RequirementRepository(session),
+        max_document_chars=settings.extraction_max_document_chars,
+        max_output_tokens=settings.extraction_max_output_tokens,
+    )
+
+
+ExtractionServiceDep = Annotated[RequirementExtractionService, Depends(get_extraction_service)]
+
+
+def get_architecture_service(session: SessionDep) -> ArchitectureService:
+    return ArchitectureService(
+        ArchitectureRepository(session),
+        ProjectRepository(session),
+        RequirementRepository(session),
+    )
+
+
+ArchitectureServiceDep = Annotated[ArchitectureService, Depends(get_architecture_service)]
+
+
+def get_architecture_generation_service(
+    session: SessionDep, provider: LLMProviderDep
+) -> ArchitectureGenerationService:
+    settings = get_settings()
+    return ArchitectureGenerationService(
+        provider,
+        ProjectRepository(session),
+        DocumentRepository(session),
+        RequirementRepository(session),
+        ArchitectureRepository(session),
+        max_requirements=settings.architecture_max_requirements,
+        max_context_chars=settings.architecture_max_context_chars,
+        max_unconfirmed_chars=settings.architecture_max_unconfirmed_chars,
+        max_output_tokens=settings.architecture_max_output_tokens,
+    )
+
+
+ArchitectureGenerationServiceDep = Annotated[
+    ArchitectureGenerationService, Depends(get_architecture_generation_service)
+]

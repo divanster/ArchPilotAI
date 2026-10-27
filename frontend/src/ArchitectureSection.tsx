@@ -1,0 +1,458 @@
+import { useCallback, useEffect, useState } from "react";
+import ArchitectureDiagram from "./ArchitectureDiagram";
+import { StatusBadge } from "./ui";
+import {
+  generateArchitecture,
+  getProposal,
+  listProposals,
+  listRequirements,
+  updateProposal,
+  type ArchitectureProposal,
+  type Decision,
+  type DecisionOrigin,
+  type ProposalPatch,
+  type ProposalSummary,
+} from "./api";
+
+const ORIGIN_LABELS: Record<DecisionOrigin, string> = {
+  required_by_client: "Required by client",
+  recommended_by_ai: "Recommended by AI",
+  assumed: "Assumed",
+  requires_clarification: "Requires clarification",
+};
+
+type Titles = Map<string, string>;
+
+function Refs({ ids, titles }: { ids: string[]; titles: Titles }) {
+  if (ids.length === 0) return null;
+  return (
+    <ul className="chip-list" aria-label="Supporting requirements">
+      {ids.map((id) => (
+        <li className="chip" key={id}>
+          {titles.get(id) ?? "Unknown requirement"}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TextList({ label, items }: { label: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{items.join("; ")}</dd>
+    </>
+  );
+}
+
+function DecisionCard({
+  decision,
+  titles,
+  heading,
+}: {
+  decision: Decision;
+  titles: Titles;
+  heading?: string;
+}) {
+  return (
+    <li className="decision">
+      <h4>{heading ?? decision.name}</h4>
+      <span className={`badge origin-${decision.origin}`}>
+        {ORIGIN_LABELS[decision.origin]}
+      </span>
+      <p>{decision.decision}</p>
+      <dl>
+        <dt>Rationale</dt>
+        <dd>{decision.rationale}</dd>
+        <TextList label="Alternatives considered" items={decision.alternatives_considered} />
+        <TextList label="Assumptions" items={decision.assumptions} />
+        <TextList label="Risks" items={decision.risks} />
+      </dl>
+      <Refs ids={decision.supporting_requirement_ids} titles={titles} />
+    </li>
+  );
+}
+
+function DecisionGroup({
+  title,
+  items,
+  titles,
+}: {
+  title: string;
+  items: Decision[];
+  titles: Titles;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="card">
+      <h3>{title}</h3>
+      <ul className="stack" aria-label={title}>
+        {items.map((d, i) => (
+          <DecisionCard key={i} decision={d} titles={titles} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ProposalView({
+  proposal,
+  titles,
+  onPatch,
+}: {
+  proposal: ArchitectureProposal;
+  titles: Titles;
+  onPatch: (patch: ProposalPatch) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(proposal.title);
+  const [summary, setSummary] = useState(proposal.summary);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const c = proposal.content;
+  const draft = proposal.status === "draft";
+  const stale = proposal.stale_requirement_ids;
+
+  async function run(patch: ProposalPatch, after?: () => void) {
+    setBusy(true);
+    setError(null);
+    try {
+      await onPatch(patch);
+      after?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveEdit() {
+    if (!title.trim() || !summary.trim()) {
+      setError("Title and summary are required");
+      return;
+    }
+    const patch: ProposalPatch = {};
+    if (title.trim() !== proposal.title) patch.title = title.trim();
+    if (summary.trim() !== proposal.summary) patch.summary = summary.trim();
+    if (Object.keys(patch).length === 0) {
+      setEditing(false);
+      return;
+    }
+    void run(patch, () => setEditing(false));
+  }
+
+  return (
+    <div className="stack" data-testid="proposal">
+      <div className="card">
+        <div className="row">
+          <StatusBadge status={proposal.status} testId="proposal-status" />
+          <span className="muted">
+            Version {proposal.version} · {proposal.provider}/{proposal.model} ·{" "}
+            {proposal.prompt_version}
+          </span>
+        </div>
+        {editing ? (
+          <div className="stack" style={{ marginTop: "var(--space-3)" }}>
+            <label>
+              Proposal title
+              <input
+                value={title}
+                maxLength={200}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </label>
+            <label>
+              Proposal summary
+              <textarea
+                value={summary}
+                maxLength={5000}
+                onChange={(e) => setSummary(e.target.value)}
+              />
+            </label>
+            <div className="row">
+              <button type="button" className="primary" disabled={busy} onClick={saveEdit}>
+                Save proposal
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setEditing(false);
+                  setTitle(proposal.title);
+                  setSummary(proposal.summary);
+                  setError(null);
+                }}
+              >
+                Cancel edit
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <h2 style={{ marginTop: "var(--space-3)" }}>{proposal.title}</h2>
+            <p>{proposal.summary}</p>
+          </>
+        )}
+        {stale.length > 0 && (
+          <p role="alert">
+            Warning: {stale.length} cited requirement(s) are no longer
+            confirmed. Regenerate this proposal before approving.
+          </p>
+        )}
+        {error && <p role="alert">{error}</p>}
+        {!editing && (
+          <div className="row">
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !draft || stale.length > 0}
+              onClick={() => void run({ status: "approved" })}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="danger"
+              disabled={busy || !draft}
+              onClick={() => void run({ status: "rejected" })}
+            >
+              Reject
+            </button>
+            <button type="button" disabled={busy || !draft} onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          </div>
+        )}
+        {!draft && (
+          <p className="hint">Reviewed proposals are read-only. Generate a new version to change them.</p>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Solution overview</h3>
+        <p>{c.solution_overview}</p>
+      </div>
+
+      <div className="card">
+        <h3>Component diagram</h3>
+        <ArchitectureDiagram nodes={c.diagram.nodes} edges={c.diagram.edges} />
+      </div>
+
+      <div className="card">
+        <h3>Technology stack</h3>
+        <ul className="stack" aria-label="Technology stack">
+          {c.recommended_stack.map((s, i) => (
+            <DecisionCard
+              key={i}
+              decision={s}
+              titles={titles}
+              heading={`${s.layer}: ${s.technology}`}
+            />
+          ))}
+        </ul>
+      </div>
+
+      <div className="card">
+        <h3>Components</h3>
+        <ul className="stack" aria-label="Components">
+          {c.components.map((comp) => (
+            <li className="decision" key={comp.id}>
+              <h4>{comp.name}</h4>
+              <span className="badge badge-type">{comp.type}</span>
+              <p>{comp.responsibility}</p>
+              <Refs ids={comp.requirement_ids} titles={titles} />
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <DecisionGroup title="Integrations" items={c.integrations} titles={titles} />
+      <DecisionGroup title="Data architecture" items={c.data_architecture} titles={titles} />
+      <DecisionGroup title="Security considerations" items={c.security_architecture} titles={titles} />
+      <DecisionGroup title="Non-functional design" items={c.non_functional_design} titles={titles} />
+
+      <div className="card">
+        <h3>Risks and assumptions</h3>
+        <ul className="stack" aria-label="Risks">
+          {c.risks.map((r, i) => (
+            <li className="decision" key={i}>
+              <span className="badge badge-type">{r.severity}</span>
+              <p>{r.description}</p>
+              <p className="muted">Mitigation: {r.mitigation}</p>
+              <Refs ids={r.requirement_ids} titles={titles} />
+            </li>
+          ))}
+        </ul>
+        <ul aria-label="Assumptions">
+          {c.assumptions.map((a, i) => (
+            <li key={i}>Assumption: {a.statement}</li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="card">
+        <h3>Open questions</h3>
+        {c.open_questions.length === 0 && <p className="muted">None.</p>}
+        <ul aria-label="Open questions">
+          {c.open_questions.map((q, i) => (
+            <li key={i}>
+              {q.question}
+              {q.why_it_matters && <span className="muted"> — {q.why_it_matters}</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {c.alternatives.length > 0 && (
+        <div className="card">
+          <h3>Alternatives</h3>
+          <ul aria-label="Alternatives">
+            {c.alternatives.map((a, i) => (
+              <li key={i}>
+                <strong>{a.title}</strong>: {a.description} ({a.trade_offs})
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="card">
+        <h3>Implementation roadmap</h3>
+        <ol aria-label="Implementation roadmap">
+          {c.implementation_phases.map((p, i) => (
+            <li key={i}>
+              <strong>{p.name}</strong>
+              <ul>
+                {p.objectives.map((o, j) => (
+                  <li key={j}>{o}</li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+export default function ArchitectureSection({ projectId }: { projectId: string }) {
+  const [summaries, setSummaries] = useState<ProposalSummary[] | null>(null);
+  const [selected, setSelected] = useState<ArchitectureProposal | null>(null);
+  const [titles, setTitles] = useState<Titles>(new Map());
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+
+  const open = useCallback(
+    async (id: string) => {
+      setSelected(await getProposal(projectId, id));
+    },
+    [projectId],
+  );
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const [list, reqs] = await Promise.all([
+        listProposals(projectId),
+        listRequirements(projectId),
+      ]);
+      setTitles(new Map(reqs.map((r) => [r.id, r.title])));
+      setSummaries(list);
+      setSelected(list.length > 0 ? await getProposal(projectId, list[0].id) : null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load architecture");
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleGenerate() {
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const created = await generateArchitecture(projectId);
+      const reqs = await listRequirements(projectId);
+      setTitles(new Map(reqs.map((r) => [r.id, r.title])));
+      setSummaries((cur) => [created, ...(cur ?? [])]);
+      setSelected(created);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Generation failed");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handlePatch(patch: ProposalPatch) {
+    if (!selected) return;
+    const updated = await updateProposal(projectId, selected.id, patch);
+    setSelected(updated);
+    setSummaries((cur) => cur?.map((s) => (s.id === updated.id ? updated : s)) ?? null);
+  }
+
+  return (
+    <section aria-label="Architecture" className="stack">
+      <div className="card">
+        <h2>Generate architecture</h2>
+        <p className="muted">
+          Proposals are generated from confirmed requirements only. Every
+          proposal starts as a draft and must be reviewed by a person.
+        </p>
+        <button
+          type="button"
+          className="primary"
+          disabled={generating}
+          onClick={() => void handleGenerate()}
+        >
+          {generating ? "Generating…" : "Generate architecture"}
+        </button>
+        {genError && <p role="alert">{genError}</p>}
+      </div>
+
+      {loadError && (
+        <div role="alert">
+          <p>{loadError}</p>
+          <button type="button" onClick={() => void load()}>
+            Retry architecture
+          </button>
+        </div>
+      )}
+      {!loadError && summaries === null && (
+        <p className="muted">Loading architecture…</p>
+      )}
+      {summaries && summaries.length === 0 && (
+        <p className="state">No architecture proposals yet.</p>
+      )}
+      {summaries && summaries.length > 0 && (
+        <ul className="arch-tabs" aria-label="Proposal versions">
+          {summaries.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                aria-pressed={selected?.id === s.id}
+                onClick={() =>
+                  void open(s.id).catch((e) =>
+                    setLoadError(e instanceof Error ? e.message : "Failed to load proposal"),
+                  )
+                }
+              >
+                Version {s.version} ({s.status})
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {selected && (
+        <ProposalView
+          key={selected.id}
+          proposal={selected}
+          titles={titles}
+          onPatch={handlePatch}
+        />
+      )}
+    </section>
+  );
+}

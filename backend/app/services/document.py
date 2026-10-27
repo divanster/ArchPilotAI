@@ -25,6 +25,11 @@ class DuplicateDocumentError(Exception):
         super().__init__(f"Identical content already uploaded{suffix}")
 
 
+class DocumentInUseError(Exception):
+    def __init__(self) -> None:
+        super().__init__("Document has extracted requirements and cannot be deleted")
+
+
 class DocumentService:
     def __init__(
         self, documents: DocumentRepository, projects: ProjectRepository, max_upload_bytes: int
@@ -78,4 +83,9 @@ class DocumentService:
         return document
 
     def delete(self, project_id: uuid.UUID, document_id: uuid.UUID) -> None:
-        self._documents.delete(self.get(project_id, document_id))
+        document = self.get(project_id, document_id)
+        try:
+            self._documents.delete(document)
+        except IntegrityError as exc:
+            # Requirements reference this document; reviewed work is never deleted implicitly.
+            raise DocumentInUseError() from exc

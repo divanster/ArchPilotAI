@@ -1,78 +1,125 @@
-import { useCallback, useEffect, useState } from "react";
-import ProjectDetails from "./ProjectDetails";
+import { useState } from "react";
+import ProjectDetails, { type ProjectSection } from "./ProjectDetails";
 import ProjectForm from "./ProjectForm";
-import { createProject, listProjects, type Project } from "./api";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  Modal,
+  PageHeader,
+  StatusBadge,
+} from "./ui";
+import { useProjectList } from "./useProjectList";
+import { createProject } from "./api";
 
-export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+interface Props {
+  initialSelectedId?: string | null;
+  initialCreate?: boolean;
+  onOpenSection?: (section: ProjectSection, projectId: string) => void;
+}
 
-  const load = useCallback(async () => {
-    setError(null);
-    setProjects(null);
-    try {
-      setProjects(await listProjects());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load projects");
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+export default function ProjectsPage({
+  initialSelectedId = null,
+  initialCreate = false,
+  onOpenSection,
+}: Props) {
+  const { projects, setProjects, error, reload } = useProjectList();
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialSelectedId,
+  );
+  const [creating, setCreating] = useState(initialCreate);
 
   const selected = projects?.find((p) => p.id === selectedId) ?? null;
 
   return (
     <section aria-label="Projects">
-      <h2>Projects</h2>
-
-      <h3>New project</h3>
-      <ProjectForm
-        submitLabel="Create project"
-        onSubmit={async (input) => {
-          const created = await createProject(input);
-          setProjects((current) => [created, ...(current ?? [])]);
-        }}
+      <PageHeader
+        title="Projects"
+        subtitle="Each project groups its documents and the requirements extracted from them."
+        actions={
+          <button
+            type="button"
+            className="primary"
+            onClick={() => setCreating(true)}
+          >
+            New project
+          </button>
+        }
       />
 
-      {error && (
-        <div role="alert">
-          <p>{error}</p>
-          <button type="button" onClick={() => void load()}>
-            Retry
-          </button>
-        </div>
+      {error && <ErrorState message={error} onRetry={() => void reload()} />}
+      {!error && projects === null && (
+        <LoadingState label="Loading projects…" />
       )}
-      {!error && projects === null && <p>Loading projects…</p>}
-      {projects && projects.length === 0 && <p>No projects yet.</p>}
-      {projects && projects.length > 0 && (
-        <ul>
-          {projects.map((p) => (
-            <li key={p.id}>
-              <button type="button" onClick={() => setSelectedId(p.id)}>
-                {p.name}
-              </button>{" "}
-              <span>({p.status})</span>
-            </li>
-          ))}
-        </ul>
+      {projects && projects.length === 0 && (
+        <EmptyState>No projects yet.</EmptyState>
       )}
 
-      {selected && (
-        <ProjectDetails
-          key={selected.id}
-          project={selected}
-          onClose={() => setSelectedId(null)}
-          onUpdated={(updated) =>
-            setProjects((current) => current?.map((p) => (p.id === updated.id ? updated : p)) ?? null)
-          }
-          onDeleted={(id) => {
-            setProjects((current) => current?.filter((p) => p.id !== id) ?? null);
-            setSelectedId(null);
-          }}
-        />
+      {projects && projects.length > 0 && (
+        <div className={selected ? "two-col" : undefined}>
+          <ul className="grid-cards" aria-label="Project list">
+            {projects.map((p) => (
+              <li
+                key={p.id}
+                className="project-card"
+                data-selected={p.id === selectedId}
+              >
+                <div
+                  className="row"
+                  style={{ justifyContent: "space-between" }}
+                >
+                  <button
+                    type="button"
+                    className="card-title"
+                    onClick={() => setSelectedId(p.id)}
+                  >
+                    {p.name}
+                  </button>
+                  <StatusBadge status={p.status} />
+                </div>
+                <p className="card-desc">{p.description ?? "No description"}</p>
+                <span className="card-meta">
+                  Updated {new Date(p.updated_at).toLocaleDateString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {selected && (
+            <ProjectDetails
+              key={selected.id}
+              project={selected}
+              onClose={() => setSelectedId(null)}
+              onOpenSection={onOpenSection}
+              onUpdated={(updated) =>
+                setProjects(
+                  (current) =>
+                    current?.map((p) => (p.id === updated.id ? updated : p)) ??
+                    null,
+                )
+              }
+              onDeleted={(id) => {
+                setProjects(
+                  (current) => current?.filter((p) => p.id !== id) ?? null,
+                );
+                setSelectedId(null);
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {creating && (
+        <Modal title="New project" onClose={() => setCreating(false)}>
+          <ProjectForm
+            submitLabel="Create project"
+            onCancel={() => setCreating(false)}
+            onSubmit={async (input) => {
+              const created = await createProject(input);
+              setProjects((current) => [created, ...(current ?? [])]);
+              setCreating(false);
+            }}
+          />
+        </Modal>
       )}
     </section>
   );

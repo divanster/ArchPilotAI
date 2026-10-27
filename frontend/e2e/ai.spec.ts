@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("generates an answer with the fake provider", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/#/playground");
   await expect(page.getByText("Backend: ok")).toBeVisible();
 
   const prompt = "Explain the benefits of a modular monolith.";

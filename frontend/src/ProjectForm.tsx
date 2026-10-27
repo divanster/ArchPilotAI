@@ -8,11 +8,18 @@ interface Props {
   onCancel?: () => void;
 }
 
-export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }: Props) {
+export default function ProjectForm({
+  initial,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: Props) {
   const uid = useId();
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [status, setStatus] = useState<ProjectStatus>(initial?.status ?? "draft");
+  const [status, setStatus] = useState<ProjectStatus>(
+    initial?.status ?? "draft",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,7 +32,11 @@ export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }
     setSaving(true);
     setError(null);
     try {
-      await onSubmit({ name: name.trim(), description: description.trim() || null, status });
+      await onSubmit({
+        name: name.trim(),
+        description: description.trim() || null,
+        status,
+      });
       if (!initial) {
         setName("");
         setDescription("");
@@ -39,8 +50,8 @@ export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }
   }
 
   return (
-    <form onSubmit={handleSubmit}>
-      <div>
+    <form onSubmit={handleSubmit} noValidate>
+      <div className="field">
         <label htmlFor={`${uid}-name`}>Name</label>
         <input
           id={`${uid}-name`}
@@ -49,7 +60,7 @@ export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }
           onChange={(e) => setName(e.target.value)}
         />
       </div>
-      <div>
+      <div className="field">
         <label htmlFor={`${uid}-description`}>Description</label>
         <textarea
           id={`${uid}-description`}
@@ -57,7 +68,7 @@ export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }
           onChange={(e) => setDescription(e.target.value)}
         />
       </div>
-      <div>
+      <div className="field">
         <label htmlFor={`${uid}-status`}>Status</label>
         <select
           id={`${uid}-status`}
@@ -72,14 +83,16 @@ export default function ProjectForm({ initial, submitLabel, onSubmit, onCancel }
         </select>
       </div>
       {error && <p role="alert">{error}</p>}
-      <button type="submit" disabled={saving}>
-        {saving ? "Saving…" : submitLabel}
-      </button>
-      {onCancel && (
-        <button type="button" onClick={onCancel} disabled={saving}>
-          Cancel
+      <div className="row">
+        <button type="submit" disabled={saving}>
+          {saving ? "Saving…" : submitLabel}
         </button>
-      )}
+        {onCancel && (
+          <button type="button" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+        )}
+      </div>
     </form>
   );
 }

@@ -23,7 +23,13 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-export default function DocumentsSection({ projectId }: { projectId: string }) {
+export default function DocumentsSection({
+  projectId,
+  onChanged,
+}: {
+  projectId: string;
+  onChanged?: () => void;
+}) {
   const [documents, setDocuments] = useState<DocumentSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -68,6 +74,7 @@ export default function DocumentsSection({ projectId }: { projectId: string }) {
       setDocuments((current) => [created, ...(current ?? [])]);
       setFile(null);
       setInputKey((k) => k + 1);
+      onChanged?.();
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -82,7 +89,9 @@ export default function DocumentsSection({ projectId }: { projectId: string }) {
     try {
       setPreview(await getDocument(projectId, doc.id));
     } catch (e) {
-      setPreviewError(e instanceof Error ? e.message : "Failed to load document");
+      setPreviewError(
+        e instanceof Error ? e.message : "Failed to load document",
+      );
     } finally {
       setPreviewLoading(false);
     }
@@ -96,6 +105,7 @@ export default function DocumentsSection({ projectId }: { projectId: string }) {
       setDocuments((current) => current?.filter((d) => d.id !== id) ?? null);
       setPreview((p) => (p?.id === id ? null : p));
       setConfirmingId(null);
+      onChanged?.();
     } catch (e) {
       setDeleteError(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -104,81 +114,130 @@ export default function DocumentsSection({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section aria-label="Documents">
-      <h4>Documents</h4>
-      <div>
-        <label htmlFor={`doc-file-${projectId}`}>Document file</label>
-        <input
-          key={inputKey}
-          id={`doc-file-${projectId}`}
-          type="file"
-          accept=".txt,.md,text/plain,text/markdown"
-          onChange={(e) => {
-            setFile(e.target.files?.[0] ?? null);
-            setUploadError(null);
-          }}
-        />
-        <button type="button" onClick={() => void handleUpload()} disabled={uploading}>
-          {uploading ? "Uploading…" : "Upload document"}
-        </button>
+    <section aria-label="Documents" className="stack">
+      <div className="card">
+        <h2>Upload a document</h2>
+        <div className="dropzone">
+          <div className="field-inline">
+            <div className="field">
+              <label htmlFor={`doc-file-${projectId}`}>Document file</label>
+              <input
+                key={inputKey}
+                id={`doc-file-${projectId}`}
+                type="file"
+                accept=".txt,.md,text/plain,text/markdown"
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setUploadError(null);
+                }}
+              />
+              <span className="hint">
+                .txt or .md, up to 1 MiB. Synthetic data only.
+              </span>
+            </div>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void handleUpload()}
+              disabled={uploading}
+            >
+              {uploading ? "Uploading…" : "Upload document"}
+            </button>
+          </div>
+        </div>
+        {uploadError && <p role="alert">{uploadError}</p>}
       </div>
-      {uploadError && <p role="alert">{uploadError}</p>}
 
-      {loadError && (
-        <div role="alert">
-          <p>{loadError}</p>
-          <button type="button" onClick={() => void load()}>
-            Retry documents
-          </button>
+      <div className="two-col">
+        <div className="card">
+          <h2>Documents</h2>
+          {loadError && (
+            <div role="alert">
+              <p>{loadError}</p>
+              <button type="button" onClick={() => void load()}>
+                Retry documents
+              </button>
+            </div>
+          )}
+          {!loadError && documents === null && (
+            <p className="muted">Loading documents…</p>
+          )}
+          {documents && documents.length === 0 && (
+            <p className="state">No documents yet.</p>
+          )}
+          {deleteError && <p role="alert">{deleteError}</p>}
+          {documents && documents.length > 0 && (
+            <ul aria-label="Document list">
+              {documents.map((doc) => (
+                <li key={doc.id} className="list-row">
+                  <div>
+                    <button
+                      type="button"
+                      className="ghost"
+                      aria-pressed={preview?.id === doc.id}
+                      onClick={() => void handlePreview(doc)}
+                    >
+                      {doc.filename}
+                    </button>
+                    <div className="hint">
+                      {formatSize(doc.size_bytes)} ·{" "}
+                      {new Date(doc.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                  {confirmingId === doc.id ? (
+                    <span
+                      role="alertdialog"
+                      aria-label="Confirm document delete"
+                    >
+                      Delete “{doc.filename}”?{" "}
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => void handleDelete(doc.id)}
+                        disabled={deletingId === doc.id}
+                      >
+                        {deletingId === doc.id
+                          ? "Deleting…"
+                          : "Confirm delete document"}
+                      </button>{" "}
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingId(null)}
+                      >
+                        Keep document
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingId(doc.id)}
+                    >
+                      Delete document
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-      )}
-      {!loadError && documents === null && <p>Loading documents…</p>}
-      {documents && documents.length === 0 && <p>No documents yet.</p>}
-      {deleteError && <p role="alert">{deleteError}</p>}
-      {documents && documents.length > 0 && (
-        <ul>
-          {documents.map((doc) => (
-            <li key={doc.id}>
-              <button type="button" onClick={() => void handlePreview(doc)}>
-                {doc.filename}
-              </button>{" "}
-              <span>
-                {formatSize(doc.size_bytes)} · {new Date(doc.created_at).toLocaleString()}
-              </span>{" "}
-              {confirmingId === doc.id ? (
-                <span role="alertdialog" aria-label="Confirm document delete">
-                  Delete “{doc.filename}”?{" "}
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete(doc.id)}
-                    disabled={deletingId === doc.id}
-                  >
-                    {deletingId === doc.id ? "Deleting…" : "Confirm delete document"}
-                  </button>
-                  <button type="button" onClick={() => setConfirmingId(null)}>
-                    Keep document
-                  </button>
-                </span>
-              ) : (
-                <button type="button" onClick={() => setConfirmingId(doc.id)}>
-                  Delete document
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
 
-      {previewLoading && <p>Loading preview…</p>}
-      {previewError && <p role="alert">{previewError}</p>}
-      {preview && (
-        <div aria-label="Document preview" role="group">
-          <h5>{preview.filename}</h5>
-          {/* Rendered as a plain text node: never interpreted as HTML or Markdown. */}
-          <pre>{preview.text.slice(0, PREVIEW_CHARS)}</pre>
-          {preview.text.length > PREVIEW_CHARS && <p>Preview truncated.</p>}
+        <div className="card">
+          <h2>Preview</h2>
+          {!preview && !previewLoading && !previewError && (
+            <p className="muted">Select a document to preview its text.</p>
+          )}
+          {previewLoading && <p>Loading preview…</p>}
+          {previewError && <p role="alert">{previewError}</p>}
+          {preview && (
+            <div aria-label="Document preview" role="group">
+              <h3>{preview.filename}</h3>
+              {/* Rendered as a plain text node: never interpreted as HTML or Markdown. */}
+              <pre>{preview.text.slice(0, PREVIEW_CHARS)}</pre>
+              {preview.text.length > PREVIEW_CHARS && <p>Preview truncated.</p>}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </section>
   );
 }

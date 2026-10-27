@@ -11,7 +11,11 @@ from app.domain.document import (
     InvalidDocumentError,
     UnsupportedDocumentTypeError,
 )
-from app.services.document import DocumentNotFoundError, DuplicateDocumentError
+from app.services.document import (
+    DocumentInUseError,
+    DocumentNotFoundError,
+    DuplicateDocumentError,
+)
 from app.services.project import ProjectNotFoundError
 
 router = APIRouter(prefix="/api/projects/{project_id}/documents", tags=["documents"])
@@ -20,6 +24,7 @@ _ERROR_STATUS: dict[type[Exception], int] = {
     ProjectNotFoundError: status.HTTP_404_NOT_FOUND,
     DocumentNotFoundError: status.HTTP_404_NOT_FOUND,
     DuplicateDocumentError: status.HTTP_409_CONFLICT,
+    DocumentInUseError: status.HTTP_409_CONFLICT,
     UnsupportedDocumentTypeError: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
     DocumentTooLargeError: status.HTTP_413_CONTENT_TOO_LARGE,
     InvalidDocumentError: status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -73,6 +78,6 @@ def delete_document(
 ) -> Response:
     try:
         service.delete(project_id, document_id)
-    except (ProjectNotFoundError, DocumentNotFoundError) as exc:
+    except (ProjectNotFoundError, DocumentNotFoundError, DocumentInUseError) as exc:
         raise _http_error(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,10 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectsPage from "./ProjectsPage";
 import type { Project } from "./api";
-
-// Documents have their own tests; keep these tests focused on project behaviour.
-vi.mock("./DocumentsSection", () => ({ default: () => null }));
 
 const base: Project = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -32,7 +35,9 @@ describe("ProjectsPage", () => {
     fetchMock.mockResolvedValueOnce(json([base]));
     render(<ProjectsPage />);
     expect(screen.getByText("Loading projects…")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Alpha" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Alpha" }),
+    ).toBeInTheDocument();
   });
 
   it("shows an error and retries", async () => {
@@ -50,19 +55,33 @@ describe("ProjectsPage", () => {
     await screen.findByText("No projects yet.");
 
     fetchMock.mockResolvedValueOnce(json(base, 201));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  Alpha " } });
-    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    const dialog = screen.getByRole("dialog", { name: "New project" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "  Alpha " },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Create project" }),
+    );
 
-    expect(await screen.findByRole("button", { name: "Alpha" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Alpha" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toMatch(/\/api\/projects$/);
-    expect(JSON.parse(init.body)).toEqual({ name: "Alpha", description: null, status: "draft" });
+    expect(JSON.parse(init.body)).toEqual({
+      name: "Alpha",
+      description: null,
+      status: "draft",
+    });
   });
 
   it("validates the name before submitting", async () => {
     fetchMock.mockResolvedValueOnce(json([]));
     render(<ProjectsPage />);
     await screen.findByText("No projects yet.");
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
     fireEvent.click(screen.getByRole("button", { name: "Create project" }));
     expect(await screen.findByText("Name is required")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -72,7 +91,10 @@ describe("ProjectsPage", () => {
     fetchMock.mockResolvedValueOnce(json([]));
     render(<ProjectsPage />);
     await screen.findByText("No projects yet.");
-    fetchMock.mockResolvedValueOnce(json({ detail: [{ msg: "String too long" }] }, 422));
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    fetchMock.mockResolvedValueOnce(
+      json({ detail: [{ msg: "String too long" }] }, 422),
+    );
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Create project" }));
     expect(await screen.findByText("String too long")).toBeInTheDocument();
@@ -83,16 +105,23 @@ describe("ProjectsPage", () => {
     render(<ProjectsPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
     const details = screen.getByRole("region", { name: "Project details" });
-    expect(within(details).getByText("Status: draft")).toBeInTheDocument();
+    expect(within(details).getByText("draft")).toBeInTheDocument();
 
     fireEvent.click(within(details).getByRole("button", { name: "Edit" }));
-    const edit = screen.getByRole("region", { name: "Edit project" });
-    fetchMock.mockResolvedValueOnce(json({ ...base, name: "Beta", status: "active" }));
-    fireEvent.change(within(edit).getByLabelText("Name"), { target: { value: "Beta" } });
-    fireEvent.change(within(edit).getByLabelText("Status"), { target: { value: "active" } });
+    const edit = screen.getByRole("dialog", { name: "Edit project" });
+    fetchMock.mockResolvedValueOnce(
+      json({ ...base, name: "Beta", status: "active" }),
+    );
+    fireEvent.change(within(edit).getByLabelText("Name"), {
+      target: { value: "Beta" },
+    });
+    fireEvent.change(within(edit).getByLabelText("Status"), {
+      target: { value: "active" },
+    });
     fireEvent.click(within(edit).getByRole("button", { name: "Save changes" }));
 
-    expect(await screen.findByText("Status: active")).toBeInTheDocument();
+    expect(await screen.findByText("active", { selector: "section[aria-label='Project details'] .badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toMatch(new RegExp(`/api/projects/${base.id}$`));
     expect(init.method).toBe("PATCH");
@@ -112,7 +141,9 @@ describe("ProjectsPage", () => {
     fetchMock.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
 
-    await waitFor(() => expect(screen.getByText("No projects yet.")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("No projects yet.")).toBeInTheDocument(),
+    );
     expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
   });
 
@@ -126,3 +157,4 @@ describe("ProjectsPage", () => {
     expect(await screen.findByText("Project not found")).toBeInTheDocument();
   });
 });
+

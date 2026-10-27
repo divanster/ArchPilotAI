@@ -1,4 +1,8 @@
+import uuid
+
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from tests.conftest import alembic_config
@@ -12,7 +16,7 @@ def test_migration_matches_expected_schema(postgres_url: str) -> None:
     assert columns["description"]["nullable"] is True
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0002_documents"
+            "0004_architecture"
         )
     engine.dispose()
 
@@ -50,8 +54,70 @@ def test_documents_schema_and_constraints(postgres_url: str) -> None:
     assert fks[0]["referred_table"] == "projects"
     assert fks[0]["options"].get("ondelete") == "CASCADE"
     uniques = inspector.get_unique_constraints("documents")
-    assert {tuple(u["column_names"]) for u in uniques} == {("project_id", "content_sha256")}
+    assert {tuple(u["column_names"]) for u in uniques} == {
+        ("project_id", "content_sha256"),
+        ("id", "project_id"),
+    }
     engine.dispose()
+
+
+def test_requirements_schema_and_constraints(postgres_url: str) -> None:
+    engine = create_engine(postgres_url)
+    inspector = inspect(engine)
+    req = {c["name"]: c for c in inspector.get_columns("requirements")}
+    assert set(req) == {
+        "id",
+        "project_id",
+        "document_id",
+        "extraction_run_id",
+        "type",
+        "title",
+        "description",
+        "source_quote",
+        "source_start",
+        "source_end",
+        "status",
+        "created_at",
+        "updated_at",
+    }
+    assert all(not c["nullable"] for c in req.values())
+    runs = {c["name"]: c for c in inspector.get_columns("extraction_runs")}
+    assert {
+        "provider",
+        "model",
+        "prompt_version",
+        "status",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+    } <= set(runs)
+    assert runs["input_tokens"]["nullable"] and runs["output_tokens"]["nullable"]
+    fks = {fk["name"]: fk for fk in inspector.get_foreign_keys("requirements")}
+    composite = fks["fk_requirements_document_project"]
+    assert composite["referred_table"] == "documents"
+    assert composite["constrained_columns"] == ["document_id", "project_id"]
+    checks = {c["name"] for c in inspector.get_check_constraints("requirements")}
+    assert {"ck_requirements_type", "ck_requirements_status", "ck_requirements_source_span"} <= (
+        checks
+    )
+    engine.dispose()
+
+
+def test_requirements_downgrade_and_upgrade_roundtrip(postgres_url: str) -> None:
+    cfg = alembic_config(postgres_url)
+    engine = create_engine(postgres_url)
+    try:
+        command.downgrade(cfg, "0002_documents")
+        tables = inspect(engine).get_table_names()
+        assert "requirements" not in tables
+        assert "extraction_runs" not in tables
+        assert "documents" in tables
+    finally:
+        command.upgrade(cfg, "head")
+        engine.dispose()
+    check = create_engine(postgres_url)
+    assert "requirements" in inspect(check).get_table_names()
+    check.dispose()
 
 
 def test_downgrade_one_step_keeps_projects(postgres_url: str) -> None:
@@ -65,3 +131,78 @@ def test_downgrade_one_step_keeps_projects(postgres_url: str) -> None:
     finally:
         command.upgrade(cfg, "head")
         engine.dispose()
+
+
+def test_architecture_schema_and_constraints(postgres_url: str) -> None:
+    engine = create_engine(postgres_url)
+    inspector = inspect(engine)
+    columns = {c["name"]: c for c in inspector.get_columns("architecture_proposals")}
+    assert set(columns) == {
+        "id",
+        "project_id",
+        "title",
+        "summary",
+        "status",
+        "version",
+        "content",
+        "provider",
+        "model",
+        "prompt_version",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "created_at",
+        "updated_at",
+    }
+    assert columns["content"]["nullable"] is False
+    fk = inspector.get_foreign_keys("architecture_proposals")[0]
+    assert fk["referred_table"] == "projects"
+    assert fk["options"].get("ondelete") == "CASCADE"
+    uniques = {u["name"] for u in inspector.get_unique_constraints("architecture_proposals")}
+    assert "uq_architecture_project_version" in uniques
+    checks = {c["name"] for c in inspector.get_check_constraints("architecture_proposals")}
+    assert {"ck_architecture_status", "ck_architecture_version"} <= checks
+
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE architecture_proposals, projects CASCADE"))
+        pid = conn.execute(
+            text(
+                "INSERT INTO projects (id, name, status, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), 'p', 'draft', now(), now()) RETURNING id"
+            )
+        ).scalar_one()
+    insert = text(
+        "INSERT INTO architecture_proposals (id, project_id, title, summary, status, version, "
+        "content, provider, model, prompt_version, created_at, updated_at) VALUES "
+        "(gen_random_uuid(), :p, 't', 's', :status, :version, '{}', 'fake', 'm', 'v', now(), now())"
+    )
+    with engine.begin() as conn:
+        conn.execute(insert, {"p": pid, "status": "draft", "version": 1})
+    for params in (
+        {"p": pid, "status": "draft", "version": 1},  # duplicate version
+        {"p": pid, "status": "auto_approved", "version": 2},
+        {"p": pid, "status": "draft", "version": 0},
+        {"p": uuid.uuid4(), "status": "draft", "version": 3},  # unknown project
+    ):
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(insert, params)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM projects WHERE id = :p"), {"p": pid})
+        assert conn.execute(text("SELECT count(*) FROM architecture_proposals")).scalar() == 0
+    engine.dispose()
+
+
+def test_architecture_downgrade_and_upgrade_roundtrip(postgres_url: str) -> None:
+    cfg = alembic_config(postgres_url)
+    engine = create_engine(postgres_url)
+    try:
+        command.downgrade(cfg, "0003_requirements")
+        tables = inspect(engine).get_table_names()
+        assert "architecture_proposals" not in tables
+        assert "requirements" in tables
+    finally:
+        command.upgrade(cfg, "head")
+        engine.dispose()
+    check = create_engine(postgres_url)
+    assert "architecture_proposals" in inspect(check).get_table_names()
+    check.dispose()

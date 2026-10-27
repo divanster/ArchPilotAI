@@ -1,5 +1,9 @@
 import { useState, type FormEvent } from "react";
-import { AI_MAX_PROMPT_CHARS, generateAI, type AIGenerateResponse } from "./api";
+import {
+  AI_MAX_PROMPT_CHARS,
+  generateAI,
+  type AIGenerateResponse,
+} from "./api";
 
 function tokens(value: number | null): string {
   return value === null ? "not reported" : String(value);
@@ -32,43 +36,79 @@ export default function AIPlayground() {
 
   return (
     <section aria-labelledby="ai-heading">
-      <h2 id="ai-heading">AI Playground</h2>
-      <p>
-        Local prototype. Use synthetic or public prompts only; never paste client data or secrets.
-      </p>
-      <form onSubmit={onSubmit}>
-        <label htmlFor="ai-prompt">Prompt</label>
-        <textarea
-          id="ai-prompt"
-          rows={4}
-          maxLength={AI_MAX_PROMPT_CHARS}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? "Generating…" : "Generate"}
-        </button>
-      </form>
-      {error && <p role="alert">{error}</p>}
-      {result && (
-        <div aria-label="AI result">
-          <pre>{result.answer}</pre>
-          <dl>
-            <dt>Provider</dt>
-            <dd>{result.provider}</dd>
-            <dt>Model</dt>
-            <dd>{result.model}</dd>
-            <dt>Latency</dt>
-            <dd>{result.latency_ms} ms</dd>
-            <dt>Input tokens</dt>
-            <dd>{tokens(result.usage.input_tokens)}</dd>
-            <dt>Output tokens</dt>
-            <dd>{tokens(result.usage.output_tokens)}</dd>
-            <dt>Total tokens</dt>
-            <dd>{tokens(result.usage.total_tokens)}</dd>
-          </dl>
+      <div className="page-header">
+        <div>
+          <h1 id="ai-heading">AI Playground</h1>
+          <p>
+            Local prototype. Use synthetic or public prompts only; never paste
+            client data or secrets.
+          </p>
         </div>
-      )}
+      </div>
+      <div className="two-col">
+        <form onSubmit={onSubmit} className="card">
+          <div className="field">
+            <label htmlFor="ai-prompt">Prompt</label>
+            <textarea
+              id="ai-prompt"
+              rows={8}
+              maxLength={AI_MAX_PROMPT_CHARS}
+              value={prompt}
+              placeholder="Describe what you want the model to do…"
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+            <span className="hint">
+              {prompt.length} / {AI_MAX_PROMPT_CHARS} characters
+            </span>
+          </div>
+          <button type="submit" disabled={loading}>
+            {loading ? "Generating…" : "Generate"}
+          </button>
+          {error && <p role="alert">{error}</p>}
+        </form>
+        <div className="card">
+          <h2>Response</h2>
+          {!result && !loading && (
+            <p className="muted">The model’s answer appears here.</p>
+          )}
+          {loading && (
+            <div aria-busy="true">
+              <div className="skeleton" aria-hidden="true" />
+            </div>
+          )}
+          {result && (
+            <div aria-label="AI result" className="stack">
+              <pre>{result.answer}</pre>
+              <dl className="meta-list">
+                <div>
+                  <dt>Provider</dt>
+                  <dd>{result.provider}</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>{result.model}</dd>
+                </div>
+                <div>
+                  <dt>Latency</dt>
+                  <dd>{result.latency_ms} ms</dd>
+                </div>
+                <div>
+                  <dt>Input tokens</dt>
+                  <dd>{tokens(result.usage.input_tokens)}</dd>
+                </div>
+                <div>
+                  <dt>Output tokens</dt>
+                  <dd>{tokens(result.usage.output_tokens)}</dd>
+                </div>
+                <div>
+                  <dt>Total tokens</dt>
+                  <dd>{tokens(result.usage.total_tokens)}</dd>
+                </div>
+              </dl>
+            </div>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
