@@ -9,6 +9,8 @@ from typing import Any
 
 from app.domain.agent import (
     AGENT_PROMPT_VERSION,
+    CONVERGENCE_LIMIT,
+    MAX_NOTE_FINDINGS,
     MAX_READ_CHARS,
     MAX_SUMMARY_CHARS,
     REPEAT_LIMIT,
@@ -278,6 +280,10 @@ class AgentService:
         total_latency = 0
         previous: tuple[str, str | None, str | None] | None = None
         repeats = 0
+        best_total: int | None = None
+        stalled = 0
+        check_totals: list[int] = []
+        last_findings: list[dict[str, Any]] = []
         while True:
             self._agents.refresh(run)
             elapsed = self._clock() - started
@@ -401,6 +407,25 @@ class AgentService:
             if repeats >= REPEAT_LIMIT:
                 self._end(run, "stopped", "repeated_error", self._clock() - started)
                 return
+            if action_name == "run_static_checks" and error is None and result.get("total"):
+                total = int(result["total"])
+                check_totals.append(total)
+                last_findings = list(result.get("findings") or [])
+                if best_total is None or total < best_total:
+                    best_total, stalled = total, 0
+                else:
+                    stalled += 1
+                if stalled >= CONVERGENCE_LIMIT:
+                    self._stop_not_converging(
+                        project_id, plan, task, draft, run, warnings, total_latency,
+                        check_totals, last_findings,
+                    )  # fmt: skip
+                    self._end(
+                        run, "stopped", "not_converging", self._clock() - started, run.summary
+                    )
+                    return
+            elif action_name == "run_static_checks" and error is None:
+                best_total, stalled = 0, 0
 
     def _save_draft(self, project_id: uuid.UUID, run_id: uuid.UUID, draft: Draft) -> None:
         for path in sorted(draft.dirty):
@@ -607,6 +632,65 @@ class AgentService:
                 data={"failures": [f.as_json() for f in failures[:50]]},
             )
         notes = ([a.summary] if a.summary else []) + list(a.notes)
+        version = self._propose_draft(
+            project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
+            notes, a.assumptions, a.test_suggestions,
+        )  # fmt: skip
+        run.summary = cut(a.summary, 1000) or None
+        return {
+            "summary": f"patch v{version} proposed",
+            "patch_id": str(run.patch_id),
+            "version": version,
+        }, True
+
+    def _stop_not_converging(
+        self,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        draft: Draft,
+        run: AgentRun,
+        warnings: list[str],
+        latency_ms: int,
+        totals: list[int],
+        findings: list[dict[str, Any]],
+    ) -> None:
+        """Hand the draft over for review with the last findings in the notes (if it is valid)."""
+        counts = ", ".join(str(n) for n in totals[-10:])
+        notes = [
+            f"Not converging: the static finding count did not decrease for {CONVERGENCE_LIMIT} "
+            f"consecutive checks (counts: {counts}). The findings below are still open."
+        ] + [
+            cut(f"{f['file']}:{f['line']} {f['tool']} {f['code']} {f['message']}", 300)
+            for f in findings[:MAX_NOTE_FINDINGS]
+        ]
+        run.summary = f"Not converging after {len(totals)} static checks"
+        try:
+            self._propose_draft(
+                project_id, plan, task, draft, run, warnings, latency_ms, run.provider, run.model,
+                notes, [], [],
+            )  # fmt: skip
+        except ActionError as exc:
+            logger.warning(
+                "agent not-converging draft not proposed run=%s code=%s", run.id, exc.code
+            )
+
+    def _propose_draft(
+        self,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        draft: Draft,
+        run: AgentRun,
+        warnings: list[str],
+        latency_ms: int,
+        provider: str,
+        model: str,
+        notes: list[str],
+        assumptions: list[str],
+        test_suggestions: list[str],
+    ) -> int:
+        changes = draft.changes()
         try:
             detail = self._patches.propose(
                 project_id,
@@ -615,8 +699,8 @@ class AgentService:
                 GeneratedPatch(
                     files=changes,
                     notes=notes[:20],
-                    assumptions=a.assumptions,
-                    test_suggestions=a.test_suggestions,
+                    assumptions=assumptions,
+                    test_suggestions=test_suggestions,
                 ),
                 provider=provider,
                 model=model,
@@ -632,12 +716,7 @@ class AgentService:
                 "patch_invalid", data={"failures": [f.as_json() for f in exc.failures[:50]]}
             ) from None
         run.patch_id = detail.patch.id
-        run.summary = cut(a.summary, 1000) or None
-        return {
-            "summary": f"patch v{detail.patch.version} proposed",
-            "patch_id": str(detail.patch.id),
-            "version": detail.patch.version,
-        }, True
+        return detail.patch.version
 
     @staticmethod
     def _log_failures(project_id: uuid.UUID, task: PlanTask, failures: list[Failure]) -> None:

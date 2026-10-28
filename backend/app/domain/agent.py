@@ -31,6 +31,8 @@ MAX_LIST_FILES = 200
 MAX_SEARCH_MATCHES = 50
 MAX_READ_CHARS = 16_000
 MAX_FINDINGS = 50
+CONVERGENCE_LIMIT = 3  # static checks in a row that do not beat the best finding count
+MAX_NOTE_FINDINGS = 10
 RESPONSE_CHARS_PER_TOKEN = 8
 
 ACTIONS = (

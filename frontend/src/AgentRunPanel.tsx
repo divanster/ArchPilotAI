@@ -5,6 +5,7 @@ import {
   startAgentRun,
   stopAgentRun,
   type AgentRun,
+  type AgentStepView,
   type PlanTask,
 } from "./api";
 
@@ -12,6 +13,37 @@ const POLL_MS = 1500;
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function FindingList({ step }: { step: AgentStepView }) {
+  const found = step.findings ?? [];
+  return (
+    <div aria-label={`Findings of step ${step.step_no}`}>
+      {found.length > 0 && (
+        <ul>
+          {found.map((f, i) => (
+            <li key={`${f.file}:${f.line}:${f.code}:${i}`}>
+              <code>
+                {f.file}:{f.line}
+              </code>{" "}
+              <span className="badge">{`${f.tool} ${f.code}`}</span> {f.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {step.finding_total !== null && step.finding_total > found.length && (
+        <p className="sub">
+          ? {step.finding_total - found.length} more not shown
+        </p>
+      )}
+      {step.findings_not_shown > 0 && (
+        <p className="sub">
+          {step.findings_not_shown} environment finding(s) hidden (missing
+          packages or modules)
+        </p>
+      )}
+    </div>
+  );
 }
 
 export default function AgentRunPanel({
@@ -151,6 +183,8 @@ export default function AgentRunPanel({
                   {s.status === "error" && (
                     <span className="badge">{s.error_code}</span>
                   )}
+                  {s.finding_total !== null &&
+                    s.finding_total !== undefined && <FindingList step={s} />}
                 </li>
               ))}
             </ol>

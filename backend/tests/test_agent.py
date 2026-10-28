@@ -25,7 +25,14 @@ from app.llm.fake_provider import FakeLLMProvider
 from app.models.agent import AgentDraftFile, AgentRun, AgentStep
 from app.models.patch import CodePatch
 from app.services import agent as agent_service
-from app.services.static_checks import CommandResult, StaticChecker
+from app.services.static_checks import (
+    MYPY_CONFIG,
+    CheckReport,
+    CommandResult,
+    Finding,
+    StaticChecker,
+    run_command,
+)
 from tests.test_patches import (
     World,
     accepted,
@@ -700,3 +707,160 @@ def test_migration_and_models_are_registered(engine: Engine) -> None:
     assert {"agent_runs", "agent_steps", "agent_draft_files"} <= tables
     with Session(engine) as session:
         assert session.scalars(select(CodePatch)).all() == []
+
+
+# ---- diagnosis: correct code, environment findings, actionable filter, convergence ---------------
+
+CORRECT_MODULE = """from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Item(Base):
+    __tablename__ = "items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column()
+
+
+router = APIRouter()
+
+
+def dependency() -> int:
+    return 1
+
+
+@router.get("/items")
+def names(value: int = Depends(dependency)) -> list[str]:
+    return [str(select(Item.name)), str(value)]
+"""
+
+
+def test_correct_file_with_third_party_imports_has_no_findings(tmp_path: Path) -> None:
+    calls: list[tuple[list[str], Path]] = []
+
+    def spy(argv: list[str], cwd: Path, env: Any, timeout: float) -> CommandResult:
+        calls.append((argv, cwd))
+        return run_command(argv, cwd, env, timeout)
+
+    report = StaticChecker(temp_parent=str(tmp_path), runner=spy).run(
+        {"app/models.py": CORRECT_MODULE}
+    )
+    assert report.findings == [] and report.total == 0 and report.environment == 0
+    assert report.tools["ruff"] == "ok" and report.tools["mypy"] == "ok"
+    ruff, mypy = (c[0] for c in calls)
+    assert "--isolated" in ruff and ruff[ruff.index("--select") + 1] == "E9,F"
+    assert "--no-site-packages" in mypy and "--config-file" in mypy
+    assert all(cwd.name == "ctl" for _, cwd in calls)  # never the draft or the repository
+    assert "ignore_missing_imports = True" in MYPY_CONFIG
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_missing_modules_are_environment_not_code(tmp_path: Path) -> None:
+    draft = {
+        "app/models.py": "from app.core import settings\nfrom app.db import Base\n\n"
+        "VALUE: int = settings.x\n\n\nclass Item(Base):\n    pass\n",
+        "app/core.py": "y = 1\n",
+    }
+    report = StaticChecker(temp_parent=str(tmp_path)).run(draft)
+    assert report.findings == [] and report.environment >= 1
+    assert report.as_json()["not_shown"]["environment"] == report.environment
+    assert any(rule.startswith("mypy:") for rule in report.by_rule)
+    kinds = {
+        Finding("mypy", "a.py", 1, "import-not-found", "x").category,
+        Finding("mypy", "a.py", 1, "import-untyped", "x").category,
+        Finding("mypy", "a.py", 1, "attr-defined", 'Module "m" has no attribute "x"').category,
+    }
+    assert kinds == {"environment"}
+    assert Finding("mypy", "a.py", 1, "return-value", "bad").category == "code"
+    assert Finding("mypy", "a.py", 1, "attr-defined", '"A" has no attribute "x"').category == "code"
+    assert Finding("ruff", "a.py", 1, "F821", "Undefined name").category == "code"
+
+
+def test_only_actionable_findings_are_returned_with_counts_by_rule(tmp_path: Path) -> None:
+    draft = {
+        "a.py": "import os\n\n\ndef f() -> int:\n    return missing_name\n",
+        "c.py": "from fastapi import Depends\n\n\ndef h(x: int = Depends(int)) -> int:\n    return x\n",  # noqa: E501
+        "d.py": "def k() -> int:\n    return 'a'\n",
+    }
+    report = StaticChecker(temp_parent=str(tmp_path)).run(draft)
+    codes_found = {(f.file, f.code) for f in report.findings}
+    assert ("a.py", "F401") in codes_found and ("a.py", "F821") in codes_found
+    assert ("d.py", "return-value") in codes_found
+    assert not any(f.file == "c.py" for f in report.findings)  # B008 style noise is not reported
+    assert report.by_rule["ruff:F401"] == 1 and report.by_rule["mypy:return-value"] == 1
+    assert report.total == len(report.findings)
+    broken = StaticChecker(temp_parent=str(tmp_path)).run({"b.py": "def g(:\n"})
+    assert ("b.py", "python_syntax") in {(f.file, f.code) for f in broken.findings}
+
+
+class ScriptedChecker:
+    """Reports a scripted number of actionable findings per call; never runs a tool."""
+
+    def __init__(self, totals: list[int]) -> None:
+        self.totals = list(totals)
+        self.calls = 0
+
+    def run(self, files: Any) -> CheckReport:
+        total = self.totals[min(self.calls, len(self.totals) - 1)]
+        self.calls += 1
+        found = [Finding("ruff", "src/m.py", n + 1, "F401", f"unused {n}") for n in range(total)]
+        return CheckReport(found, total, {"ruff": "ok"}, {"ruff:F401": total})
+
+
+def test_not_converging_stops_early_and_puts_the_findings_in_the_patch_notes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    checker = ScriptedChecker([12, 10, 11, 11, 10, 3])
+    configure(monkeypatch, checker=checker)
+    run, provider = play(
+        client,
+        world,
+        [write("src/m.py"), *[action("run_static_checks")] * 6, finish()],
+    )
+    assert (run["status"], run["stop_reason"]) == ("stopped", "not_converging")
+    assert checker.calls == 5 and run["steps_taken"] == 6 and len(provider.requests) == 6
+    assert run["patch_id"]
+    patch = client.get(api(world[0], f"/patches/{run['patch_id']}")).json()
+    notes = " ".join(patch["notes"])
+    assert "Not converging" in notes and "12, 10, 11, 11, 10" in notes
+    assert "src/m.py:1 ruff F401 unused 0" in patch["notes"]
+    assert patch["status"] == "proposed"
+
+
+def test_a_decreasing_count_keeps_the_run_going(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    configure(monkeypatch, checker=ScriptedChecker([5, 4, 3, 2, 1, 0]))
+    run, _ = play(client, world, [write("src/m.py"), *[action("run_static_checks")] * 6, finish()])
+    assert (run["status"], run["stop_reason"]) == ("finished", "finished")
+
+
+def test_not_converging_with_an_invalid_draft_stops_without_a_patch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    configure(monkeypatch, checker=ScriptedChecker([4, 4, 4, 4]))
+    run, _ = play(
+        client, world, [write("src/m.py", "def f(:\n"), *[action("run_static_checks")] * 4]
+    )
+    assert run["stop_reason"] == "not_converging" and run["patch_id"] is None
+
+
+def test_static_check_steps_expose_findings_for_the_run_panel(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    configure(monkeypatch, checker=ScriptedChecker([2]))
+    run, _ = play(client, world, [write("src/m.py"), action("run_static_checks"), finish()])
+    step = run["steps"][1]
+    assert step["finding_total"] == 2
+    assert step["findings"][0] == {
+        "tool": "ruff",
+        "file": "src/m.py",
+        "line": 1,
+        "code": "F401",
+        "message": "unused 0",
+    }
+    assert run["steps"][0]["findings"] == [] and run["steps"][0]["finding_total"] is None

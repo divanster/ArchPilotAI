@@ -954,6 +954,17 @@ export interface AgentStepView {
   input_tokens: number;
   output_tokens: number;
   latency_ms: number;
+  findings: AgentFinding[];
+  finding_total: number | null;
+  findings_not_shown: number;
+}
+
+export interface AgentFinding {
+  tool: string;
+  file: string;
+  line: number;
+  code: string;
+  message: string;
 }
 
 export interface AgentRunSummary {

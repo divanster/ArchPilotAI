@@ -1,7 +1,9 @@
+import json
 import threading
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -39,6 +41,14 @@ class StartRunIn(BaseModel):
     max_steps: int | None = Field(default=None, ge=1, le=50)
 
 
+class FindingOut(BaseModel):
+    tool: str
+    file: str
+    line: int
+    code: str
+    message: str
+
+
 class StepOut(BaseModel):
     step_no: int
     action: str
@@ -49,6 +59,9 @@ class StepOut(BaseModel):
     input_tokens: int
     output_tokens: int
     latency_ms: int
+    findings: list[FindingOut] = []
+    finding_total: int | None = None  # actionable findings of a run_static_checks step
+    findings_not_shown: int = 0  # environment findings counted but not shown
 
 
 class RunSummary(BaseModel):
@@ -108,6 +121,22 @@ def _summary(run: AgentRun) -> RunSummary:
     )
 
 
+def _findings(step: AgentStep) -> dict[str, Any]:
+    """Findings of a static-check step, read back from its stored (bounded) result."""
+    if step.action != "run_static_checks" or step.status != "ok":
+        return {}
+    try:
+        data = json.loads(step.result)
+        found = [FindingOut(**{k: f[k] for k in FindingOut.model_fields}) for f in data["findings"]]
+        return {
+            "findings": found,
+            "finding_total": int(data["total"]),
+            "findings_not_shown": int((data.get("not_shown") or {}).get("environment", 0)),
+        }
+    except (ValueError, KeyError, TypeError):
+        return {}
+
+
 def _full(run: AgentRun, steps: list[AgentStep]) -> RunResponse:
     return RunResponse(
         **_summary(run).model_dump(),
@@ -122,6 +151,7 @@ def _full(run: AgentRun, steps: list[AgentStep]) -> RunResponse:
                 input_tokens=s.input_tokens,
                 output_tokens=s.output_tokens,
                 latency_ms=s.latency_ms,
+                **_findings(s),
             )
             for s in steps
         ],

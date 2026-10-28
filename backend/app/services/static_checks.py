@@ -20,7 +20,7 @@ import tempfile
 import tomllib
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,9 @@ from app.domain.patch import path_problem
 from app.services.workspace_export import REPO_ROOT
 
 MAX_MESSAGE_CHARS = 300
-RUFF_RULES = "E,F,B"
+# E9 (syntax/IO errors) and all F rules (undefined names, unused imports...). Style rules (E, B) are
+# not actionable for the model: B008 even flags the normal FastAPI `Depends(...)` default.
+RUFF_RULES = "E9,F"
 RUFF_IGNORE = "E501"
 MYPY_CONFIG = """[mypy]
 ignore_missing_imports = True
@@ -60,6 +62,14 @@ TSC_FLAGS = (
 )
 # Missing third-party modules and JSX typings only mean "nothing was installed": not findings.
 TSC_NOISE = frozenset({"TS7016", "TS7026", "TS2875"})
+# mypy findings that only mean "a module is not installed / not in the draft", not a code defect.
+MYPY_ENVIRONMENT_CODES = frozenset({"import-not-found", "import-untyped", "import"})
+_MYPY_ENVIRONMENT_MESSAGE = re.compile(
+    r"^(Cannot find implementation or library stub|Skipping analyzing|Library stubs not installed"
+    r'|Module "[^"]*" has no attribute|Name "[^"]*" already defined \(possible cyclic)'
+)
+CATEGORY_CODE = "code"
+CATEGORY_ENVIRONMENT = "environment"
 _MODULE = re.compile(r"Cannot find module '([^']*)'")
 _MYPY_LINE = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)? (?P<sev>error|warning): (?P<msg>.*?)"
@@ -77,6 +87,15 @@ class Finding:
     line: int
     code: str
     message: str
+
+    @property
+    def category(self) -> str:
+        """ "environment" for findings caused by what is not installed or not in the draft."""
+        if self.tool == "mypy" and (
+            self.code in MYPY_ENVIRONMENT_CODES or _MYPY_ENVIRONMENT_MESSAGE.match(self.message)
+        ):
+            return CATEGORY_ENVIRONMENT
+        return CATEGORY_CODE
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -100,9 +119,13 @@ Runner = Callable[[list[str], Path, Mapping[str, str], float], CommandResult]
 
 @dataclass
 class CheckReport:
+    """`findings` holds only actionable findings (capped); everything else is counted."""
+
     findings: list[Finding]
-    total: int
+    total: int  # actionable findings before the cap
     tools: dict[str, str]
+    by_rule: dict[str, int] = field(default_factory=dict)  # "tool:code" -> count, all findings
+    environment: int = 0  # findings caused by missing packages/modules, not by the code
 
     @property
     def truncated(self) -> bool:
@@ -114,6 +137,8 @@ class CheckReport:
             "total": self.total,
             "truncated": self.truncated,
             "tools": self.tools,
+            "by_rule": dict(sorted(self.by_rule.items())),
+            "not_shown": {"environment": self.environment},
         }
 
 
@@ -219,8 +244,18 @@ class StaticChecker:
                     tools["tsc"] = "skipped_no_files"
         else:
             tools["ruff"] = tools["mypy"] = tools["tsc"] = "skipped_no_files"
-        found.sort(key=lambda f: (f.file, f.line, f.tool, f.code))
-        return CheckReport(found[:MAX_FINDINGS], len(found), tools)
+        by_rule: dict[str, int] = {}
+        for f in found:
+            by_rule[f"{f.tool}:{f.code}"] = by_rule.get(f"{f.tool}:{f.code}", 0) + 1
+        actionable = [f for f in found if f.category == CATEGORY_CODE]
+        actionable.sort(key=lambda f: (f.file, f.line, f.tool, f.code))
+        return CheckReport(
+            actionable[:MAX_FINDINGS],
+            len(actionable),
+            tools,
+            by_rule,
+            len(found) - len(actionable),
+        )
 
     # ---- plumbing --------------------------------------------------------------------------
 

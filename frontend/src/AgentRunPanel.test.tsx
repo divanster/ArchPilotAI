@@ -42,6 +42,9 @@ function run(over: Partial<AgentRun> = {}): AgentRun {
         input_tokens: 100,
         output_tokens: 20,
         latency_ms: 5,
+        findings: [],
+        finding_total: null,
+        findings_not_shown: 0,
       },
     ],
     ...over,
@@ -158,6 +161,9 @@ describe("AgentRunPanel", () => {
               input_tokens: 1,
               output_tokens: 1,
               latency_ms: 1,
+              findings: [],
+              finding_total: null,
+              findings_not_shown: 0,
             },
           ],
         }),
@@ -195,5 +201,48 @@ describe("AgentRunPanel", () => {
     });
     expect(await screen.findByText("running")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("lists the findings of a static check and what was left out", async () => {
+    setup((url) => {
+      if (url.endsWith("/agent-runs"))
+        return json([run({ status: "finished" })]);
+      return json(
+        run({
+          status: "stopped",
+          stop_reason: "not_converging",
+          steps: [
+            {
+              step_no: 1,
+              action: "run_static_checks",
+              path: null,
+              status: "ok",
+              error_code: null,
+              result_summary: "3 finding(s)",
+              input_tokens: 1,
+              output_tokens: 1,
+              latency_ms: 1,
+              findings: [
+                {
+                  tool: "ruff",
+                  file: "src/a.py",
+                  line: 7,
+                  code: "F401",
+                  message: "os imported but unused",
+                },
+              ],
+              finding_total: 3,
+              findings_not_shown: 4,
+            },
+          ],
+        }),
+      );
+    });
+    expect(await screen.findByText("src/a.py:7")).toBeTruthy();
+    expect(screen.getByText("ruff F401")).toBeTruthy();
+    expect(screen.getByText(/os imported but unused/)).toBeTruthy();
+    expect(screen.getByText(/2 more not shown/)).toBeTruthy();
+    expect(screen.getByText(/4 environment finding/)).toBeTruthy();
+    expect(screen.getByText(/not_converging/)).toBeTruthy();
   });
 });
