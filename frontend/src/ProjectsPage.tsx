@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ProjectDetails, { type ProjectSection } from "./ProjectDetails";
 import ProjectForm from "./ProjectForm";
 import {
@@ -10,7 +10,59 @@ import {
   StatusBadge,
 } from "./ui";
 import { useProjectList } from "./useProjectList";
-import { createProject } from "./api";
+import { createProject, listDocuments, listProposals, listRequirements } from "./api";
+import { getLastSection, setActiveProject } from "./activeProject";
+import { navigate } from "./routes";
+
+interface Stats {
+  documents: number | null;
+  requirements: number | null;
+  architecture: string | null;
+}
+
+/** Counts shown on a project card; any lookup that fails shows "—" instead of a guess. */
+function ProjectStats({ projectId }: { projectId: string }) {
+  const [stats, setStats] = useState<Stats | null>(null);
+  useEffect(() => {
+    let active = true;
+    const count = (p: Promise<unknown>) =>
+      p.then((r) => (Array.isArray(r) ? r.length : null)).catch(() => null);
+    Promise.all([
+      count(listDocuments(projectId)),
+      count(listRequirements(projectId)),
+      listProposals(projectId)
+        .then((list) => {
+          if (!Array.isArray(list)) return null;
+          if (list.length === 0) return "none";
+          const latest = [...list].sort((a, b) => b.version - a.version)[0];
+          return `V${latest.version} ${latest.status}`;
+        })
+        .catch(() => null),
+    ]).then(([documents, requirements, architecture]) => {
+      if (active) setStats({ documents, requirements, architecture });
+    });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
+  const n = (v: number | null | undefined) => (v == null ? "—" : String(v));
+  return (
+    <dl className="card-stats" aria-label="Project summary">
+      <div>
+        <dt>Documents</dt>
+        <dd>{n(stats?.documents)}</dd>
+      </div>
+      <div>
+        <dt>Requirements</dt>
+        <dd>{n(stats?.requirements)}</dd>
+      </div>
+      <div>
+        <dt>Architecture</dt>
+        <dd>{stats?.architecture ?? "—"}</dd>
+      </div>
+    </dl>
+  );
+}
 
 interface Props {
   initialSelectedId?: string | null;
@@ -78,9 +130,24 @@ export default function ProjectsPage({
                   <StatusBadge status={p.status} />
                 </div>
                 <p className="card-desc">{p.description ?? "No description"}</p>
-                <span className="card-meta">
-                  Updated {new Date(p.updated_at).toLocaleDateString()}
-                </span>
+                <ProjectStats projectId={p.id} />
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <span className="card-meta">
+                    Updated {new Date(p.updated_at).toLocaleDateString()}
+                  </span>
+                  <button
+                    type="button"
+                    className="primary"
+                    aria-label={`Open ${p.name}`}
+                    onClick={() => {
+                      const section = getLastSection(p.id);
+                      setActiveProject(p.id, section);
+                      navigate(section, p.id);
+                    }}
+                  >
+                    Open
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

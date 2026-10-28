@@ -40,6 +40,19 @@ describe("ProjectsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("Open sets the active project and goes to the last section", async () => {
+    localStorage.clear();
+    fetchMock.mockResolvedValueOnce(json([base]));
+    render(<ProjectsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Alpha" }));
+    expect(localStorage.getItem("archpilot.activeProject")).toBe(base.id);
+    expect(window.location.hash).toBe(`#/architecture/${base.id}`);
+
+    localStorage.setItem(`archpilot.lastSection.${base.id}`, "documents");
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+    expect(window.location.hash).toBe(`#/documents/${base.id}`);
+  });
+
   it("shows an error and retries", async () => {
     fetchMock.mockRejectedValueOnce(new Error("Network down"));
     fetchMock.mockResolvedValueOnce(json([]));
@@ -122,7 +135,9 @@ describe("ProjectsPage", () => {
 
     expect(await screen.findByText("active", { selector: "section[aria-label='Project details'] .badge" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
-    const [url, init] = fetchMock.mock.calls[1];
+    const [url, init] = fetchMock.mock.calls.find(
+      (c) => c[1]?.method === "PATCH",
+    )!;
     expect(url).toMatch(new RegExp(`/api/projects/${base.id}$`));
     expect(init.method).toBe("PATCH");
   });
@@ -133,7 +148,9 @@ describe("ProjectsPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const deletes = () =>
+      fetchMock.mock.calls.filter((c) => c[1]?.method === "DELETE");
+    expect(deletes()).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Keep project" }));
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
 
@@ -144,7 +161,7 @@ describe("ProjectsPage", () => {
     await waitFor(() =>
       expect(screen.getByText("No projects yet.")).toBeInTheDocument(),
     );
-    expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
+    expect(deletes()).toHaveLength(1);
   });
 
   it("shows an error when delete fails", async () => {

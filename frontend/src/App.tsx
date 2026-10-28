@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchHealth, type HealthResponse } from "./api";
+import { fetchHealth, listProjects, type HealthResponse, type Project } from "./api";
 import AIPlayground from "./AIPlayground";
 import AppShell, { type BackendState } from "./AppShell";
 import Dashboard from "./Dashboard";
@@ -8,12 +8,47 @@ import ProjectScopedPage from "./ProjectScopedPage";
 import ProjectsPage from "./ProjectsPage";
 import ArchitectureSection from "./ArchitectureSection";
 import RequirementsSection from "./RequirementsSection";
+import { PROJECT_PAGES, getActiveProject, setActiveProject } from "./activeProject";
 import { navigate, useRoute } from "./routes";
+
+/** Project list for the shell's name and switcher; only fetched once a project is in play. */
+function useProjects(enabled: boolean) {
+  const [projects, setProjects] = useState<Project[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    listProjects()
+      .then((all) => active && setProjects(Array.isArray(all) ? all : []))
+      .catch(() => active && setProjects([]));
+    return () => {
+      active = false;
+    };
+  }, [enabled]);
+  return projects;
+}
 
 export default function App() {
   const [state, setState] = useState<BackendState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(getActiveProject);
   const route = useRoute();
+  const scoped = (PROJECT_PAGES as string[]).includes(route.page);
+  const routeId = route.arg && route.arg !== "new" ? route.arg : undefined;
+
+  // A deep link such as #/architecture/<id> makes that project the active one.
+  useEffect(() => {
+    if (scoped && routeId) {
+      setActiveProject(routeId, route.page as (typeof PROJECT_PAGES)[number]);
+      setActiveId(routeId);
+    }
+  }, [scoped, routeId, route.page]);
+
+  const scopedId = scoped ? (routeId ?? activeId ?? undefined) : undefined;
+  const projectId = scoped ? scopedId : route.page === "projects" ? routeId : undefined;
+  const navProjectId = projectId ?? activeId ?? undefined;
+  const projects = useProjects(!!navProjectId);
+  const projectName =
+    projects.find((p) => p.id === projectId)?.name ?? null;
 
   useEffect(() => {
     let active = true;
@@ -31,7 +66,17 @@ export default function App() {
   }, []);
 
   return (
-    <AppShell current={route.page} backend={state} database={health?.database}>
+    <AppShell
+      current={route.page}
+      backend={state}
+      database={health?.database}
+      environment={health?.environment}
+      version={health?.version}
+      projectId={projectId}
+      navProjectId={navProjectId}
+      projectName={projectName}
+      projects={projects}
+    >
       {state === "unexpected" && (
         <p role="alert">
           The service at the configured API address is not the ArchPilotAI
@@ -68,7 +113,7 @@ export default function App() {
           page="documents"
           title="Documents"
           subtitle="Upload .txt or .md files and preview their text."
-          projectId={route.arg}
+          projectId={scopedId}
         >
           {(id) => (
             <DocumentsSection key={id} projectId={id} openDocumentId={route.sub} />
@@ -80,7 +125,7 @@ export default function App() {
           page="requirements"
           title="Requirements"
           subtitle="AI-proposed requirements with their source quotes, awaiting human review."
-          projectId={route.arg}
+          projectId={scopedId}
         >
           {(id) => <RequirementsSection key={id} projectId={id} />}
         </ProjectScopedPage>
@@ -90,9 +135,17 @@ export default function App() {
           page="architecture"
           title="Architecture"
           subtitle="Draft architecture proposals generated from confirmed requirements, pending human review."
-          projectId={route.arg}
+          projectId={scopedId}
+          projectHeader
         >
-          {(id) => <ArchitectureSection key={id} projectId={id} />}
+          {(id, project) => (
+            <ArchitectureSection
+              key={id}
+              projectId={id}
+              projectName={project?.name}
+              projectDescription={project?.description}
+            />
+          )}
         </ProjectScopedPage>
       )}
       {route.page === "playground" && <AIPlayground />}

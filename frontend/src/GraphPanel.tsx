@@ -17,8 +17,17 @@ const KINDS = [
   "risk",
   "assumption",
   "open_question",
-  "passage",
 ];
+
+const KIND_BADGE: Record<string, string> = {
+  requirement: "badge-req",
+  component: "badge-ok",
+  decision: "badge-ai",
+  risk: "badge-bad",
+  assumption: "badge-warn",
+  open_question: "badge-pref",
+  passage: "badge-type",
+};
 
 export default function GraphPanel({
   projectId,
@@ -110,17 +119,18 @@ export default function GraphPanel({
       ) : (
         <>
           <div className="row">
-            <span className="muted">
-              {graph.node_count} nodes · {graph.edge_count} edges
+            <span className="sub">
+              <span className="badge badge-ok">{graph.node_count} nodes</span>{" "}
+              <span className="badge badge-pref">{graph.edge_count} edges</span>
               {graph.built_at ? ` · built ${graph.built_at}` : ""}
             </span>
             <button type="button" disabled={busy} onClick={() => void build()}>
               Rebuild graph
             </button>
           </div>
-          {graph.truncated && <p role="status">Large graph: only the first part is shown.</p>}
+          {graph.truncated && <p className="note" role="status">Large graph: only the first part is shown.</p>}
           {skipped !== null && skipped > 0 && (
-            <p role="status">
+            <p className="note" role="status">
               {skipped} reference(s) to requirements that are no longer confirmed were left out.
             </p>
           )}
@@ -129,7 +139,7 @@ export default function GraphPanel({
           {orphans.length === 0 ? (
             <p className="muted">None.</p>
           ) : (
-            <ul aria-label="Orphan requirements">
+            <ul className="edge-list" aria-label="Orphan requirements">
               {orphans.map((o) => (
                 <li key={o.id}>{o.label}</li>
               ))}
@@ -137,36 +147,41 @@ export default function GraphPanel({
           )}
 
           <h4>Nodes</h4>
-          {KINDS.map((kind) => {
-            const list = graph.nodes.filter((n) => n.kind === kind);
-            if (list.length === 0) return null;
-            return (
-              <section key={kind} aria-label={`Nodes: ${kind}`}>
-                <h5>
-                  {kind.replace("_", " ")} ({list.length})
-                </h5>
-                <ul>
-                  {list.map((n) => (
-                    <li key={n.id}>
-                      <button
-                        type="button"
-                        aria-pressed={selected === n.id}
-                        onClick={() => void select(n.id)}
-                      >
-                        {n.label}
-                      </button>{" "}
-                      <span className="muted">{n.source_ref}</span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          })}
+          <div className="kind-grid">
+            {KINDS.map((kind) => {
+              const list = graph.nodes.filter((n) => n.kind === kind);
+              if (list.length === 0) return null;
+              return (
+                <section key={kind} className="kind-card" aria-label={`Nodes: ${kind}`}>
+                  <h5>
+                    <span className={`badge ${KIND_BADGE[kind]}`}>
+                      {kind.replace("_", " ")} ({list.length})
+                    </span>
+                  </h5>
+                  <ul>
+                    {list.map((n) => (
+                      <li key={n.id}>
+                        <button
+                          type="button"
+                          className="tab"
+                          aria-pressed={selected === n.id}
+                          onClick={() => void select(n.id)}
+                        >
+                          {n.label}
+                        </button>
+                        <span className="src">{n.source_ref}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              );
+            })}
+          </div>
 
           {impact && (
             <section aria-label="Impact">
               <h4>Impact of {impact.root.label}</h4>
-              <div className="row" role="group" aria-label="Impact mode">
+              <div className="seg" role="group" aria-label="Impact mode">
                 {(["direct", "transitive"] as ImpactMode[]).map((m) => (
                   <button
                     key={m}
@@ -178,16 +193,16 @@ export default function GraphPanel({
                   </button>
                 ))}
               </div>
-              <p className="hint">
+              <p className="note">
                 What depends on this node, up to depth {impact.max_depth}. Paths can pass through a
                 shared requirement, so check each link before relying on it.
               </p>
               {impact.items.length === 0 ? (
                 <p className="muted">Nothing depends on this node.</p>
               ) : (
-                <ul aria-label="Impacted nodes">
+                <ul className="edge-list" aria-label="Impacted nodes">
                   {impact.items.map((i) => (
-                    <li key={i.node.id}>
+                    <li className="hit" key={i.node.id}>
                       [{i.node.kind}] {i.node.label} — depth {i.depth}, {i.via_kind} →{" "}
                       {label(i.reached_from)} (from {i.via_evidence})
                       {i.via_hub && " — via a shared hub"}
@@ -196,7 +211,7 @@ export default function GraphPanel({
                 </ul>
               )}
               {impact.hubs_not_expanded.length > 0 && (
-                <ul aria-label="Hubs not expanded">
+                <ul className="edge-list" aria-label="Hubs not expanded">
                   {impact.hubs_not_expanded.map((h) => (
                     <li key={h.node.id}>
                       {h.node.label} — not expanded: shared by {h.degree} items
@@ -204,12 +219,12 @@ export default function GraphPanel({
                   ))}
                 </ul>
               )}
-              {impact.truncated && <p role="status">More dependents exist beyond the limit.</p>}
+              {impact.truncated && <p className="note" role="status">More dependents exist beyond the limit.</p>}
             </section>
           )}
 
           <h4>Edges</h4>
-          <ul aria-label="Edges">
+          <ul className="edge-list" aria-label="Edges">
             {graph.edges.map((e) => (
               <li key={e.id}>
                 {label(e.source_id)} —{e.kind}→ {label(e.target_id)}{" "}

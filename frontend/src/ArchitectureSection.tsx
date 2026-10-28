@@ -1,6 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ArchitectureDiagram from "./ArchitectureDiagram";
 import GraphPanel from "./GraphPanel";
+import ProjectHeader from "./ProjectHeader";
+import { GENERATE_REQUEST, announceGenerating } from "./events";
 import { StatusBadge } from "./ui";
 import { hrefFor } from "./routes";
 import {
@@ -20,6 +30,7 @@ import {
   type PassageSource,
   type RevisionOutcome,
   type RetrievalInfo,
+  type StackItem,
   type ProposalPatch,
   type ProposalSummary,
 } from "./api";
@@ -97,19 +108,23 @@ function ReviewFindings({
     <section className="card" aria-labelledby="review-findings" data-testid="review-findings">
       <h3 id="review-findings">Review findings</h3>
       {revisedFrom != null && (
-        <p data-testid="revised-from">
+        <p className="compare" data-testid="revised-from">
           Revised from Version {revisedFrom}
           {findingsBefore != null && (
             <>
-              {" "}· Findings: <span data-testid="findings-change">{findingsBefore} → {after}</span>
+              {" "}· Findings: <span className="badge badge-warn" data-testid="findings-change">{findingsBefore} → {after}</span>
             </>
           )}
         </p>
       )}
       {revisedFrom != null && outcome && (
-        <ul data-testid="revision-outcome" aria-label="Revision outcome by finding type">
+        <ul className="outcome-list" data-testid="revision-outcome" aria-label="Revision outcome by finding type">
           {Object.entries(outcome.rules).map(([rule, o]) => (
-            <li key={rule} data-testid="outcome-rule">
+            <li
+              key={rule}
+              className={`find ${o.still_present > 0 || (o.introduced ?? 0) > 0 ? "outcome-warn" : "outcome-ok"}`}
+              data-testid="outcome-rule"
+            >
               {RULE_LABELS[rule] ?? rule}:{" "}
               {o.before > 0 && <>{o.resolved} resolved, {o.still_present} still present</>}
               {(o.introduced ?? 0) > 0 && (
@@ -119,7 +134,7 @@ function ReviewFindings({
           ))}
         </ul>
       )}
-      <p className="muted">
+      <p className="note">
         Advisory only: automatic checks for a person to weigh. They never block
         approval.
       </p>
@@ -127,16 +142,19 @@ function ReviewFindings({
         <p data-testid="lint-empty">No findings.</p>
       ) : (
         groups.map((g) => (
-          <div key={g.label} data-testid="lint-group">
+          <div key={g.label} className="finding-group" data-testid="lint-group">
             <h4>
               {g.label} ({g.items.length})
             </h4>
             <ul>
               {g.items.map((f, i) => (
-                <li key={`${f.rule}-${f.path ?? ""}-${i}`} data-testid="lint-finding">
-                  {f.message}
-                  {f.path && <> — <code>{f.path}</code></>}
-                  {f.terms.length > 0 && <> ({f.terms.join(", ")})</>}
+                <li className="find" key={`${f.rule}-${f.path ?? ""}-${i}`} data-testid="lint-finding">
+                  <span className="ico i-w" aria-hidden="true">!</span>
+                  <span>
+                    {f.message}
+                    {f.path && <> — <code>{f.path}</code></>}
+                    {f.terms.length > 0 && <> ({f.terms.join(", ")})</>}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -144,7 +162,7 @@ function ReviewFindings({
         ))
       )}
       {canRevise && after > 0 && (
-        <button type="button" disabled={revising} onClick={onRevise}>
+        <button type="button" className="full" disabled={revising} onClick={onRevise}>
           {revising ? "Revising…" : "Revise with findings"}
         </button>
       )}
@@ -230,15 +248,25 @@ function CoverageMatrix({
   }
   const counts = { addressed: 0, partial: 0, unresolved: 0 };
   for (const e of matrix) counts[e.status] += 1;
+  const pct = matrix.length ? Math.round((counts.addressed / matrix.length) * 100) : 0;
   return (
     <div className="card">
       <h3>Requirement coverage</h3>
-      <p className="muted" data-testid="coverage-summary">
-        {counts.addressed} addressed, {counts.partial} partial, {counts.unresolved} unresolved.
-        This matrix is the model's own claim; a person must review it.
-      </p>
-      <div className="diagram-wrap">
-        <table aria-label="Requirement coverage">
+      <div data-testid="coverage-summary">
+        <p className="sub">
+          {counts.addressed} addressed, {counts.partial} partial, {counts.unresolved} unresolved.
+          This matrix is the model's own claim; a person must review it.
+        </p>
+        <div
+          className="prog"
+          role="img"
+          aria-label={`${counts.addressed} of ${matrix.length} requirements addressed`}
+        >
+          <span style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table" aria-label="Requirement coverage">
           <thead>
             <tr>
               <th>Requirement</th>
@@ -263,7 +291,7 @@ function CoverageMatrix({
                     {COVERAGE_LABELS[e.status]}
                   </span>
                 </td>
-                <td>{e.gap ?? ""}</td>
+                <td>{e.gap ? e.gap : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -300,10 +328,12 @@ function DecisionCard({
   decision,
   titles,
   heading,
+  showCitations = true,
 }: {
   decision: Decision;
   titles: Titles;
   heading?: string;
+  showCitations?: boolean;
 }) {
   return (
     <li className="decision">
@@ -320,8 +350,60 @@ function DecisionCard({
         <TextList label="Risks" items={decision.risks} />
       </dl>
       <Refs ids={decision.supporting_requirement_ids} titles={titles} />
-      <Citations ids={decision.source_passage_ids} />
+      {showCitations && <Citations ids={decision.source_passage_ids} />}
     </li>
+  );
+}
+
+function StackTable({ items, titles }: { items: StackItem[]; titles: Titles }) {
+  return (
+    <div className="table-wrap">
+      <table className="data-table" aria-label="Technology stack table">
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Choice</th>
+            <th>Origin</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((s, i) => (
+            <tr key={i} data-testid="stack-row">
+              <td>{s.layer}</td>
+              <td>
+                <strong>{s.technology}</strong>
+              </td>
+              <td>
+                <span className={`badge origin-${s.origin}`}>{ORIGIN_LABELS[s.origin]}</span>
+              </td>
+              <td className="evidence">
+                {s.supporting_requirement_ids.length > 0 && (
+                  <div>
+                    <span className="context-label">Requirement covered</span>
+                    {s.supporting_requirement_ids
+                      .map((id) => titles.get(id) ?? "Unknown requirement")
+                      .join("; ")}
+                  </div>
+                )}
+                {(s.source_passage_ids ?? []).length > 0 && (
+                  <div>
+                    {/* Passage text is not stored with the proposal, so it cannot be shown to
+                        contain the technology; it is context, never proof of the choice. */}
+                    <span className="context-label">Context passage</span>
+                    <Citations ids={s.source_passage_ids} />
+                  </div>
+                )}
+                {(s.source_passage_ids ?? []).length === 0 &&
+                  s.supporting_requirement_ids.length === 0 && (
+                    <span className="muted">No evidence cited</span>
+                  )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -351,12 +433,14 @@ function ProposalView({
   proposal,
   titles,
   projectId,
+  versionTabs,
   onPatch,
   onRevise,
 }: {
   proposal: ArchitectureProposal;
   projectId: string;
   titles: Titles;
+  versionTabs: ReactNode;
   onPatch: (patch: ProposalPatch) => Promise<void>;
   onRevise: () => Promise<void>;
 }) {
@@ -424,15 +508,18 @@ function ProposalView({
 
   return (
     <Sources.Provider value={{ projectId, sources }}>
-    <div className="stack" data-testid="proposal">
+    <div className="arch-grid" data-testid="proposal">
+    <div className="arch-main">
       <div className="card">
-        <div className="row">
+        {versionTabs}
+        <div className="title-row">
+          {!editing && <h2>{proposal.title}</h2>}
           <StatusBadge status={proposal.status} testId="proposal-status" />
-          <span className="muted">
-            Version {proposal.version} · {proposal.provider}/{proposal.model} ·{" "}
-            {proposal.prompt_version}
-          </span>
         </div>
+        <p className="sub">
+          Version {proposal.version} · {proposal.provider}/{proposal.model} ·{" "}
+          {proposal.prompt_version}
+        </p>
         {editing ? (
           <div className="stack" style={{ marginTop: "var(--space-3)" }}>
             <label>
@@ -470,10 +557,7 @@ function ProposalView({
             </div>
           </div>
         ) : (
-          <>
-            <h2 style={{ marginTop: "var(--space-3)" }}>{proposal.title}</h2>
-            <p>{proposal.summary}</p>
-          </>
+          <p>{proposal.summary}</p>
         )}
         {stale.length > 0 && (
           <p role="alert">
@@ -482,46 +566,9 @@ function ProposalView({
           </p>
         )}
         {error && <p role="alert">{error}</p>}
-        {!editing && (
-          <ReviewFindings
-            report={proposal.lint_findings}
-            revisedFrom={proposal.revised_from_version}
-            findingsBefore={proposal.revised_from_findings}
-            outcome={proposal.revised_outcome}
-            canRevise={draft}
-            revising={busy}
-            onRevise={() => void revise()}
-          />
-        )}
-        {!editing && (
-          <div className="row">
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || !draft || stale.length > 0}
-              onClick={() => void run({ status: "approved" })}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="danger"
-              disabled={busy || !draft}
-              onClick={() => void run({ status: "rejected" })}
-            >
-              Reject
-            </button>
-            <button type="button" disabled={busy || !draft} onClick={() => setEditing(true)}>
-              Edit
-            </button>
-          </div>
-        )}
-        {!draft && (
-          <p className="hint">Reviewed proposals are read-only. Generate a new version to change them.</p>
-        )}
       </div>
 
-      <div className="row" role="tablist" aria-label="Proposal views">
+      <div className="view-tabs" role="tablist" aria-label="Proposal views">
         <button
           type="button"
           role="tab"
@@ -548,7 +595,6 @@ function ProposalView({
       </div>
 
       <RetrievalNote info={c.retrieval} />
-      <CoverageMatrix matrix={c.coverage_matrix} titles={titles} elements={elements} />
 
       <div className="card">
         <h3>Component diagram</h3>
@@ -557,17 +603,24 @@ function ProposalView({
 
       <div className="card">
         <h3>Technology stack</h3>
-        <ul className="stack" aria-label="Technology stack">
-          {c.recommended_stack.map((s, i) => (
-            <DecisionCard
-              key={i}
-              decision={s}
-              titles={titles}
-              heading={`${s.layer}: ${s.technology}`}
-            />
-          ))}
-        </ul>
+        <StackTable items={c.recommended_stack} titles={titles} />
+        <details className="details-block">
+          <summary>Rationale, alternatives and risks per choice</summary>
+          <ul className="stack" aria-label="Technology stack">
+            {c.recommended_stack.map((s, i) => (
+              <DecisionCard
+                key={i}
+                decision={s}
+                titles={titles}
+                heading={`${s.layer}: ${s.technology}`}
+                showCitations={false}
+              />
+            ))}
+          </ul>
+        </details>
       </div>
+
+      <CoverageMatrix matrix={c.coverage_matrix} titles={titles} elements={elements} />
 
       <div className="card">
         <h3>Components</h3>
@@ -658,14 +711,88 @@ function ProposalView({
       </>
       )}
     </div>
+    <aside className="arch-side" aria-label="Review and decision">
+      {!editing && (
+        <ReviewFindings
+          report={proposal.lint_findings}
+          revisedFrom={proposal.revised_from_version}
+          findingsBefore={proposal.revised_from_findings}
+          outcome={proposal.revised_outcome}
+          canRevise={draft}
+          revising={busy}
+          onRevise={() => void revise()}
+        />
+      )}
+      {!editing && (
+        <div className="card">
+          <h3>Decision</h3>
+          <p className="sub">Approving records a baseline. It does not certify the design.</p>
+          <label className="side-label" htmlFor="review-note">
+            Review note
+          </label>
+          <textarea
+            id="review-note"
+            className="full"
+            disabled
+            aria-describedby="review-note-hint"
+          />
+          <p id="review-note-hint" className="hint">
+            Saved notes coming soon
+          </p>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="approve"
+              disabled={busy || !draft || stale.length > 0}
+              onClick={() => void run({ status: "approved" })}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="danger"
+              disabled={busy || !draft}
+              onClick={() => void run({ status: "rejected" })}
+            >
+              Reject
+            </button>
+            <button type="button" disabled={busy || !draft} onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          </div>
+          {!draft && (
+            <p className="hint">Reviewed proposals are read-only. Generate a new version to change them.</p>
+          )}
+        </div>
+      )}
+      <div className="card">
+        <h3>Next step</h3>
+        <p className="sub">
+          Trace requirements to components and decisions, and see what a change would affect.
+        </p>
+        <button type="button" className="full" onClick={() => setTab("graph")}>
+          Open knowledge graph →
+        </button>
+      </div>
+    </aside>
+    </div>
     </Sources.Provider>
   );
 }
 
-export default function ArchitectureSection({ projectId }: { projectId: string }) {
+export default function ArchitectureSection({
+  projectId,
+  projectName,
+  projectDescription,
+}: {
+  projectId: string;
+  projectName?: string | null;
+  projectDescription?: string | null;
+}) {
   const [summaries, setSummaries] = useState<ProposalSummary[] | null>(null);
   const [selected, setSelected] = useState<ArchitectureProposal | null>(null);
   const [titles, setTitles] = useState<Titles>(new Map());
+  const [confirmedCount, setConfirmedCount] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
@@ -685,6 +812,7 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
         listRequirements(projectId),
       ]);
       setTitles(new Map(reqs.map((r) => [r.id, r.title])));
+      setConfirmedCount(reqs.filter((r) => r.status === "confirmed").length);
       setSummaries(list);
       setSelected(list.length > 0 ? await getProposal(projectId, list[0].id) : null);
     } catch (e) {
@@ -698,19 +826,39 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
 
   async function handleGenerate() {
     setGenerating(true);
+    announceGenerating(true);
     setGenError(null);
     try {
       const created = await generateArchitecture(projectId);
       const reqs = await listRequirements(projectId);
       setTitles(new Map(reqs.map((r) => [r.id, r.title])));
+      setConfirmedCount(reqs.filter((r) => r.status === "confirmed").length);
       setSummaries((cur) => [created, ...(cur ?? [])]);
       setSelected(created);
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Generation failed");
     } finally {
       setGenerating(false);
+      announceGenerating(false);
     }
   }
+
+  // The top bar button asks this page to generate; the handler is read through a ref
+  // so the listener is registered once and never sees stale state.
+  const generateRef = useRef(handleGenerate);
+  generateRef.current = handleGenerate;
+  const busyRef = useRef(false);
+  busyRef.current = generating;
+  useEffect(() => {
+    const onRequest = () => {
+      if (!busyRef.current) void generateRef.current();
+    };
+    window.addEventListener(GENERATE_REQUEST, onRequest);
+    return () => {
+      window.removeEventListener(GENERATE_REQUEST, onRequest);
+      announceGenerating(false);
+    };
+  }, []);
 
   async function handlePatch(patch: ProposalPatch) {
     if (!selected) return;
@@ -726,24 +874,59 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
     setSelected(created);
   }
 
+  const versionTabs =
+    summaries && summaries.length > 0 ? (
+      <ul className="arch-tabs" aria-label="Proposal versions">
+        {summaries.map((s) => (
+          <li key={s.id}>
+            <button
+              type="button"
+              className="tab"
+              aria-pressed={selected?.id === s.id}
+              onClick={() =>
+                void open(s.id).catch((e) =>
+                  setLoadError(e instanceof Error ? e.message : "Failed to load proposal"),
+                )
+              }
+            >
+              V{s.version}
+              {s.revised_from_version != null && ` · revised from V${s.revised_from_version}`}
+              <span className="visually-hidden"> ({s.status})</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    ) : null;
+
   return (
     <section aria-label="Architecture" className="stack">
-      <div className="card">
-        <h2>Generate architecture</h2>
-        <p className="muted">
-          Proposals are generated from confirmed requirements only. Every
-          proposal starts as a draft and must be reviewed by a person.
-        </p>
-        <button
-          type="button"
-          className="primary"
-          disabled={generating}
-          onClick={() => void handleGenerate()}
-        >
-          {generating ? "Generating…" : "Generate architecture"}
-        </button>
-        {genError && <p role="alert">{genError}</p>}
-      </div>
+      <ProjectHeader
+        projectId={projectId}
+        name={projectName}
+        description={projectDescription}
+        proposals={summaries ?? []}
+        confirmedCount={confirmedCount}
+      />
+      {summaries && summaries.length > 0 ? (
+        genError && <p role="alert">{genError}</p>
+      ) : (
+        <div className="card">
+          <h2>Generate architecture</h2>
+          <p className="sub">
+            Proposals are generated from confirmed requirements only. Every
+            proposal starts as a draft and must be reviewed by a person.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            disabled={generating}
+            onClick={() => void handleGenerate()}
+          >
+            {generating ? "Generating…" : "Generate architecture"}
+          </button>
+          {genError && <p role="alert">{genError}</p>}
+        </div>
+      )}
 
       {loadError && (
         <div role="alert">
@@ -759,31 +942,13 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
       {summaries && summaries.length === 0 && (
         <p className="state">No architecture proposals yet.</p>
       )}
-      {summaries && summaries.length > 0 && (
-        <ul className="arch-tabs" aria-label="Proposal versions">
-          {summaries.map((s) => (
-            <li key={s.id}>
-              <button
-                type="button"
-                aria-pressed={selected?.id === s.id}
-                onClick={() =>
-                  void open(s.id).catch((e) =>
-                    setLoadError(e instanceof Error ? e.message : "Failed to load proposal"),
-                  )
-                }
-              >
-                Version {s.version} ({s.status})
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
       {selected && (
         <ProposalView
           key={selected.id}
           proposal={selected}
           titles={titles}
           projectId={projectId}
+          versionTabs={versionTabs}
           onPatch={handlePatch}
           onRevise={handleRevise}
         />

@@ -167,8 +167,13 @@ export default function ArchitectureDiagram({
   const placed = placeEdges(valid, pos, width);
 
   return (
-    <div>
-      <div className="diagram-wrap">
+    <div className="diagram-canvas">
+      <div
+        className="diagram-wrap"
+        role="region"
+        aria-label="Diagram canvas"
+        tabIndex={0}
+      >
         <svg
           role="img"
           aria-label="Component diagram"
@@ -214,7 +219,11 @@ export default function ArchitectureDiagram({
           {nodes.map((n) => {
             const p = pos.get(n.id)!;
             return (
-              <g className="diagram-node" key={n.id} data-testid="diagram-node">
+              <g
+                className={`diagram-node type-${n.type.replace(/[^a-z0-9_-]/gi, "")}`}
+                key={n.id}
+                data-testid="diagram-node"
+              >
                 <rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx={8} />
                 <text x={p.x + NODE_W / 2} y={p.y + 22} textAnchor="middle">
                   {n.name}
@@ -227,13 +236,16 @@ export default function ArchitectureDiagram({
           })}
         </svg>
       </div>
-      <ul aria-label="Diagram relationships" className="muted">
-        {valid.map((e, i) => (
-          <li key={i}>
-            {names.get(e.source)} {e.relationship} {names.get(e.target)}
-          </li>
-        ))}
-      </ul>
+      <details className="details-block">
+        <summary>Text view</summary>
+        <ul aria-label="Diagram relationships" className="muted">
+          {valid.map((e, i) => (
+            <li key={i}>
+              {names.get(e.source)} {e.relationship} {names.get(e.target)}
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }

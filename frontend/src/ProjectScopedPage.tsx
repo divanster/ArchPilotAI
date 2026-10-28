@@ -1,68 +1,57 @@
-import { useId, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import type { Project } from "./api";
 import { EmptyState, ErrorState, LoadingState, PageHeader } from "./ui";
 import { useProjectList } from "./useProjectList";
-import { hrefFor, navigate, type Page } from "./routes";
+import { hrefFor, type Page } from "./routes";
 
 interface Props {
   page: Extract<Page, "documents" | "requirements" | "architecture">;
   title: string;
   subtitle: string;
+  /** The active project, from the URL or the last opened one. Chosen on the Projects page. */
   projectId?: string;
-  children: (projectId: string) => ReactNode;
+  /** The page shows its own project header (name, stepper) once a project is selected. */
+  projectHeader?: boolean;
+  children: (projectId: string, project: Project) => ReactNode;
 }
 
-/** Documents and requirements always belong to a project, so these pages start with a picker. */
+/** Documents, requirements and architecture belong to a project opened from the Projects page. */
 export default function ProjectScopedPage({
   page,
   title,
   subtitle,
   projectId,
+  projectHeader = false,
   children,
 }: Props) {
   const { projects, error, reload } = useProjectList();
-  const selectId = useId();
   const selected = projects?.find((p) => p.id === projectId) ?? null;
 
   return (
-    <section aria-label={title}>
-      <PageHeader title={title} subtitle={subtitle} />
-      {error && <ErrorState message={error} onRetry={() => void reload()} />}
-      {!error && projects === null && (
-        <LoadingState label="Loading projects…" />
+    <section aria-label={title} data-page={page}>
+      {!(projectHeader && selected) && (
+        <PageHeader title={title} subtitle={subtitle} />
       )}
-      {projects && projects.length === 0 && (
+      {!projectId && (
         <EmptyState>
-          <p>Create a project first.</p>
-          <a href={hrefFor("projects", "new")}>Create a project</a>
+          <p>No project is open.</p>
+          <a href={hrefFor("projects")}>Go to Projects to open one</a>
         </EmptyState>
       )}
-      {projects && projects.length > 0 && (
+      {projectId && error && <ErrorState message={error} onRetry={() => void reload()} />}
+      {projectId && !error && projects === null && (
+        <LoadingState label="Loading projects…" />
+      )}
+      {projectId && projects && !selected && (
         <>
-          <div className="card field" style={{ maxWidth: "28rem" }}>
-            <label htmlFor={selectId}>Project</label>
-            <select
-              id={selectId}
-              value={selected?.id ?? ""}
-              onChange={(e) => navigate(page, e.target.value || undefined)}
-            >
-              <option value="">Select a project…</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          {projectId && !selected && (
-            <ErrorState message="That project no longer exists." />
-          )}
-          {!projectId && <EmptyState>Choose a project to continue.</EmptyState>}
-          {selected && (
-            <div style={{ marginTop: "var(--space-4)" }}>
-              {children(selected.id)}
-            </div>
-          )}
+          <ErrorState message="That project no longer exists." />
+          <p>
+            <a href={hrefFor("projects")}>Go to Projects</a>
+          </p>
         </>
+      )}
+      {selected && (
+        <div style={{ marginTop: "var(--space-4)" }}>{children(selected.id, selected)}</div>
       )}
     </section>
   );

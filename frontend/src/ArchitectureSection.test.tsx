@@ -7,6 +7,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ArchitectureDiagram, { overlaps } from "./ArchitectureDiagram";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import ArchitectureSection from "./ArchitectureSection";
 import type { ArchitectureProposal, Decision } from "./api";
 
@@ -132,6 +134,29 @@ describe("ArchitectureSection", () => {
     expect(screen.getAllByTestId("diagram-edge")).toHaveLength(1);
   });
 
+  it("renders a stack table with origin badges and a disabled review note", async () => {
+    route([proposal()]);
+    render(<ArchitectureSection projectId={PID} />);
+    const table = await screen.findByRole("table", { name: "Technology stack table" });
+    expect(within(table).getByText("Required by client")).toBeInTheDocument();
+    const note = screen.getByLabelText("Review note");
+    expect(note).toBeDisabled();
+    expect(screen.getAllByText("Saved notes coming soon").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("derives the workflow stepper from stored data", async () => {
+    route([proposal({ status: "approved" })]);
+    render(<ArchitectureSection projectId={PID} projectName="Atlas" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Atlas" })).toBeInTheDocument();
+    const steps = within(screen.getByRole("list", { name: "Project workflow" })).getAllByRole(
+      "listitem",
+    );
+    expect(steps).toHaveLength(5);
+    await waitFor(() => expect(steps[2]).toHaveTextContent("V1 approved"));
+    expect(steps[2]).toHaveTextContent("(done)");
+    expect(steps[4]).toHaveTextContent("(locked)");
+  });
   describe("review findings", () => {
     const findings = {
       version: 1,
@@ -245,11 +270,11 @@ describe("ArchitectureSection", () => {
       expect(await screen.findByTestId("revised-from")).toHaveTextContent("Revised from Version 1");
       expect(screen.getByTestId("findings-change")).toHaveTextContent("5 → 2");
       expect(revises).toBe(1);
-      expect(screen.getByRole("button", { name: "Version 2 (draft)" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "V2 · revised from V1 (draft)" })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
-      expect(screen.getByRole("button", { name: "Version 1 (draft)" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "V1 (draft)" })).toBeInTheDocument();
     });
 
     it("shows an error and keeps the source when the revision fails", async () => {
@@ -429,7 +454,7 @@ describe("ArchitectureSection", () => {
     finish(json(created, 201));
     expect(await screen.findByText("Overview text")).toBeInTheDocument();
     expect(
-      within(screen.getByRole("list", { name: "Proposal versions" })).getByText(/Version 1/),
+      within(screen.getByRole("list", { name: "Proposal versions" })).getByText(/^V1/),
     ).toBeInTheDocument();
   });
 
@@ -607,7 +632,36 @@ describe("cited passages", () => {
     expect(screen.queryByRole("link", { name: /notes/ })).toBeNull();
   });
 });
+const css = readFileSync(resolve(__dirname, "styles.css"), "utf8");
+
 describe("ArchitectureDiagram", () => {
+  it("has no dashed border or outline on its frame when not focused", () => {
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.head.appendChild(style);
+    try {
+      const { container } = render(
+        <ArchitectureDiagram
+          nodes={[{ id: "a", name: "A", type: "service" }]}
+          edges={[]}
+        />,
+      );
+      const wrap = screen.getByRole("region", { name: "Diagram canvas" });
+      expect(wrap).toHaveAttribute("tabindex", "0");
+      for (const el of [container.querySelector(".diagram-canvas")!, wrap]) {
+        const cs = getComputedStyle(el);
+        for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
+          expect(cs.getPropertyValue(`border-${side.toLowerCase()}-style`)).not.toBe("dashed");
+        }
+        expect(cs.outlineStyle).not.toBe("dashed");
+      }
+      expect(css).not.toMatch(/\.diagram-canvas\s*\{[^}]*dashed/);
+      expect(css).toMatch(/\.diagram-wrap:focus-visible[^{]*\{[^}]*2px solid var\(--brand\)/);
+    } finally {
+      style.remove();
+    }
+  });
+
   it("keeps edge labels apart from each other and from nodes", () => {
     const nodes = ["hub", "a", "b", "c", "d"].map((id) => ({
       id,

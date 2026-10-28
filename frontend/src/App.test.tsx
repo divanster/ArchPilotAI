@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import App from "./App";
 
 const health = {
@@ -136,6 +138,17 @@ describe("Navigation", () => {
     expect(
       within(nav).getByText("Settings").closest("[aria-disabled]"),
     ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      within(nav).getByText(/Knowledge graph/).closest("[aria-disabled]"),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(within(nav).queryByRole("link", { name: /Knowledge graph/ })).toBeNull();
+  });
+
+  it("disables Export and the top bar generate button outside a project architecture page", () => {
+    stubFetch(true);
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Export brief" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Generate architecture" })).toBeDisabled();
   });
 
   it("marks the current page and switches pages", async () => {
@@ -164,21 +177,37 @@ describe("Navigation", () => {
     ).toBeInTheDocument();
   });
 
-  it("asks for a project on the documents and requirements pages", async () => {
+  it("shows an empty state with a Projects link and no selector", async () => {
+    localStorage.clear();
     stubFetch(true, {}, [alpha, beta]);
+    for (const page of ["documents", "requirements", "architecture"]) {
+      window.location.hash = `#/${page}`;
+      const { unmount } = render(<App />);
+      expect(await screen.findByText("No project is open.")).toBeInTheDocument();
+      expect(
+        screen.getByRole("link", { name: /Go to Projects/ }),
+      ).toHaveAttribute("href", "#/projects");
+      expect(screen.queryByLabelText("Project", { exact: true })).toBeNull();
+      unmount();
+    }
+  });
+
+  it("deep link activates the project and shows no selector", async () => {
+    localStorage.clear();
+    stubFetch(true, {}, [alpha, beta]);
+    window.location.hash = `#/documents/${alpha.id}`;
+    render(<App />);
+    expect(await screen.findByLabelText("Document file")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Project", { exact: true })).toBeNull();
+    expect(localStorage.getItem("archpilot.activeProject")).toBe(alpha.id);
+  });
+
+  it("uses the stored active project when the URL has none", async () => {
+    localStorage.clear();
+    localStorage.setItem("archpilot.activeProject", alpha.id);
+    stubFetch(true, {}, [alpha]);
     window.location.hash = "#/documents";
     render(<App />);
-    expect(
-      await screen.findByRole("heading", { name: "Documents" }),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByText("Choose a project to continue."),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Project")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Project"), {
-      target: { value: alpha.id },
-    });
     expect(await screen.findByLabelText("Document file")).toBeInTheDocument();
   });
 
@@ -192,11 +221,12 @@ describe("Navigation", () => {
   });
 
   it("explains when a project is missing or none exist", async () => {
+    localStorage.clear();
     stubFetch(true, {}, []);
-    window.location.hash = "#/documents";
+    window.location.hash = `#/documents/${alpha.id}`;
     render(<App />);
     expect(
-      await screen.findByText("Create a project first."),
+      await screen.findByText("That project no longer exists."),
     ).toBeInTheDocument();
   });
 
@@ -268,5 +298,92 @@ describe("Dashboard", () => {
       ),
     ).toBe(true);
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+});
+
+describe("Project switcher", () => {
+  const longName = "A very long project name that should be truncated in the top bar";
+  const gamma = { ...alpha, id: "33333333-3333-3333-3333-333333333333", name: longName };
+
+  beforeEach(() => {
+    localStorage.clear();
+    window.location.hash = `#/documents/${alpha.id}`;
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function trigger() {
+    return screen.findByRole("button", { name: /Switch project/ });
+  }
+
+  it("opens and closes, Escape returns focus to the trigger", async () => {
+    stubFetch(true, {}, [alpha, beta]);
+    render(<App />);
+    const btn = await trigger();
+    expect(btn).toHaveAttribute("aria-haspopup", "menu");
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    fireEvent.click(btn);
+    expect(btn).toHaveAttribute("aria-expanded", "true");
+    const menu = screen.getByRole("menu");
+    const active = within(menu).getByRole("menuitem", { name: /Alpha/ });
+    expect(active).toHaveAttribute("aria-current", "true");
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(btn).toHaveFocus();
+
+    fireEvent.click(btn);
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("moves between items with the arrow keys", async () => {
+    stubFetch(true, {}, [alpha, beta]);
+    render(<App />);
+    fireEvent.click(await trigger());
+    const items = within(screen.getByRole("menu")).getAllByRole("menuitem");
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveFocus();
+    fireEvent.keyDown(items[0], { key: "ArrowDown" });
+    expect(items[1]).toHaveFocus();
+    fireEvent.keyDown(items[1], { key: "ArrowDown" });
+    expect(items[2]).toHaveFocus();
+    fireEvent.keyDown(items[2], { key: "ArrowDown" });
+    expect(items[0]).toHaveFocus();
+    fireEvent.keyDown(items[0], { key: "ArrowUp" });
+    expect(items[2]).toHaveFocus();
+  });
+
+  it("selecting a project switches it", async () => {
+    stubFetch(true, {}, [alpha, beta]);
+    render(<App />);
+    fireEvent.click(await trigger());
+    fireEvent.click(screen.getByRole("menuitem", { name: /Beta/ }));
+    expect(window.location.hash).toBe(`#/documents/${beta.id}`);
+    expect(localStorage.getItem("archpilot.activeProject")).toBe(beta.id);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("All projects links to the Projects page", async () => {
+    stubFetch(true, {}, [alpha, beta]);
+    render(<App />);
+    fireEvent.click(await trigger());
+    expect(screen.getByRole("menuitem", { name: "All projects" })).toHaveAttribute(
+      "href",
+      "#/projects",
+    );
+  });
+
+  it("truncates long names and keeps the full name in title", async () => {
+    stubFetch(true, {}, [alpha, gamma]);
+    window.location.hash = `#/documents/${gamma.id}`;
+    render(<App />);
+    const btn = await screen.findByRole("button", { name: /Switch project/ });
+    expect(btn).toHaveAttribute("title", longName);
+    const css = readFileSync(resolve(__dirname, "styles.css"), "utf8");
+    expect(css).toMatch(/\.switcher-name\s*{[^}]*text-overflow:\s*ellipsis/);
+    expect(css).toMatch(/\.switcher-trigger\s*{[^}]*max-width:\s*220px/);
+    expect(css).toMatch(/\.crumbs\s*{[^}]*flex-wrap:\s*nowrap/);
   });
 });
