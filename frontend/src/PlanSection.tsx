@@ -4,6 +4,7 @@ import { StatusBadge } from "./ui";
 import {
   buildPlan,
   decidePlan,
+  editPlanDependency,
   getPlan,
   listPlans,
   listProposals,
@@ -16,12 +17,114 @@ import {
 
 const AI_FLAG_PREFIX = "AI recommendation";
 
+function DependencyEditor({
+  task,
+  allTasks,
+  onEdit,
+}: {
+  task: PlanTask;
+  allTasks: PlanTask[];
+  onEdit: (
+    action: "add" | "remove",
+    task: PlanTask,
+    target: PlanTask,
+    reason: string,
+    author: string,
+  ) => Promise<void>;
+}) {
+  const [target, setTarget] = useState("");
+  const [reason, setReason] = useState("");
+  const [author, setAuthor] = useState("");
+  const candidates = allTasks.filter((t) => t.id !== task.id && !task.depends_on.includes(t.key));
+  const ready = reason.trim() !== "" && author.trim() !== "";
+  const byKey = new Map(allTasks.map((t) => [t.key, t]));
+
+  return (
+    <details>
+      <summary>Add dependency</summary>
+      <div className="stack">
+        <label>
+          Depends on
+          <select
+            aria-label={`Dependency for ${task.key}`}
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          >
+            <option value="">Select a task…</option>
+            {candidates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.key} · {t.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Reason
+          <input
+            aria-label={`Reason for ${task.key}`}
+            maxLength={500}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+        </label>
+        <label>
+          Your name
+          <input
+            aria-label={`Author for ${task.key}`}
+            maxLength={100}
+            value={author}
+            onChange={(e) => setAuthor(e.target.value)}
+          />
+        </label>
+        <div className="btn-row">
+          <button
+            type="button"
+            disabled={!target || !ready}
+            onClick={() => {
+              const chosen = allTasks.find((t) => t.id === target);
+              if (chosen) void onEdit("add", task, chosen, reason, author).then(() => setTarget(""));
+            }}
+          >
+            Add
+          </button>
+          {task.depends_on.map((key) => {
+            const other = byKey.get(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={!ready || !other}
+                onClick={() => other && void onEdit("remove", task, other, reason, author)}
+              >
+                Remove {key}
+              </button>
+            );
+          })}
+        </div>
+        <p className="hint">Add and remove need a reason and your name; they are recorded.</p>
+      </div>
+    </details>
+  );
+}
+
 function TaskCard({
   task,
   titles,
+  allTasks,
+  editable,
+  onEdit,
 }: {
   task: PlanTask;
   titles: Map<string, string>;
+  allTasks: PlanTask[];
+  editable: boolean;
+  onEdit: (
+    action: "add" | "remove",
+    task: PlanTask,
+    target: PlanTask,
+    reason: string,
+    author: string,
+  ) => Promise<void>;
 }) {
   return (
     <li className="card" data-testid={`task-${task.key}`}>
@@ -47,8 +150,46 @@ function TaskCard({
       )}
       <p>
         <strong>Depends on:</strong>{" "}
-        {task.depends_on.length > 0 ? task.depends_on.join(", ") : "none"}
+        {task.dependencies.length === 0
+          ? "none"
+          : task.dependencies.map((d, i) => (
+              <span key={d.key}>
+                {i > 0 && ", "}
+                {d.key}
+                {d.source === "nfr rule" && (
+                  <>
+                    {" "}
+                    <span className="badge badge-type">derived: nfr rule</span>
+                  </>
+                )}
+                {d.source === "manual" && (
+                  <>
+                    {" "}
+                    <span
+                      className="badge badge-warn"
+                      title={`${d.reason ?? ""}${d.author ? ` (${d.author})` : ""}`}
+                    >
+                      edited
+                    </span>
+                  </>
+                )}
+              </span>
+            ))}
       </p>
+      {editable && <DependencyEditor task={task} allTasks={allTasks} onEdit={onEdit} />}
+      {task.notes.length > 0 && (
+        <ul aria-label={`Dependency notes for ${task.key}`}>
+          {task.notes.map((n, i) => (
+            <li key={i}>
+              <span className="badge badge-warn">Unmapped dependency</span>{" "}
+              {n.replace(/^Unmapped dependency:\s*/, "")}
+            </li>
+          ))}
+        </ul>
+      )}
+      {task.related.length > 0 && (
+        <p className="muted">Related: {task.related.join(", ")}</p>
+      )}
       <div>
         <strong>Linked requirements</strong>
         {task.requirement_ids.length === 0 ? (
@@ -142,13 +283,18 @@ export default function PlanSection({
       const plan = await fn();
       setSelected(plan);
       setSummaries((cur) => {
-        const { tasks, unattached_questions, ...summary } = plan;
-        void tasks;
-        void unattached_questions;
+        const summary: PlanSummary = {
+          id: plan.id,
+          project_id: plan.project_id,
+          proposal_id: plan.proposal_id,
+          version: plan.version,
+          status: plan.status,
+          generated_at: plan.generated_at,
+          source_graph_built_at: plan.source_graph_built_at,
+          task_count: plan.tasks.length,
+        };
         const rest = (cur ?? []).filter((s) => s.id !== plan.id);
-        return [{ ...summary, task_count: tasks.length }, ...rest].sort(
-          (a, b) => b.version - a.version,
-        );
+        return [summary, ...rest].sort((a, b) => b.version - a.version);
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : fallback);
@@ -157,21 +303,41 @@ export default function PlanSection({
     }
   }
 
+  async function edit(
+    action: "add" | "remove",
+    task: PlanTask,
+    target: PlanTask,
+    reason: string,
+    author: string,
+  ) {
+    if (!selected) return;
+    const planId = selected.id;
+    await act(
+      () =>
+        editPlanDependency(projectId, planId, action, {
+          task_id: task.id,
+          depends_on_task_id: target.id,
+          reason: reason.trim(),
+          author: author.trim(),
+        }),
+      "Dependency edit failed",
+    );
+  }
+
   const draft = selected?.status === "draft";
-  const approvedKey = (summaries ?? [])
-    .filter((s) => s.status === "approved")
-    .map((s) => s.id)
-    .join(",");
+  const unmappedNotes = selected
+    ? selected.tasks.reduce((n, t) => n + t.notes.length, 0)
+    : 0;
 
   return (
     <section aria-label="Plan" className="stack">
       <ProjectHeader
-        key={approvedKey}
         projectId={projectId}
         name={projectName}
         description={projectDescription}
         proposals={proposals}
         confirmedCount={confirmedCount}
+        plans={summaries ?? undefined}
       />
       <div className="card">
         <h2>Implementation plan</h2>
@@ -229,7 +395,27 @@ export default function PlanSection({
               <h2>Plan version {selected.version}</h2>
               <StatusBadge status={selected.status} testId="plan-status" />
             </div>
-            <p className="sub">{selected.tasks.length} task(s) in implementation order.</p>
+            <p className="sub">
+              {selected.tasks.length} task(s) in implementation order ·{" "}
+              {selected.dependency_count} dependencies derived · {selected.unmapped_node_count}{" "}
+              diagram node(s) unmapped
+            </p>
+            {selected.warnings.length > 0 && (
+              <ul aria-label="Plan warnings">
+                {selected.warnings.map((w, i) => (
+                  <li key={i} role="alert">
+                    <span className="badge badge-warn">Warning</span> {w}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {draft && unmappedNotes > 0 && (
+              <p role="alert" data-testid="unmapped-banner">
+                <span className="badge badge-warn">Unmapped dependency</span> {unmappedNotes}{" "}
+                unmapped dependency note(s) remain. Approving keeps the plan order as derived from
+                the mapped components only.
+              </p>
+            )}
             <div className="btn-row">
               <button
                 type="button"
@@ -251,6 +437,23 @@ export default function PlanSection({
             {!draft && <p className="hint">Reviewed plans are read-only. Rebuild to create a new version.</p>}
           </div>
 
+          {selected.previous_manual_edits.length > 0 && (
+            <div className="card" role="note">
+              <h3>Manual edits of version {selected.previous_version} (not carried over)</h3>
+              <p className="sub">
+                A rebuild never copies manual dependency edits. Re-apply any that still matter.
+              </p>
+              <ul aria-label="Previous manual edits">
+                {selected.previous_manual_edits.map((e, i) => (
+                  <li key={i}>
+                    {e.action === "add" ? "Added" : "Removed"} {e.task_key} → {e.depends_on_key}:{" "}
+                    {e.reason} ({e.author})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {selected.unattached_questions.length > 0 && (
             <div className="card">
               <h3>Open questions not tied to a task</h3>
@@ -262,9 +465,30 @@ export default function PlanSection({
             </div>
           )}
 
+          {selected.not_for_client.length > 0 && (
+            <div className="card">
+              <h3>Not for the client</h3>
+              <p className="sub">
+                Questions about the proposal itself, not about the project. They block no task.
+              </p>
+              <ul aria-label="Not for the client">
+                {selected.not_for_client.map((q, i) => (
+                  <li key={i}>{q}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <ol className="stack" aria-label="Plan tasks">
             {selected.tasks.map((t) => (
-              <TaskCard key={t.id} task={t} titles={titles} />
+              <TaskCard
+                key={t.id}
+                task={t}
+                titles={titles}
+                allTasks={selected.tasks}
+                editable={!!draft}
+                onEdit={edit}
+              />
             ))}
           </ol>
         </div>

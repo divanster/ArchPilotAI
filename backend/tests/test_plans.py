@@ -13,6 +13,8 @@ from app.domain.architecture import ArchitectureContent
 from app.domain.plan import (
     AI_RECOMMENDATION_FLAG,
     NO_COVERAGE_FLAG,
+    NO_DEPENDENCIES_WARNING,
+    UNMAPPED_PREFIX,
     PlanCycleError,
     PlanSpec,
     build_plan,
@@ -126,11 +128,12 @@ def test_order_is_deterministic_and_independent_of_edge_and_coverage_order() -> 
         p["coverage_matrix"].reverse()
 
     assert plan_of(shuffle) == plan_of()
-    graph_deps = [("components[1]", "components[2]"), ("components[0]", "components[1]")]
-    content = content_for(FAKE_IDS)
-    assert build_plan(content, CONFIRMED, graph_deps) == build_plan(
-        content, CONFIRMED, reversed(graph_deps)
-    )
+
+    def atlas_reversed(p: dict[str, Any]) -> None:
+        atlas(p)
+        p["diagram"]["edges"].reverse()
+
+    assert plan_of(atlas) == plan_of(atlas_reversed)
 
 
 def test_independent_tasks_follow_declaration_order() -> None:
@@ -144,19 +147,112 @@ def test_independent_tasks_follow_declaration_order() -> None:
         "Implement Database",
         "Implement Identity provider",
     ]
-    assert all(t.depends_on == [] for t in spec.tasks)
+    assert all(t.depends_on == [] for t in spec.tasks if t.kind != "nfr")
+    assert spec.dependency_count == 0  # counts diagram dependencies only
+    assert NO_DEPENDENCIES_WARNING in spec.warnings
 
 
-def test_graph_dependencies_are_used_too() -> None:
-    def no_edges(p: dict[str, Any]) -> None:
-        p["diagram"]["edges"] = []
+def atlas(p: dict[str, Any]) -> None:
+    """Diagram ids (n-*) and component ids (c-*) differ; only the names agree."""
+    ren = {"web": "n-web", "api": "n-api", "db": "n-db", "idp": "n-idp"}
+    for node in p["diagram"]["nodes"]:
+        node["id"] = ren[node["id"]]
+    for edge in p["diagram"]["edges"]:
+        edge["source"], edge["target"] = ren[edge["source"]], ren[edge["target"]]
+    for comp in p["components"]:
+        comp["id"] = "c-" + comp["id"]
+    for entry in p["coverage_matrix"]:
+        entry["related_ids"] = ["c-" + r if r in ren else r for r in entry["related_ids"]]
 
-    spec = build_plan(
-        content_for(FAKE_IDS, no_edges), CONFIRMED, [("components[0]", "components[3]")]
+
+def test_diagram_nodes_map_to_components_by_exact_name_not_id() -> None:
+    spec = plan_of(atlas)
+    keys = {t.title: t.key for t in spec.tasks}
+    assert by_title(spec, "Implement Web UI").depends_on == [keys["Implement API"]]
+    assert by_title(spec, "Implement API").depends_on == sorted(
+        [keys["Implement Database"], keys["Implement Identity provider"]]
     )
-    assert titles(spec).index("Implement Identity provider") < titles(spec).index(
-        "Implement Web UI"
-    )
+    assert spec.dependency_count == 3
+    assert spec.unmapped_nodes == []
+    assert not spec.warnings
+    # database/identity before backend before frontend
+    assert titles(spec)[:4] == [
+        "Implement Database",
+        "Implement Identity provider",
+        "Implement API",
+        "Implement Web UI",
+    ]
+
+
+def test_unmapped_node_is_reported_and_never_guessed_or_ordered() -> None:
+    def entra(p: dict[str, Any]) -> None:
+        atlas(p)
+        for node in p["diagram"]["nodes"]:
+            if node["id"] == "n-idp":
+                node["name"] = "Entra ID"  # no component has this exact name
+
+    spec = plan_of(entra)
+    api = by_title(spec, "Implement API")
+    identity = by_title(spec, "Implement Identity provider")
+    assert spec.unmapped_nodes == ["Entra ID"]
+    assert spec.dependency_count == 2
+    assert identity.key not in api.depends_on
+    assert any(n.startswith(UNMAPPED_PREFIX) and "Entra ID" in n for n in api.notes)
+    assert identity.notes == []
+    assert any("Entra ID" in w for w in spec.warnings)
+    assert titles(spec).index("Implement API") < titles(spec).index("Implement Identity provider")
+
+
+def test_names_are_matched_exactly_not_by_case_or_similarity() -> None:
+    def near(p: dict[str, Any]) -> None:
+        atlas(p)
+        for node in p["diagram"]["nodes"]:
+            if node["id"] == "n-db":
+                node["name"] = "database"
+
+    spec = plan_of(near)
+    assert by_title(spec, "Implement API").depends_on == [
+        by_title(spec, "Implement Identity provider").key
+    ]
+    assert spec.unmapped_nodes == ["database"]
+
+
+def test_duplicate_component_names_are_ambiguous_and_unmapped() -> None:
+    def dup(p: dict[str, Any]) -> None:
+        atlas(p)
+        p["components"][2]["name"] = "Web UI"  # now two components share a name
+
+    spec = plan_of(dup)
+    assert "Web UI" in spec.unmapped_nodes
+    assert by_title(spec, "Implement API").depends_on != []
+    web = by_title(spec, "Implement Web UI").key
+    assert all(web not in t.depends_on for t in spec.tasks if t.kind != "nfr")
+
+
+def test_related_hint_links_decision_tasks_but_never_orders() -> None:
+    spec = plan_of()
+    secure = by_title(spec, "Secure: Access control")
+    components = {t.key for t in spec.tasks if t.kind in ("component", "data")}
+    assert secure.related and set(secure.related) <= components
+    assert by_title(spec, "Implement API").related == []
+    assert secure.depends_on == []
+
+
+def test_meta_open_questions_go_to_not_for_client() -> None:
+    def questions(p: dict[str, Any]) -> None:
+        p["open_questions"] = [
+            {
+                "question": "Why were no passages cited in this proposal?",
+                "requirement_ids": [FAKE_IDS[0]],
+            },
+            {"question": "Which IdP is used?", "requirement_ids": [FAKE_IDS[0]]},
+        ]
+
+    spec = plan_of(questions)
+    assert spec.not_for_client == ["Why were no passages cited in this proposal?"]
+    assert spec.unattached_questions == []
+    blocking = [q for t in spec.tasks for q in t.blocking_questions]
+    assert blocking and set(blocking) == {"Which IdP is used?"}
 
 
 def test_dependency_cycle_fails_and_is_reported() -> None:
@@ -302,6 +398,10 @@ def test_build_stores_an_ordered_draft_plan(client: TestClient, engine: Engine) 
         "Which identity provider does the client use? — It decides the authentication design."
     ]
     assert client.get(plans_url(pid, "/" + plan["id"])).json() == plan
+    assert (plan["dependency_count"], plan["unmapped_node_count"], plan["warnings"]) == (3, 0, [])
+    assert plan["not_for_client"] == []
+    assert any(t["depends_on"] for t in plan["tasks"])
+    assert any(t["related"] for t in plan["tasks"])
     listed = client.get(plans_url(pid)).json()
     assert [(p["id"], p["task_count"]) for p in listed] == [(plan["id"], 7)]
     with Session(engine) as session:
@@ -381,6 +481,201 @@ def test_plans_are_isolated_between_projects(client: TestClient) -> None:
     assert client.get(plans_url(pid, "/" + plan["id"])).status_code == 200
 
 
+def test_nfr_rule_orders_nfr_after_related_components_and_labels_the_source() -> None:
+    spec = plan_of(atlas)
+    nfr = by_title(spec, "NFR: Performance")
+    assert nfr.related and nfr.depends_on == nfr.related
+    assert set(nfr.dependency_sources.values()) == {"nfr rule"}
+    position = {t.key: t.order_index for t in spec.tasks}
+    assert all(position[d] < nfr.order_index for d in nfr.depends_on)
+    api = by_title(spec, "Implement API")
+    assert set(api.dependency_sources.values()) == {"diagram"}
+    # The related hint of a security task stays a hint and orders nothing.
+    assert by_title(spec, "Secure: Access control").dependency_sources == {}
+    assert spec.dependency_count == 3  # diagram dependencies only
+
+
+def test_questions_attach_only_through_a_cited_shared_requirement_atlas() -> None:
+    def questions(p: dict[str, Any]) -> None:
+        atlas(p)
+        p["open_questions"] = [
+            {"question": "Retention?", "requirement_ids": [FAKE_IDS[1]]},
+            {"question": "Unknown requirement?", "requirement_ids": [str(uuid.UUID(int=999))]},
+            {"question": "Who owns operations?", "requirement_ids": []},
+        ]
+
+    spec = plan_of(questions)
+    cited = {t.title for t in spec.tasks if "Retention?" in t.blocking_questions}
+    assert cited == {t.title for t in spec.tasks if FAKE_IDS[1] in map(str, t.requirement_ids)}
+    assert cited and "Secure: Access control" not in cited
+    assert all(
+        "Unknown requirement?" not in t.blocking_questions
+        and "Who owns operations?" not in t.blocking_questions
+        for t in spec.tasks
+    )
+    assert spec.unattached_questions == ["Unknown requirement?", "Who owns operations?"]
+
+
+# ---- manual dependency edits -----------------------------------------------------------------
+
+
+def task_ids(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {t["title"]: t for t in plan["tasks"]}
+
+
+def edit(
+    client: TestClient,
+    pid: str,
+    plan: dict[str, Any],
+    task: str,
+    target: str,
+    action: str = "dependencies",
+    reason: str = "Needs the interface first",
+    author: str = "ivan",
+) -> Any:
+    tasks = task_ids(plan)
+    return client.post(
+        plans_url(pid, f"/{plan['id']}/{action}"),
+        json={
+            "task_id": tasks[task]["id"],
+            "depends_on_task_id": tasks[target]["id"],
+            "reason": reason,
+            "author": author,
+        },
+    )
+
+
+def test_manual_add_and_remove_with_audit_fields(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    plan = build(client, pid)
+    before = task_ids(plan)
+    assert before["NFR: Performance"]["dependencies"]
+    assert {d["source"] for d in before["NFR: Performance"]["dependencies"]} == {"nfr rule"}
+    assert {d["source"] for d in before["Implement API"]["dependencies"]} == {"diagram"}
+
+    response = edit(client, pid, plan, "Secure: Access control", "Implement Web UI")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    secure = task_ids(body)["Secure: Access control"]
+    web_key = before["Implement Web UI"]["key"]
+    assert web_key in secure["depends_on"]
+    dep = next(d for d in secure["dependencies"] if d["key"] == web_key)
+    assert (dep["source"], dep["reason"], dep["author"]) == (
+        "manual",
+        "Needs the interface first",
+        "ivan",
+    )
+    [recorded] = body["manual_edits"]
+    assert recorded["action"] == "add"
+    assert (recorded["task_key"], recorded["depends_on_key"]) == (secure["key"], web_key)
+    assert recorded["author"] == "ivan" and recorded["created_at"]
+    fetched = client.get(plans_url(pid, "/" + plan["id"])).json()["manual_edits"]
+    assert [e["reason"] for e in fetched] == [e["reason"] for e in body["manual_edits"]]
+
+    duplicate = edit(client, pid, plan, "Secure: Access control", "Implement Web UI")
+    assert duplicate.status_code == 422 and "already depends" in duplicate.json()["detail"]
+
+    removed = edit(
+        client,
+        pid,
+        plan,
+        "Secure: Access control",
+        "Implement Web UI",
+        "dependencies/remove",
+        reason="Not needed",
+    )
+    assert removed.status_code == 200, removed.text
+    assert web_key not in task_ids(removed.json())["Secure: Access control"]["depends_on"]
+    assert [e["action"] for e in removed.json()["manual_edits"]] == ["add", "remove"]
+    again = edit(
+        client, pid, plan, "Secure: Access control", "Implement Web UI", "dependencies/remove"
+    )
+    assert again.status_code == 422
+
+
+def test_manual_edit_reorders_so_dependencies_come_first(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    plan = build(client, pid)
+    response = edit(client, pid, plan, "Implement Identity provider", "Integrate: Identity")
+    assert response.status_code == 200, response.text
+    out = response.json()
+    position = {t["key"]: t["order_index"] for t in out["tasks"]}
+    assert sorted(position.values()) == list(range(1, len(position) + 1))
+    for t in out["tasks"]:
+        assert all(position[d] < t["order_index"] for d in t["depends_on"])
+
+
+def test_manual_edit_rejects_cycles_self_and_other_plans(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    plan = build(client, pid)
+    other_plan = build(client, pid)
+    cycle = edit(client, pid, plan, "Implement Database", "Implement Web UI")
+    assert cycle.status_code == 422 and "cycle" in cycle.json()["detail"]
+    own = edit(client, pid, plan, "Implement API", "Implement API")
+    assert own.status_code == 422 and "itself" in own.json()["detail"]
+    mixed = client.post(
+        plans_url(pid, f"/{plan['id']}/dependencies"),
+        json={
+            "task_id": task_ids(plan)["Implement API"]["id"],
+            "depends_on_task_id": task_ids(other_plan)["Implement Web UI"]["id"],
+            "reason": "x",
+            "author": "ivan",
+        },
+    )
+    assert mixed.status_code == 422 and "this plan" in mixed.json()["detail"]
+    for field, value in (("reason", "  "), ("author", "")):
+        payload = {
+            "task_id": task_ids(plan)["Secure: Access control"]["id"],
+            "depends_on_task_id": task_ids(plan)["Implement API"]["id"],
+            "reason": "why",
+            "author": "ivan",
+            field: value,
+        }
+        bad = client.post(plans_url(pid, f"/{plan['id']}/dependencies"), json=payload)
+        assert bad.status_code == 422
+    unchanged = client.get(plans_url(pid, "/" + plan["id"])).json()
+    assert unchanged["manual_edits"] == []
+    assert task_ids(unchanged)["Implement Database"]["depends_on"] == []
+
+
+def test_approved_and_rejected_plans_are_read_only(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    a, b = build(client, pid), build(client, pid)
+    client.post(plans_url(pid, f"/{a['id']}/approve"))
+    client.post(plans_url(pid, f"/{b['id']}/reject"))
+    for plan in (a, b):
+        for action in ("dependencies", "dependencies/remove"):
+            response = edit(client, pid, plan, "Secure: Access control", "Implement API", action)
+            assert response.status_code == 409
+    approved = client.get(plans_url(pid, "/" + a["id"])).json()
+    assert approved["manual_edits"] == []
+
+
+def test_edits_are_scoped_to_the_project(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    plan = build(client, pid)
+    other = make_project(client, "Other")
+    response = edit(client, other, plan, "Secure: Access control", "Implement API")
+    assert response.status_code == 404
+
+
+def test_rebuild_does_not_carry_manual_edits_but_lists_them(client: TestClient) -> None:
+    pid, _proposal_id, _ = approved_project(client)
+    first = build(client, pid)
+    assert first["previous_version"] is None and first["previous_manual_edits"] == []
+    assert edit(client, pid, first, "Secure: Access control", "Implement Web UI").status_code == 200
+    second = build(client, pid)
+    assert second["manual_edits"] == []
+    assert all(d["source"] != "manual" for t in second["tasks"] for d in t["dependencies"])
+    assert second["previous_version"] == 1
+    [note] = second["previous_manual_edits"]
+    assert (note["action"], note["author"], note["reason"]) == (
+        "add",
+        "ivan",
+        "Needs the interface first",
+    )
+
+
 # ---- MCP -------------------------------------------------------------------------------------
 
 
@@ -403,12 +698,30 @@ def test_get_plan_defaults_to_the_latest_approved_plan(
     assert (index["version"], index["status"], index["plan_id"]) == (1, "approved", plan["id"])
     assert index["sections_index"] == {
         "tasks": {"items": 7},
+        "manual_edits": {"items": 0},
         "unattached_questions": {"items": 1},
+        "not_for_client": {"items": 0},
     }
     assert "content" not in index
     assert tools.get_plan(ctx, pid, version=2)["status"] == "draft"
     with pytest.raises(ToolInputError, match="version 9"):
         tools.get_plan(ctx, pid, version=9)
+
+
+def test_get_plan_returns_manual_edits_and_dependency_sources(
+    client: TestClient, mcp_world: tuple[ToolContext, str, dict[str, Any]]
+) -> None:
+    ctx, pid, plan = mcp_world
+    assert edit(client, pid, plan, "Secure: Access control", "Implement Web UI").status_code == 200
+    result = tools.get_plan(ctx, pid, version=1, sections=["tasks", "manual_edits"])
+    tasks = {t["title"]: t for t in result["content"]["tasks"]}
+    sources = {d["source"] for t in tasks.values() for d in t["dependencies"]}
+    assert sources == {"diagram", "nfr rule", "manual"}
+    manual = [d for d in tasks["Secure: Access control"]["dependencies"] if d["source"] == "manual"]
+    assert manual[0]["reason"] == "Needs the interface first"
+    [recorded] = result["content"]["manual_edits"]
+    assert recorded["author"] == "ivan" and recorded["action"] == "add"
+    assert result["previous_version"] is None
 
 
 def test_get_plan_sections_and_truncation(

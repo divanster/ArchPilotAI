@@ -1,3 +1,4 @@
+import heapq
 import uuid
 from collections import Counter
 from collections.abc import Sequence
@@ -7,7 +8,26 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.plan import PlanSpec
-from app.models.plan import ImplementationPlan, PlanTask
+from app.models.plan import ImplementationPlan, PlanDependencyEdit, PlanTask
+
+
+def _topological(ranked: Sequence[PlanTask]) -> list[PlanTask]:
+    """Stable order: dependencies first, otherwise the existing order (acyclic by validation)."""
+    by_key = {t.key: t for t in ranked}
+    remaining = {t.key: {d for d in t.depends_on if d in by_key} for t in ranked}
+    position = {t.key: n for n, t in enumerate(ranked)}
+    ready = [(position[k], k) for k, d in remaining.items() if not d]
+    heapq.heapify(ready)
+    out: list[PlanTask] = []
+    while ready:
+        _, key = heapq.heappop(ready)
+        out.append(by_key[key])
+        for other, deps in remaining.items():
+            if key in deps:
+                deps.discard(key)
+                if not deps:
+                    heapq.heappush(ready, (position[other], other))
+    return out
 
 
 class PlanRepository:
@@ -72,6 +92,10 @@ class PlanRepository:
             status="draft",
             source_graph_built_at=graph_built_at,
             unattached_questions=list(spec.unattached_questions),
+            not_for_client=list(spec.not_for_client),
+            dependency_count=spec.dependency_count,
+            unmapped_node_count=len(spec.unmapped_nodes),
+            warnings=list(spec.warnings),
         )
         try:
             self._session.add(plan)
@@ -92,6 +116,9 @@ class PlanRepository:
                     depends_on=list(t.depends_on),
                     flags=list(t.flags),
                     blocking_questions=list(t.blocking_questions),
+                    notes=list(t.notes),
+                    related=list(t.related),
+                    dependency_sources=dict(t.dependency_sources),
                     order_index=t.order_index,
                     status="todo",
                 )
@@ -103,6 +130,39 @@ class PlanRepository:
             raise
         self._session.refresh(plan)
         return plan
+
+    def edits(self, project_id: uuid.UUID, plan_id: uuid.UUID) -> Sequence[PlanDependencyEdit]:
+        stmt = (
+            select(PlanDependencyEdit)
+            .where(
+                PlanDependencyEdit.project_id == project_id, PlanDependencyEdit.plan_id == plan_id
+            )
+            .order_by(PlanDependencyEdit.created_at, PlanDependencyEdit.id)
+        )
+        return self._session.scalars(stmt).all()
+
+    def apply_edit(
+        self,
+        plan: ImplementationPlan,
+        tasks: Sequence[PlanTask],
+        edit: PlanDependencyEdit,
+    ) -> None:
+        """Persist a validated edit and re-sort `order_index` so dependencies come first."""
+        try:
+            self._session.add(edit)
+            ranked = sorted(tasks, key=lambda t: t.order_index)
+            new_order = _topological(ranked)
+            if [t.key for t in new_order] != [t.key for t in ranked]:
+                for t in ranked:  # unique (plan_id, order_index): move out of the way first
+                    t.order_index += 1_000_000
+                self._session.flush()
+                for n, t in enumerate(new_order, start=1):
+                    t.order_index = n
+            self._session.commit()
+        except Exception:
+            self._session.rollback()
+            raise
+        self._session.refresh(plan)
 
     def set_status(self, plan: ImplementationPlan, status: str) -> ImplementationPlan:
         plan.status = status

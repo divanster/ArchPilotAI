@@ -14,6 +14,8 @@ interface Props {
   description?: string | null;
   proposals: ProposalSummary[];
   confirmedCount: number;
+  /** When given, the Plan step follows this list instead of fetching it (kept fresh by the plan page). */
+  plans?: PlanSummary[];
 }
 
 interface Step {
@@ -29,11 +31,13 @@ export default function ProjectHeader({
   description,
   proposals,
   confirmedCount,
+  plans: livePlans,
 }: Props) {
   const [indexed, setIndexed] = useState<number | null>(null);
   const [graphBuilt, setGraphBuilt] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [plans, setPlans] = useState<PlanSummary[]>([]);
+  const [fetchedPlans, setPlans] = useState<PlanSummary[]>([]);
+  const plans = livePlans ?? fetchedPlans;
 
   const approved = proposals
     .filter((p) => p.status === "approved")
@@ -73,6 +77,7 @@ export default function ProjectHeader({
   }, [projectId, approvedId]);
 
   useEffect(() => {
+    if (livePlans) return;
     let active = true;
     Promise.resolve(listPlans(projectId))
       .then((p) => active && setPlans(Array.isArray(p) ? p : []))
@@ -80,7 +85,7 @@ export default function ProjectHeader({
     return () => {
       active = false;
     };
-  }, [projectId]);
+  }, [projectId, livePlans]);
 
   const approvedPlan = plans
     .filter((p) => p.status === "approved")

@@ -54,6 +54,11 @@ class ImplementationPlan(Base):
     )
     # Open questions that name no requirement shared with any task (so they block no task).
     unattached_questions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # Open questions about the proposal itself (meta_open_question rule), kept out of the tasks.
+    not_for_client: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    dependency_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unmapped_node_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
@@ -91,11 +96,17 @@ class PlanTask(Base):
     depends_on: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     flags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     blocking_questions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    notes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    related: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    dependency_sources: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="todo")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
+
+    def source_of(self, key: str) -> str:
+        return self.dependency_sources.get(key, "diagram")
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -108,8 +119,49 @@ class PlanTask(Base):
             "requirement_ids": list(self.requirement_ids),
             "acceptance_criteria": list(self.acceptance_criteria),
             "depends_on": list(self.depends_on),
+            "dependencies": [{"key": k, "source": self.source_of(k)} for k in self.depends_on],
             "flags": list(self.flags),
             "blocking_questions": list(self.blocking_questions),
+            "notes": list(self.notes),
+            "related": list(self.related),
             "order_index": self.order_index,
             "status": self.status,
+        }
+
+
+class PlanDependencyEdit(Base):
+    """Audit trail of manual dependency edits on a draft plan (who, when, why)."""
+
+    __tablename__ = "plan_dependency_edits"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["plan_id", "project_id"],
+            ["implementation_plans.id", "implementation_plans.project_id"],
+            ondelete="CASCADE",
+            name="fk_plan_edit_plan",
+        ),
+        CheckConstraint("action IN ('add', 'remove')", name="ck_plan_edit_action"),
+        Index("ix_plan_edits_plan", "plan_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    action: Mapped[str] = mapped_column(String(10), nullable=False)
+    task_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    depends_on_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    author: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "task_key": self.task_key,
+            "depends_on_key": self.depends_on_key,
+            "reason": self.reason,
+            "author": self.author,
+            "created_at": self.created_at.isoformat(),
         }

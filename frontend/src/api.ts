@@ -671,6 +671,23 @@ export const updateProposal = (
 
 export type PlanStatus = "draft" | "approved" | "rejected";
 
+export interface PlanDependency {
+  key: string;
+  source: "diagram" | "nfr rule" | "manual";
+  reason: string | null;
+  author: string | null;
+  created_at: string | null;
+}
+
+export interface ManualEdit {
+  action: "add" | "remove";
+  task_key: string;
+  depends_on_key: string;
+  reason: string;
+  author: string;
+  created_at: string;
+}
+
 export interface PlanTask {
   id: string;
   key: string;
@@ -682,8 +699,11 @@ export interface PlanTask {
   requirement_ids: string[];
   acceptance_criteria: string[];
   depends_on: string[];
+  dependencies: PlanDependency[];
   flags: string[];
   blocking_questions: string[];
+  notes: string[];
+  related: string[];
   order_index: number;
   status: string;
 }
@@ -701,8 +721,31 @@ export interface PlanSummary {
 
 export interface ImplementationPlan extends PlanSummary {
   unattached_questions: string[];
+  not_for_client: string[];
+  dependency_count: number;
+  unmapped_node_count: number;
+  warnings: string[];
+  manual_edits: ManualEdit[];
+  previous_version: number | null;
+  previous_manual_edits: ManualEdit[];
   tasks: PlanTask[];
 }
+
+export const editPlanDependency = (
+  projectId: string,
+  planId: string,
+  action: "add" | "remove",
+  body: {
+    task_id: string;
+    depends_on_task_id: string;
+    reason: string;
+    author: string;
+  },
+) =>
+  request<ImplementationPlan>(
+    `${projectPath(projectId)}/plans/${planId}/dependencies${action === "remove" ? "/remove" : ""}`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 
 const plansPath = (projectId: string) => `${projectPath(projectId)}/plans`;
 

@@ -313,9 +313,19 @@ def get_plan(
                 else f"The project has no implementation plan version {version}"
             )
         plan = detail.plan
+        tasks_json = []
+        for t in detail.tasks:
+            item = t.as_json()
+            for dep in item["dependencies"]:
+                edit = detail.manual_reason(t, dep["key"])
+                if edit is not None:
+                    dep.update(reason=edit.reason, author=edit.author)
+            tasks_json.append(item)
         content: dict[str, Any] = {
-            "tasks": [t.as_json() for t in detail.tasks],
+            "tasks": tasks_json,
+            "manual_edits": [e.as_json() for e in detail.edits],
             "unattached_questions": list(plan.unattached_questions),
+            "not_for_client": list(plan.not_for_client),
         }
         valid = list(content)
         unknown = [s for s in sections or [] if s not in content]
@@ -330,6 +340,11 @@ def get_plan(
             "version": plan.version,
             "status": plan.status,
             "approval_status": plan.status,
+            "dependency_count": plan.dependency_count,
+            "unmapped_node_count": plan.unmapped_node_count,
+            "warnings": list(plan.warnings),
+            "previous_version": detail.previous_version,
+            "previous_manual_edits": [e.as_json() for e in detail.previous_edits],
             "generated_at": plan.generated_at.isoformat(),
             "source_graph_built_at": (
                 plan.source_graph_built_at.isoformat() if plan.source_graph_built_at else None

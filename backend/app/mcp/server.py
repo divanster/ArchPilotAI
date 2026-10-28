@@ -61,11 +61,14 @@ def create_server(ctx: ToolContext) -> FastMCP:
         project_id: str, version: int | None = None, sections: list[str] | None = None
     ) -> dict[str, Any]:
         """Implementation plan (latest approved by default): ordered tasks with dependencies,
-        requirement ids, acceptance criteria, flags and blocking questions.
+        requirement ids, acceptance criteria, flags and blocking questions. Each task has
+        `dependencies` [{key, source: diagram | nfr rule | manual, reason?}]; `manual_edits` is the
+        audit trail of manual dependency edits (and `previous_manual_edits` those of the prior
+        version, which a rebuild does not carry over).
 
         Without `sections`: header plus an index of sections with item counts. With `sections`
-        (tasks, unattached_questions): only those; cut lists are reported in `truncated_sections`
-        as {name: {returned, total}}.
+        (tasks, manual_edits, unattached_questions, not_for_client): only those; cut lists are
+        reported in `truncated_sections` as {name: {returned, total}}.
         """
         return _run(
             "get_plan",
