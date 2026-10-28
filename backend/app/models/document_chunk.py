@@ -37,6 +37,8 @@ class DocumentChunk(Base):
             ondelete="CASCADE",
         ),
         UniqueConstraint("document_id", "chunk_index", name="uq_document_chunks_index"),
+        # Target of the composite foreign key from chunk_embeddings.
+        UniqueConstraint("id", "project_id", name="uq_document_chunks_id_project"),
         CheckConstraint("chunk_index >= 0", name="ck_document_chunks_index"),
         CheckConstraint(
             "source_start >= 0 AND source_end > source_start", name="ck_document_chunks_span"

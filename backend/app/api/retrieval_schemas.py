@@ -35,6 +35,7 @@ class SearchRequest(BaseModel):
     ]
     document_id: uuid.UUID | None = None
     top_k: int = Field(default=5, ge=1, le=MAX_TOP_K)
+    mode: Literal["keyword", "vector", "hybrid"] = "keyword"
 
 
 class SearchResultResponse(BaseModel):
@@ -47,6 +48,18 @@ class SearchResultResponse(BaseModel):
     source_end: int
     score: float
     matched_terms: list[str]
+    bm25_rank: int | None = None
+    bm25_score: float | None = None
+    vector_rank: int | None = None
+    vector_score: float | None = None
+
+
+class ProviderIdentityResponse(BaseModel):
+    provider: str
+    model: str
+    dimension: int
+    embedder_version: str
+    is_test_provider: bool
 
 
 class SearchResponse(BaseModel):
@@ -55,3 +68,36 @@ class SearchResponse(BaseModel):
     scanned_chunks: int
     unindexed_documents: int
     scan_limited: bool
+    requested_mode: Literal["keyword", "vector", "hybrid"] = "keyword"
+    effective_mode: Literal["keyword", "vector", "hybrid", "none"] = "keyword"
+    warnings: list[str] = Field(default_factory=list)
+    vector_scanned: int = 0
+    embedding: ProviderIdentityResponse | None = None
+
+
+class CapabilitiesResponse(BaseModel):
+    modes: list[Literal["keyword", "vector", "hybrid"]]
+    vector_available: bool
+    vector_unavailable_reason: str | None
+    embedding: ProviderIdentityResponse | None
+
+
+class EmbedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # False is a no-op for fresh embeddings; True rebuilds them atomically.
+    reembed: bool = False
+
+
+class EmbeddingStatusResponse(BaseModel):
+    document_id: uuid.UUID
+    state: Literal["unavailable", "not_indexed", "not_embedded", "embedded", "stale"]
+    chunk_count: int
+    embedded_count: int
+    stale_count: int
+    embedding: ProviderIdentityResponse | None
+
+
+class EmbedResponse(EmbeddingStatusResponse):
+    action: Literal["embedded", "re-embedded", "unchanged"]
+    input_tokens: int | None = None

@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     retrieval_chunk_overlap: int = Field(default=150, ge=0, le=4000)
     retrieval_max_scan_chunks: int = Field(default=20_000, ge=1, le=200_000)
 
+    # "fake" is a deterministic lexical test provider; "none" disables vector search.
+    embedding_provider: Literal["none", "fake"] = "none"
+
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
 
@@ -86,6 +89,12 @@ class Settings(BaseSettings):
     def _chunk_overlap_progresses(self) -> "Settings":
         if self.retrieval_chunk_overlap > self.retrieval_chunk_size // 2:
             raise ValueError("retrieval_chunk_overlap must be at most retrieval_chunk_size // 2")
+        return self
+
+    @model_validator(mode="after")
+    def _no_fake_embeddings_in_production(self) -> "Settings":
+        if self.environment == "production" and self.embedding_provider == "fake":
+            raise ValueError("the fake embedding provider is not allowed in production")
         return self
 
     @model_validator(mode="after")

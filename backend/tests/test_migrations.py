@@ -17,7 +17,7 @@ def test_migration_matches_expected_schema(postgres_url: str) -> None:
     assert columns["description"]["nullable"] is True
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0005_document_chunks"
+            "0006_chunk_embeddings"
         )
     engine.dispose()
 
@@ -255,4 +255,62 @@ def test_document_chunks_downgrade_and_upgrade_roundtrip(postgres_url: str) -> N
         engine.dispose()
     check = create_engine(postgres_url)
     assert "document_chunks" in inspect(check).get_table_names()
+    check.dispose()
+
+
+def test_chunk_embeddings_schema_and_constraints(postgres_url: str) -> None:
+    engine = create_engine(postgres_url)
+    inspector = inspect(engine)
+    columns = {c["name"] for c in inspector.get_columns("chunk_embeddings")}
+    assert {
+        "id",
+        "project_id",
+        "chunk_id",
+        "provider",
+        "model",
+        "actual_model",
+        "dimension",
+        "embedder_version",
+        "content_hash",
+        "vector",
+        "created_at",
+    } <= columns
+    uniques = {
+        tuple(u["column_names"]) for u in inspector.get_unique_constraints("chunk_embeddings")
+    }
+    assert ("chunk_id", "provider", "model", "dimension", "embedder_version") in uniques
+    engine.dispose()
+
+
+def test_chunk_embeddings_migration_on_isolated_sqlite_file(tmp_path: Path) -> None:
+    url = f"sqlite:///{(tmp_path / 'emb.db').as_posix()}"
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    try:
+        assert "chunk_embeddings" in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+    command.downgrade(cfg, "0005_document_chunks")
+    engine = create_engine(url)
+    try:
+        tables = inspect(engine).get_table_names()
+        assert "chunk_embeddings" not in tables and "document_chunks" in tables
+    finally:
+        engine.dispose()
+
+
+def test_chunk_embeddings_downgrade_and_upgrade_roundtrip(postgres_url: str) -> None:
+    cfg = alembic_config(postgres_url)
+    engine = create_engine(postgres_url)
+    try:
+        command.downgrade(cfg, "0005_document_chunks")
+        tables = inspect(engine).get_table_names()
+        assert "chunk_embeddings" not in tables
+        assert "document_chunks" in tables
+    finally:
+        command.upgrade(cfg, "head")
+        engine.dispose()
+    check = create_engine(postgres_url)
+    assert "chunk_embeddings" in inspect(check).get_table_names()
     check.dispose()

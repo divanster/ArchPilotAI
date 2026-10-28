@@ -152,6 +152,16 @@ export interface IndexResult extends IndexStatus {
   action: "indexed" | "reindexed" | "unchanged";
 }
 
+export type SearchMode = "keyword" | "vector" | "hybrid";
+
+export interface EmbeddingIdentity {
+  provider: string;
+  model: string;
+  dimension: number;
+  embedder_version: string;
+  is_test_provider: boolean;
+}
+
 export interface SearchResult {
   chunk_id: string;
   document_id: string;
@@ -162,6 +172,8 @@ export interface SearchResult {
   source_end: number;
   score: number;
   matched_terms: string[];
+  bm25_rank?: number | null;
+  vector_rank?: number | null;
 }
 
 export interface SearchResponse {
@@ -170,7 +182,51 @@ export interface SearchResponse {
   scanned_chunks: number;
   unindexed_documents: number;
   scan_limited: boolean;
+  requested_mode?: SearchMode;
+  effective_mode?: SearchMode | "none";
+  warnings?: string[];
+  embedding?: EmbeddingIdentity | null;
 }
+
+export interface RetrievalCapabilities {
+  modes: SearchMode[];
+  vector_available: boolean;
+  vector_unavailable_reason: string | null;
+  embedding: EmbeddingIdentity | null;
+}
+
+export interface EmbeddingStatus {
+  document_id: string;
+  state: "unavailable" | "not_indexed" | "not_embedded" | "embedded" | "stale";
+  chunk_count: number;
+  embedded_count: number;
+  stale_count: number;
+  embedding: EmbeddingIdentity | null;
+}
+
+export const getRetrievalCapabilities = (projectId: string) =>
+  request<RetrievalCapabilities>(
+    `/api/projects/${projectId}/retrieval/capabilities`,
+  );
+
+export const getEmbeddingStatus = (projectId: string, documentId: string) =>
+  request<EmbeddingStatus>(
+    `${documentsPath(projectId)}/${documentId}/embedding-status`,
+  );
+
+export const embedDocument = (
+  projectId: string,
+  documentId: string,
+  reembed: boolean,
+) =>
+  request<EmbeddingStatus & { action: string }>(
+    `${documentsPath(projectId)}/${documentId}/embed`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reembed }),
+    },
+  );
 
 export const getIndexStatus = (projectId: string, documentId: string) =>
   request<IndexStatus>(
@@ -192,6 +248,7 @@ export const searchDocuments = (
   projectId: string,
   query: string,
   documentId: string | null,
+  mode: SearchMode = "keyword",
 ) =>
   request<SearchResponse>(`/api/projects/${projectId}/search`, {
     method: "POST",
@@ -200,6 +257,7 @@ export const searchDocuments = (
       query,
       document_id: documentId,
       top_k: 10,
+      mode,
     }),
   });
 

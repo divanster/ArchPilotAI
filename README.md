@@ -165,6 +165,32 @@ connected to architecture generation. Nothing is indexed automatically.
   bounded by `ARCHPILOT_RETRIEVAL_MAX_SCAN_CHUNKS` (default 20000; `scan_limited` is reported).
 - Migration (run manually; not run automatically): from `backend`, with your usual database
   settings, `python -m alembic upgrade head` (adds `0005_document_chunks`).
+
+### Embeddings and hybrid retrieval (Phase 7B.1: offline foundation only)
+
+This is **plumbing, not semantic retrieval**. The only embedding provider is a deterministic
+`FakeEmbeddingProvider` (hashed word buckets = lexical overlap, no meaning), enabled only with
+`ARCHPILOT_EMBEDDING_PROVIDER=fake` (rejected when `ARCHPILOT_ENVIRONMENT=production`). The
+default is `none`: vector/hybrid modes are unavailable and keyword search is unchanged. There is
+no Workbench embedding provider (its API contract is unconfirmed), no pgvector, no outbound call,
+and no link to architecture generation.
+
+- `POST .../documents/{doc}/embed` (`{"reembed": bool}`), `GET .../embedding-status`,
+  `GET /api/projects/{id}/retrieval/capabilities`; `POST .../search` accepts
+  `mode` = `keyword` (default) | `vector` | `hybrid` and returns `requested_mode`,
+  `effective_mode` (`none` when vector search had nothing to run), `warnings`, and per-hit
+  `bm25_rank`/`vector_rank`. Hybrid that cannot use vectors is returned as `keyword` with a
+  warning, never as hybrid. Nothing is embedded automatically.
+- Storage: portable JSON vectors in `chunk_embeddings` (SQLite and PostgreSQL). An embedding
+  space is (provider, model, dimension, embedder version); spaces never mix. A vector is *fresh*
+  only if its stored SHA-256 equals the current chunk text hash. Embeddings are cascade-deleted
+  with their chunks; **reindexing a document drops its embeddings** (re-embed afterwards).
+- Ranking: cosine similarity in Python over project- and space-filtered vectors (bounded by the
+  scan limit), scores > 0 only; hybrid uses reciprocal rank fusion (k=60) of the top 20 BM25
+  and top 20 vector chunks, deduplicated by chunk id, ties by filename, document id, chunk index.
+- Migration (manual): `python -m alembic upgrade head` adds `0006_chunk_embeddings` (and a
+  unique `(id, project_id)` constraint on `document_chunks`). Not run automatically.
+- Future boundaries: see `docs/adr/0004-embeddings-and-hybrid-retrieval.md`.
 ## Security
 
 See [SECURITY.md](SECURITY.md). Never commit client documents or secrets.

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.models.chunk_embedding import ChunkEmbedding
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 
@@ -42,6 +43,16 @@ class DocumentRepository:
 
     def delete(self, document: Document) -> None:
         # Explicit as well as the foreign-key cascade; rolls back with the document if it is in use.
+        chunk_ids = select(DocumentChunk.id).where(
+            DocumentChunk.project_id == document.project_id,
+            DocumentChunk.document_id == document.id,
+        )
+        self._session.execute(
+            delete(ChunkEmbedding).where(
+                ChunkEmbedding.project_id == document.project_id,
+                ChunkEmbedding.chunk_id.in_(chunk_ids),
+            )
+        )
         self._session.execute(
             delete(DocumentChunk).where(
                 DocumentChunk.project_id == document.project_id,

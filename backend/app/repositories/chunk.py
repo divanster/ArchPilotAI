@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.chunking import TextChunk
+from app.models.chunk_embedding import ChunkEmbedding
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 
@@ -55,6 +56,17 @@ class ChunkRepository:
     ) -> None:
         """Swap the document's chunks in one transaction; on any failure the old rows survive."""
         try:
+            # Embeddings belong to the chunks being replaced; remove them explicitly as well
+            # as by foreign-key cascade. Same transaction as the swap.
+            old_chunks = select(DocumentChunk.id).where(
+                DocumentChunk.project_id == project_id, DocumentChunk.document_id == document_id
+            )
+            self._session.execute(
+                delete(ChunkEmbedding).where(
+                    ChunkEmbedding.project_id == project_id,
+                    ChunkEmbedding.chunk_id.in_(old_chunks),
+                )
+            )
             self._session.execute(
                 delete(DocumentChunk).where(
                     DocumentChunk.project_id == project_id, DocumentChunk.document_id == document_id

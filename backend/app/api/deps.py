@@ -9,18 +9,23 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
 from app.domain.chunking import ChunkSettings
+from app.embeddings.contracts import EmbeddingProvider
+from app.embeddings.factory import create_embedding_provider
 from app.llm.contracts import LLMProvider
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.factory import create_provider
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
+from app.repositories.embedding import EmbeddingRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.document import DocumentService
+from app.services.embedding import EmbeddingService
+from app.services.hybrid import HybridRetrievalService
 from app.services.project import ProjectService
 from app.services.requirement import RequirementService
 from app.services.requirement_extraction import RequirementExtractionService
@@ -177,3 +182,36 @@ def get_retrieval_service(session: SessionDep) -> RetrievalService:
 
 
 RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]
+
+
+def get_embedding_provider() -> EmbeddingProvider | None:
+    return create_embedding_provider(get_settings())
+
+
+EmbeddingProviderDep = Annotated[EmbeddingProvider | None, Depends(get_embedding_provider)]
+
+
+def get_embedding_service(session: SessionDep, provider: EmbeddingProviderDep) -> EmbeddingService:
+    return EmbeddingService(
+        EmbeddingRepository(session),
+        DocumentRepository(session),
+        ProjectRepository(session),
+        provider,
+    )
+
+
+EmbeddingServiceDep = Annotated[EmbeddingService, Depends(get_embedding_service)]
+
+
+def get_search_service(
+    session: SessionDep, retrieval: RetrievalServiceDep, provider: EmbeddingProviderDep
+) -> HybridRetrievalService:
+    return HybridRetrievalService(
+        retrieval,
+        EmbeddingRepository(session),
+        provider,
+        get_settings().retrieval_max_scan_chunks,
+    )
+
+
+SearchServiceDep = Annotated[HybridRetrievalService, Depends(get_search_service)]

@@ -127,6 +127,15 @@ class RetrievalService:
         )
         return IndexResult(action, self._status(project_id, document_id))
 
+    def check_scope(self, project_id: uuid.UUID, document_id: uuid.UUID | None) -> None:
+        if self._projects.get(project_id) is None:
+            raise ProjectNotFoundError(project_id)
+        if document_id is not None and self._documents.get(project_id, document_id) is None:
+            raise DocumentNotFoundError(document_id)
+
+    def unindexed_count(self, project_id: uuid.UUID, document_id: uuid.UUID | None) -> int:
+        return self._chunks.unindexed_document_count(project_id, document_id)
+
     def search(
         self,
         project_id: uuid.UUID,
@@ -135,10 +144,7 @@ class RetrievalService:
         document_id: uuid.UUID | None = None,
         top_k: int = 5,
     ) -> SearchOutcome:
-        if self._projects.get(project_id) is None:
-            raise ProjectNotFoundError(project_id)
-        if document_id is not None and self._documents.get(project_id, document_id) is None:
-            raise DocumentNotFoundError(document_id)
+        self.check_scope(project_id, document_id)
         terms = parse_query(query)
         top_k = max(1, min(top_k, MAX_TOP_K))
 
