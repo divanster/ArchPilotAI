@@ -4,6 +4,7 @@ import { StatusBadge } from "./ui";
 import { hrefFor } from "./routes";
 import {
   generateArchitecture,
+  reviseProposal,
   getProposal,
   listProposals,
   listRequirements,
@@ -38,7 +39,7 @@ const COVERAGE_LABELS: Record<CoverageStatus, string> = {
 type Titles = Map<string, string>;
 
 const LINT_GROUPS: { label: string; rules: LintRule[] }[] = [
-  { label: "Origin", rules: ["origin_overclaim"] },
+  { label: "Origin", rules: ["origin_overclaim", "preference_overclaim"] },
   { label: "Wording", rules: ["completed_implementation_wording"] },
   {
     label: "Coverage",
@@ -47,7 +48,21 @@ const LINT_GROUPS: { label: string; rules: LintRule[] }[] = [
   { label: "Citations", rules: ["passages_not_cited"] },
 ];
 
-function ReviewFindings({ report }: { report: LintReport | null | undefined }) {
+function ReviewFindings({
+  report,
+  revisedFrom,
+  findingsBefore,
+  canRevise,
+  revising,
+  onRevise,
+}: {
+  report: LintReport | null | undefined;
+  revisedFrom?: number | null;
+  findingsBefore?: number | null;
+  canRevise: boolean;
+  revising: boolean;
+  onRevise: () => void;
+}) {
   if (!report) {
     return (
       <section className="card" aria-labelledby="review-findings" data-testid="review-findings">
@@ -62,9 +77,20 @@ function ReviewFindings({ report }: { report: LintReport | null | undefined }) {
     label: g.label,
     items: report.findings.filter((f) => g.rules.includes(f.rule)),
   })).filter((g) => g.items.length > 0);
+  const after = report.findings.length;
   return (
     <section className="card" aria-labelledby="review-findings" data-testid="review-findings">
       <h3 id="review-findings">Review findings</h3>
+      {revisedFrom != null && (
+        <p data-testid="revised-from">
+          Revised from Version {revisedFrom}
+          {findingsBefore != null && (
+            <>
+              {" "}· Findings: <span data-testid="findings-change">{findingsBefore} → {after}</span>
+            </>
+          )}
+        </p>
+      )}
       <p className="muted">
         Advisory only: automatic checks for a person to weigh. They never block
         approval.
@@ -88,6 +114,11 @@ function ReviewFindings({ report }: { report: LintReport | null | undefined }) {
             </ul>
           </div>
         ))
+      )}
+      {canRevise && after > 0 && (
+        <button type="button" disabled={revising} onClick={onRevise}>
+          {revising ? "Revising…" : "Revise with findings"}
+        </button>
       )}
     </section>
   );
@@ -293,11 +324,13 @@ function ProposalView({
   titles,
   projectId,
   onPatch,
+  onRevise,
 }: {
   proposal: ArchitectureProposal;
   projectId: string;
   titles: Titles;
   onPatch: (patch: ProposalPatch) => Promise<void>;
+  onRevise: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(proposal.title);
@@ -328,6 +361,18 @@ function ProposalView({
       after?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revise() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onRevise();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Revision failed");
     } finally {
       setBusy(false);
     }
@@ -409,7 +454,14 @@ function ProposalView({
         )}
         {error && <p role="alert">{error}</p>}
         {!editing && (
-          <ReviewFindings report={proposal.lint_findings} />
+          <ReviewFindings
+            report={proposal.lint_findings}
+            revisedFrom={proposal.revised_from_version}
+            findingsBefore={proposal.revised_from_findings}
+            canRevise={draft}
+            revising={busy}
+            onRevise={() => void revise()}
+          />
         )}
         {!editing && (
           <div className="row">
@@ -614,6 +666,13 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
     setSummaries((cur) => cur?.map((s) => (s.id === updated.id ? updated : s)) ?? null);
   }
 
+  async function handleRevise() {
+    if (!selected) return;
+    const created = await reviseProposal(projectId, selected.id);
+    setSummaries((cur) => [created, ...(cur ?? [])]);
+    setSelected(created);
+  }
+
   return (
     <section aria-label="Architecture" className="stack">
       <div className="card">
@@ -673,6 +732,7 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
           titles={titles}
           projectId={projectId}
           onPatch={handlePatch}
+          onRevise={handleRevise}
         />
       )}
     </section>

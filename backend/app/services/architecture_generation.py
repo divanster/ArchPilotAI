@@ -3,11 +3,14 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from app.domain.architecture import (
     PROMPT_VERSION,
     RESPONSE_CHARS_PER_TOKEN,
+    REVISION_PROMPT_VERSION,
+    ArchitectureContent,
     ArchitectureError,
     ContextTooLargeError,
     NoConfirmedRequirementsError,
@@ -18,11 +21,19 @@ from app.domain.architecture import (
     build_alias_map,
     content_to_json,
     parse_generated,
+    referenced_requirement_ids,
     safe_finish_reason,
     verify_references,
 )
+from app.domain.revision import draft_for_revision, findings_for_revision
 from app.domain.semantic_lint import LintConfig
-from app.llm.architecture_prompt import SYSTEM_PROMPT, build_prompt, new_nonce
+from app.llm.architecture_prompt import (
+    REVISION_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_prompt,
+    build_revision_prompt,
+    new_nonce,
+)
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.models.architecture import ArchitectureProposal
 from app.repositories.architecture import ArchitectureRepository
@@ -30,6 +41,12 @@ from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services.architecture import (
+    NothingToReviseError,
+    ProposalNotEditableError,
+    ProposalNotFoundError,
+    StaleProposalError,
+)
 from app.services.architecture_context import ArchitectureContextRetriever, RequirementQuery
 from app.services.architecture_lint import compute_lint
 from app.services.project import ProjectNotFoundError
@@ -160,12 +177,81 @@ class ArchitectureGenerationService:
 
     def _generate(self, project_id: uuid.UUID) -> ArchitectureProposal:
         context, aliases, catalog = self._build_context(project_id)
+        return self._complete(
+            project_id,
+            context,
+            aliases,
+            catalog,
+            system_prompt=SYSTEM_PROMPT,
+            build=build_prompt,
+            prompt_version=PROMPT_VERSION,
+        )
+
+    def revise(self, project_id: uuid.UUID, proposal_id: uuid.UUID) -> ArchitectureProposal:
+        """One model call that revises only the flagged items, saved as a new draft version.
+
+        The source draft is read, never modified, and nothing here approves or loops.
+        """
+        if self._projects.get(project_id) is None:
+            raise ProjectNotFoundError(project_id)
+        source = self._architecture.get(project_id, proposal_id)
+        if source is None:
+            raise ProposalNotFoundError(proposal_id)
+        if source.status != ProposalStatus.DRAFT.value:
+            raise ProposalNotEditableError(
+                f"Only a draft proposal can be revised; this one is {source.status}."
+            )
+        findings = findings_for_revision(source.lint_findings)
+        if not findings:
+            raise NothingToReviseError("This draft has no review findings to revise")
+        if not _generation_lock.acquire(blocking=False):
+            raise ArchitectureBusyError("An architecture generation is already running")
+        try:
+            context, aliases, catalog = self._build_context(project_id)
+            content = ArchitectureContent.model_validate(source.content)
+            confirmed = set(aliases.values())
+            if referenced_requirement_ids(content) - confirmed:
+                raise StaleProposalError(
+                    "The draft cites requirements that are no longer confirmed; "
+                    "generate a new version instead."
+                )
+            by_requirement = {str(rid): alias for alias, rid in aliases.items()}
+            by_passage = {str(s.chunk_id): alias for alias, s in catalog.sources.items()}
+            context["draft"] = draft_for_revision(
+                source.title, source.summary, source.content, by_requirement, by_passage
+            )
+            context["findings"] = findings
+            return self._complete(
+                project_id,
+                context,
+                aliases,
+                catalog,
+                system_prompt=REVISION_SYSTEM_PROMPT,
+                build=build_revision_prompt,
+                prompt_version=REVISION_PROMPT_VERSION,
+                revised_from=(source.id, source.version, len(findings)),
+            )
+        finally:
+            _generation_lock.release()
+
+    def _complete(
+        self,
+        project_id: uuid.UUID,
+        context: dict[str, Any],
+        aliases: dict[str, uuid.UUID],
+        catalog: PassageCatalog,
+        *,
+        system_prompt: str,
+        build: Callable[[dict[str, Any], str], str],
+        prompt_version: str,
+        revised_from: tuple[uuid.UUID, int, int] | None = None,
+    ) -> ArchitectureProposal:
         nonce = new_nonce()
         while nonce in json.dumps(context):
             nonce = new_nonce()
         request = LLMRequest(
-            prompt=build_prompt(context, nonce),
-            system_prompt=SYSTEM_PROMPT,
+            prompt=build(context, nonce),
+            system_prompt=system_prompt,
             max_output_tokens=self._max_output_tokens,
             temperature=0,
         )
@@ -218,7 +304,10 @@ class ArchitectureGenerationService:
             content=content_to_json(generated),
             provider=response.provider,
             model=response.model,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version,
+            revised_from_id=revised_from[0] if revised_from else None,
+            revised_from_version=revised_from[1] if revised_from else None,
+            revised_from_findings=revised_from[2] if revised_from else None,
             latency_ms=response.latency_ms,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,

@@ -512,10 +512,16 @@ export interface ProposalSummary {
   created_at: string;
   updated_at: string;
   stale_requirement_ids: string[];
+  /** Set on a version produced by "Revise with findings". */
+  revised_from_id?: string | null;
+  revised_from_version?: number | null;
+  /** Findings the source version had when it was revised (the "before" count). */
+  revised_from_findings?: number | null;
 }
 
 export type LintRule =
   | "origin_overclaim"
+  | "preference_overclaim"
   | "completed_implementation_wording"
   | "coverage_all_addressed"
   | "frontend_only_backend_requirement"
@@ -560,6 +566,11 @@ export const listProposals = (projectId: string) =>
 
 export const getProposal = (projectId: string, id: string) =>
   request<ArchitectureProposal>(`${architecturePath(projectId)}/${id}`);
+
+export const reviseProposal = (projectId: string, id: string) =>
+  request<ArchitectureProposal>(`${architecturePath(projectId)}/${id}/revise`, {
+    method: "POST",
+  });
 
 export const updateProposal = (
   projectId: string,

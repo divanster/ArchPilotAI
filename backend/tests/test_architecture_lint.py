@@ -113,11 +113,68 @@ def test_only_cited_requirements_count() -> None:
     assert run(with_stack(required_item("Node.js", cited=R2)), REQS) == []
 
 
-@pytest.mark.parametrize("origin", ["recommended_by_ai", "preferred_by_client", "assumed"])
+@pytest.mark.parametrize("origin", ["recommended_by_ai", "assumed", "requires_clarification"])
 def test_other_origins_are_not_checked(origin: str) -> None:
     item = required_item("Redis")
     item["origin"] = origin
     assert run(with_stack(item), REQS) == []
+
+
+# ---- 1b. preference overclaim ------------------------------------------------------------------
+
+
+def preferred_item(tech: str, cited: uuid.UUID = R1, **extra: Any) -> dict[str, Any]:
+    item = required_item(tech, cited, **extra)
+    item["origin"] = "preferred_by_client"
+    return item
+
+
+AZURE_PREF = {R1: RequirementText("Platform", "We would prefer to host on Azure.")}
+
+
+def test_preference_overclaim_is_flagged_for_services_under_a_platform_preference() -> None:
+    for tech in ("Azure Key Vault", "Azure App Service", "Azure Blob Storage"):
+        assert run(with_stack(preferred_item(tech)), AZURE_PREF) == [
+            ("preference_overclaim", "recommended_stack[0]")
+        ], tech
+
+
+def test_preference_overclaim_reports_the_terms_and_a_distinct_rule() -> None:
+    data = with_stack(preferred_item("Azure Key Vault"))
+    finding = lint_proposal("t", "s", load(data), AZURE_PREF).findings[0]
+    assert finding.rule.value == "preference_overclaim"
+    assert finding.terms == ["Azure Key Vault"]
+    assert "preference" in finding.message
+
+
+def test_preferred_service_named_by_the_requirement_is_not_flagged() -> None:
+    reqs = {R1: RequirementText("Secrets", "Prefer Azure Key Vault for secrets.")}
+    assert run(with_stack(preferred_item("Azure Key Vault")), reqs) == []
+
+
+def test_a_bare_platform_name_is_not_a_service() -> None:
+    item = preferred_item("Azure", decision="Host on the Azure platform")
+    assert run(with_stack(item), AZURE_PREF) == []
+
+
+def test_preference_check_ignores_uncited_and_unconfirmed_requirements() -> None:
+    assert run(with_stack(preferred_item("Azure Blob Storage")), {}) == []
+    # Cited R1 is not among the confirmed requirements; only R2 is.
+    assert run(with_stack(preferred_item("Azure Blob Storage", cited=R1)), {R2: REQS[R2]}) == []
+
+
+def test_only_cited_requirements_count_for_preferences() -> None:
+    reqs = {R1: AZURE_PREF[R1], R2: RequirementText("Storage", "Use Azure Blob Storage.")}
+    assert run(with_stack(preferred_item("Azure Blob Storage", cited=R1)), reqs) == [
+        ("preference_overclaim", "recommended_stack[0]")
+    ]
+    assert run(with_stack(preferred_item("Azure Blob Storage", cited=R2)), reqs) == []
+
+
+def test_required_items_keep_the_origin_rule() -> None:
+    assert run(with_stack(required_item("Azure Blob Storage")), AZURE_PREF) == [
+        ("origin_overclaim", "recommended_stack[0]")
+    ]
 
 
 def test_generic_wording_is_not_a_product() -> None:

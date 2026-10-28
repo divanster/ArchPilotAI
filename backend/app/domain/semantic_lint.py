@@ -33,6 +33,7 @@ LINT_VERSION = 1
 
 class LintRule(StrEnum):
     ORIGIN_OVERCLAIM = "origin_overclaim"
+    PREFERENCE_OVERCLAIM = "preference_overclaim"
     COMPLETED_IMPLEMENTATION_WORDING = "completed_implementation_wording"
     COVERAGE_ALL_ADDRESSED = "coverage_all_addressed"
     FRONTEND_ONLY_BACKEND_REQUIREMENT = "frontend_only_backend_requirement"
@@ -231,6 +232,19 @@ def _check_origin(
     config: LintConfig,
 ) -> list[LintFinding]:
     findings = []
+    # A preference for a platform does not make its individual services client-selected.
+    checked = {
+        DecisionOrigin.REQUIRED_BY_CLIENT: (
+            LintRule.ORIGIN_OVERCLAIM,
+            "Labelled required by the client, but names a product or service "
+            "that none of its cited confirmed requirements mention",
+        ),
+        DecisionOrigin.PREFERRED_BY_CLIENT: (
+            LintRule.PREFERENCE_OVERCLAIM,
+            "Labelled a client preference, but names a product or service "
+            "that none of its cited confirmed requirements mention",
+        ),
+    }
     groups = (
         ("recommended_stack", content.recommended_stack),
         ("integrations", content.integrations),
@@ -240,8 +254,9 @@ def _check_origin(
     )
     for group, items in groups:
         for index, item in enumerate(items):
-            if item.origin is not DecisionOrigin.REQUIRED_BY_CLIENT:
+            if item.origin not in checked:
                 continue
+            rule, message = checked[item.origin]
             cited = [requirements[r] for r in item.supporting_requirement_ids if r in requirements]
             if not cited:
                 continue  # nothing confirmed to compare with (stale citations show elsewhere)
@@ -251,12 +266,9 @@ def _check_origin(
             if unsupported:
                 findings.append(
                     LintFinding(
-                        rule=LintRule.ORIGIN_OVERCLAIM,
+                        rule=rule,
                         severity="warning",
-                        message=(
-                            "Labelled required by the client, but names a product or service "
-                            "that none of its cited confirmed requirements mention"
-                        ),
+                        message=message,
                         path=f"{group}[{index}]",
                         terms=unsupported,
                     )

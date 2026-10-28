@@ -1,6 +1,11 @@
 import time
 
-from app.llm.architecture_prompt import fake_architecture_answer, is_architecture_request
+from app.llm.architecture_prompt import (
+    fake_architecture_answer,
+    fake_revision_answer,
+    is_architecture_request,
+    is_revision_request,
+)
 from app.llm.contracts import LLMRequest, LLMResponse, TokenUsage
 from app.llm.exceptions import LLMError
 from app.llm.extraction_prompt import fake_extraction_answer, is_extraction_request
@@ -46,6 +51,12 @@ class FakeLLMProvider:
                 self._extraction_text
                 if self._extraction_text is not None
                 else fake_extraction_answer(request.prompt)
+            )
+        if text is None and is_revision_request(request.system_prompt):
+            text = (
+                self._architecture_text
+                if self._architecture_text is not None
+                else fake_revision_answer(request.prompt)
             )
         if text is None and is_architecture_request(request.system_prompt):
             text = (

@@ -197,6 +197,73 @@ describe("ArchitectureSection", () => {
       ).toBeTruthy();
     });
 
+    it("offers 'Revise with findings' only on drafts that have findings", async () => {
+      route([proposal({ lint_findings: findings })]);
+      const { unmount } = render(<ArchitectureSection projectId={PID} />);
+      expect(await screen.findByRole("button", { name: "Revise with findings" })).toBeInTheDocument();
+      unmount();
+
+      route([proposal({ lint_findings: { version: 1, findings: [] } })]);
+      const clean = render(<ArchitectureSection projectId={PID} />);
+      await screen.findByTestId("lint-empty");
+      expect(screen.queryByRole("button", { name: "Revise with findings" })).toBeNull();
+      clean.unmount();
+
+      route([proposal({ lint_findings: null })]);
+      const old = render(<ArchitectureSection projectId={PID} />);
+      await screen.findByTestId("lint-not-run");
+      expect(screen.queryByRole("button", { name: "Revise with findings" })).toBeNull();
+      old.unmount();
+
+      route([proposal({ status: "approved", lint_findings: findings })]);
+      render(<ArchitectureSection projectId={PID} />);
+      await screen.findByTestId("review-findings");
+      expect(screen.queryByRole("button", { name: "Revise with findings" })).toBeNull();
+    });
+
+    it("revises once, selects the new version and shows source and before → after", async () => {
+      const source = proposal({ lint_findings: findings });
+      const revised = proposal({
+        id: "p2",
+        version: 2,
+        prompt_version: "architecture-revise-v1",
+        revised_from_id: "p1",
+        revised_from_version: 1,
+        revised_from_findings: 5,
+        lint_findings: { version: 1, findings: findings.findings.slice(0, 2) },
+      });
+      let revises = 0;
+      route([source], (url, init) => {
+        if (url.endsWith("/architecture/p1/revise") && init?.method === "POST") {
+          revises += 1;
+          return json(revised, 201);
+        }
+        return undefined;
+      });
+      render(<ArchitectureSection projectId={PID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Revise with findings" }));
+      expect(await screen.findByTestId("revised-from")).toHaveTextContent("Revised from Version 1");
+      expect(screen.getByTestId("findings-change")).toHaveTextContent("5 → 2");
+      expect(revises).toBe(1);
+      expect(screen.getByRole("button", { name: "Version 2 (draft)" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(screen.getByRole("button", { name: "Version 1 (draft)" })).toBeInTheDocument();
+    });
+
+    it("shows an error and keeps the source when the revision fails", async () => {
+      route([proposal({ lint_findings: findings })], (url, init) =>
+        url.endsWith("/revise") && init?.method === "POST"
+          ? json({ detail: "busy" }, 429)
+          : undefined,
+      );
+      render(<ArchitectureSection projectId={PID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Revise with findings" }));
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      expect(screen.queryByTestId("revised-from")).toBeNull();
+    });
+
     it("does not block approval", async () => {
       const p = proposal({ lint_findings: findings });
       route([p], (_url, init) =>

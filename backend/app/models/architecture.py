@@ -52,6 +52,13 @@ class ArchitectureProposal(Base):
     lint_findings: Mapped[dict[str, Any] | None] = mapped_column(
         JSON(none_as_null=True), nullable=True
     )
+    # Set only on a draft produced by "revise with findings"; the source draft is never changed.
+    revised_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("architecture_proposals.id", ondelete="SET NULL"), nullable=True
+    )
+    revised_from_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Findings the source draft had when it was revised (the "before" count).
+    revised_from_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

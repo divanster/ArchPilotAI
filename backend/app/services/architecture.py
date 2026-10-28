@@ -34,6 +34,10 @@ class StaleProposalError(Exception):
     pass
 
 
+class NothingToReviseError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class ProposalChange:
     title: str | None = None

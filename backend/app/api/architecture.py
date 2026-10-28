@@ -17,6 +17,7 @@ from app.domain.architecture import (
 from app.llm.exceptions import LLMError
 from app.models.architecture import ArchitectureProposal
 from app.services.architecture import (
+    NothingToReviseError,
     ProposalChange,
     ProposalNotEditableError,
     ProposalNotFoundError,
@@ -94,6 +95,39 @@ def get_proposal(
         proposal = service.get(project_id, proposal_id)
     except NotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return _full(proposal, service.stale_references(project_id, [proposal])[proposal.id])
+
+
+@router.post(
+    "/{proposal_id}/revise",
+    response_model=ProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def revise_proposal(
+    project_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    generator: ArchitectureGenerationServiceDep,
+    service: ArchitectureServiceDep,
+) -> ProposalResponse:
+    try:
+        proposal = await run_in_threadpool(generator.revise, project_id, proposal_id)
+    except NotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ArchitectureBusyError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+    except (
+        ProposalNotEditableError,
+        NothingToReviseError,
+        StaleProposalError,
+        NoConfirmedRequirementsError,
+    ) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ContextTooLargeError as exc:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(exc)) from exc
+    except ArchitectureError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except LLMError as exc:
+        raise _upstream_error(exc) from exc
     return _full(proposal, service.stale_references(project_id, [proposal])[proposal.id])
 
 

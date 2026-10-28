@@ -26,6 +26,10 @@ class ProposalSummary(BaseModel):
     latency_ms: int | None
     input_tokens: int | None
     output_tokens: int | None
+    # Set on a version produced by "revise with findings"; the source version is never changed.
+    revised_from_id: uuid.UUID | None = None
+    revised_from_version: int | None = None
+    revised_from_findings: int | None = None
     created_at: datetime
     updated_at: datetime
     # Cited requirements that are no longer confirmed; such a proposal cannot be approved.
