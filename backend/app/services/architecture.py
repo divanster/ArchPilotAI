@@ -1,5 +1,6 @@
+import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from app.domain.architecture import (
@@ -19,6 +20,8 @@ from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.architecture_lint import compute_lint
 from app.services.project import ProjectNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 class ProposalNotFoundError(Exception):
@@ -53,7 +56,9 @@ class ArchitectureService:
         projects: ProjectRepository,
         requirements: RequirementRepository,
         lint_config: LintConfig | None = None,
+        on_approved: Callable[[uuid.UUID, uuid.UUID], object] | None = None,
     ) -> None:
+        self._on_approved = on_approved
         self._lint_config = lint_config
         self._architecture = architecture
         self._projects = projects
@@ -140,4 +145,11 @@ class ArchitectureService:
                 new_content or ArchitectureContent.model_validate(proposal.content),
                 self._lint_config,
             )
-        return self._architecture.save(proposal)
+        saved = self._architecture.save(proposal)
+        if change.status is ProposalStatus.APPROVED and self._on_approved is not None:
+            # Derived data: a failed rebuild must never undo or block an approval.
+            try:
+                self._on_approved(project_id, proposal_id)
+            except Exception:
+                logger.exception("Graph rebuild after approval failed for %s", proposal_id)
+        return saved

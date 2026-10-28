@@ -107,6 +107,12 @@ def finding_instruction(finding: Mapping[str, Any]) -> str:
             "actually support. If none is relevant, add an open question explaining why the "
             "supplied passages were not used. Never cite a passage only to silence this finding."
         )
+    if rule == "meta_open_question":
+        return (
+            f"The open question at {path or 'the flagged entry'} asks about the proposal or its "
+            "citations, which is not a question for the client. Remove that open question; do "
+            "not replace it with another meta question."
+        )
     return "Resolve this finding by changing only the item it names."
 
 

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import ArchitectureDiagram from "./ArchitectureDiagram";
+import GraphPanel from "./GraphPanel";
 import { StatusBadge } from "./ui";
 import { hrefFor } from "./routes";
 import {
@@ -47,9 +48,11 @@ const LINT_GROUPS: { label: string; rules: LintRule[] }[] = [
     rules: ["coverage_all_addressed", "frontend_only_backend_requirement"],
   },
   { label: "Citations", rules: ["passages_not_cited"] },
+  { label: "Open questions", rules: ["meta_open_question"] },
 ];
 
 const RULE_LABELS: Record<string, string> = {
+  meta_open_question: "Open question about the proposal",
   origin_overclaim: "Origin",
   preference_overclaim: "Preference",
   completed_implementation_wording: "Wording",
@@ -362,6 +365,7 @@ function ProposalView({
   const [summary, setSummary] = useState(proposal.summary);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"proposal" | "graph">("proposal");
   const c = proposal.content;
   const draft = proposal.status === "draft";
   const stale = proposal.stale_requirement_ids;
@@ -517,6 +521,27 @@ function ProposalView({
         )}
       </div>
 
+      <div className="row" role="tablist" aria-label="Proposal views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "proposal"}
+          onClick={() => setTab("proposal")}
+        >
+          Proposal
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "graph"}
+          onClick={() => setTab("graph")}
+        >
+          Graph
+        </button>
+      </div>
+      {tab === "graph" && <GraphPanel projectId={projectId} proposalId={proposal.id} />}
+      {tab === "proposal" && (
+      <>
       <div className="card">
         <h3>Solution overview</h3>
         <p>{c.solution_overview}</p>
@@ -630,6 +655,8 @@ function ProposalView({
           ))}
         </ol>
       </div>
+      </>
+      )}
     </div>
     </Sources.Provider>
   );

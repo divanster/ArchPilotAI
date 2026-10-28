@@ -19,6 +19,7 @@ from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.embedding import EmbeddingRepository
+from app.repositories.graph import GraphRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.ai_service import AIService
@@ -27,6 +28,7 @@ from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.architecture_lint import lint_config_from_settings
 from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
+from app.services.graph import GraphService
 from app.services.hybrid import HybridRetrievalService
 from app.services.project import ProjectService
 from app.services.requirement import RequirementService
@@ -141,12 +143,26 @@ def get_extraction_service(
 ExtractionServiceDep = Annotated[RequirementExtractionService, Depends(get_extraction_service)]
 
 
+def get_graph_service(session: SessionDep) -> GraphService:
+    return GraphService(
+        GraphRepository(session),
+        ArchitectureRepository(session),
+        ProjectRepository(session),
+        RequirementRepository(session),
+        hub_threshold=get_settings().graph_hub_threshold,
+    )
+
+
+GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
+
+
 def get_architecture_service(session: SessionDep) -> ArchitectureService:
     return ArchitectureService(
         ArchitectureRepository(session),
         ProjectRepository(session),
         RequirementRepository(session),
         lint_config=lint_config_from_settings(get_settings()),
+        on_approved=get_graph_service(session).build,
     )
 
 

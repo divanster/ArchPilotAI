@@ -26,6 +26,8 @@ class ArchitectureProposal(Base):
     __tablename__ = "architecture_proposals"
     __table_args__ = (
         UniqueConstraint("project_id", "version", name="uq_architecture_project_version"),
+        # Target of the composite foreign keys from the derived graph tables.
+        UniqueConstraint("id", "project_id", name="uq_architecture_id_project"),
         CheckConstraint(
             "status IN ('draft', 'approved', 'rejected')", name="ck_architecture_status"
         ),

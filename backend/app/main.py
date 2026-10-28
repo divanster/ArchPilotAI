@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.ai import router as ai_router
 from app.api.architecture import router as architecture_router
 from app.api.documents import router as documents_router
+from app.api.graph import router as graph_router
 from app.api.health import router as health_router
 from app.api.projects import router as projects_router
 from app.api.requirements import router as requirements_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(retrieval_router)
     app.include_router(requirements_router)
     app.include_router(architecture_router)
+    app.include_router(graph_router)
     app.include_router(ai_router)
     logging.getLogger(__name__).info("application started")
     return app

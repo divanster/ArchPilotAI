@@ -537,7 +537,8 @@ export type LintRule =
   | "completed_implementation_wording"
   | "coverage_all_addressed"
   | "frontend_only_backend_requirement"
-  | "passages_not_cited";
+  | "passages_not_cited"
+  | "meta_open_question";
 
 export interface LintFinding {
   rule: LintRule;
@@ -583,6 +584,80 @@ export const reviseProposal = (projectId: string, id: string) =>
   request<ArchitectureProposal>(`${architecturePath(projectId)}/${id}/revise`, {
     method: "POST",
   });
+
+export interface GraphNode {
+  id: string;
+  kind: string;
+  label: string;
+  source_ref: string;
+}
+
+export interface GraphEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  kind: string;
+  evidence: string;
+}
+
+export interface GraphData {
+  built: boolean;
+  built_at: string | null;
+  node_count: number;
+  edge_count: number;
+  truncated: boolean;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface GraphRebuild {
+  node_count: number;
+  edge_count: number;
+  skipped_requirement_refs: number;
+}
+
+export interface ImpactItem {
+  node: GraphNode;
+  depth: number;
+  via_kind: string;
+  via_evidence: string;
+  reached_from: string;
+  via_hub: boolean;
+}
+
+export type ImpactMode = "direct" | "transitive";
+
+export interface GraphImpact {
+  root: GraphNode;
+  mode: ImpactMode;
+  max_depth: number;
+  hub_threshold: number;
+  truncated: boolean;
+  items: ImpactItem[];
+  hubs_not_expanded: { node: GraphNode; degree: number }[];
+}
+
+const graphPath = (projectId: string, id: string) =>
+  `${architecturePath(projectId)}/${id}/graph`;
+
+export const getGraph = (projectId: string, id: string) =>
+  request<GraphData>(graphPath(projectId, id));
+
+export const rebuildGraph = (projectId: string, id: string) =>
+  request<GraphRebuild>(`${graphPath(projectId, id)}/rebuild`, { method: "POST" });
+
+export const getGraphImpact = (
+  projectId: string,
+  id: string,
+  nodeId: string,
+  mode: ImpactMode = "direct",
+) =>
+  request<GraphImpact>(
+    `${graphPath(projectId, id)}/impact?node_id=${encodeURIComponent(nodeId)}&mode=${mode}`,
+  );
+
+export const getGraphOrphans = (projectId: string, id: string) =>
+  request<{ orphans: GraphNode[] }>(`${graphPath(projectId, id)}/orphans`);
 
 export const updateProposal = (
   projectId: string,

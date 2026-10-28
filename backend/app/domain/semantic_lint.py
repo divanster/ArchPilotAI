@@ -13,7 +13,7 @@ beyond the simple "not" / "never" prefix check.
 import re
 import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -38,6 +38,7 @@ class LintRule(StrEnum):
     COVERAGE_ALL_ADDRESSED = "coverage_all_addressed"
     FRONTEND_ONLY_BACKEND_REQUIREMENT = "frontend_only_backend_requirement"
     PASSAGES_NOT_CITED = "passages_not_cited"
+    META_OPEN_QUESTION = "meta_open_question"
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,17 @@ DEFAULT_BACKEND_KEYWORDS: tuple[str, ...] = ("search", "upload")
 # A phrase is not a claim when one of these immediately precedes it ("is not yet proven").
 _NEGATIONS = ("not", "never", "not yet", "no", "yet to be")
 
+# Questions about the proposal or the model's own citations are not questions for the client.
+# Deliberately narrow: a question that merely mentions documents or AI products is not flagged.
+DEFAULT_META_QUESTION_PATTERNS: tuple[str, ...] = (
+    r"\bwhy\b.*\b(passages?|citations?|cited|sources?)\b",
+    r"\b(passages?|citations?)\b.*\b(not|never|none|weren't|wasn't|aren't)\b.*\b(cited|used)\b",
+    r"\b(were|was|are|is)\b.*\b(passages?|citations?)\b.*\b(cited|supplied|provided|used)\b",
+    r"\b(did|does|should) (the|this) (model|ai|llm|generator)\b",
+    r"\b(the|this) (proposal|draft)\b.*\b(cite[sd]?|citations?|coverage matrix|lint|findings)\b",
+    r"\bwhy (does|did|is|was) (the|this) (proposal|draft|architecture)\b",
+)
+
 
 @dataclass(frozen=True)
 class LintConfig:
@@ -130,18 +142,15 @@ class LintConfig:
     frontend_types: frozenset[NodeType] = field(
         default_factory=lambda: frozenset({NodeType.CLIENT})
     )
+    # Regular expressions (case-insensitive) for open questions about the proposal itself.
+    meta_question_patterns: tuple[str, ...] = DEFAULT_META_QUESTION_PATTERNS
 
     def with_extra_terms(self, names: Iterable[str]) -> "LintConfig":
         known = {t.name.lower() for t in self.product_terms}
         extra = tuple(
             ProductTerm(n.strip()) for n in names if n.strip() and n.strip().lower() not in known
         )
-        return LintConfig(
-            self.product_terms + extra,
-            self.wording_phrases,
-            self.backend_keywords,
-            self.frontend_types,
-        )
+        return replace(self, product_terms=self.product_terms + extra)
 
 
 class LintFinding(BaseModel):
@@ -380,6 +389,25 @@ def _check_citations(content: ArchitectureContent) -> list[LintFinding]:
     ]
 
 
+def _check_meta_questions(content: ArchitectureContent, config: LintConfig) -> list[LintFinding]:
+    patterns = [re.compile(p, re.IGNORECASE) for p in config.meta_question_patterns if p.strip()]
+    findings = []
+    for index, question in enumerate(content.open_questions):
+        if any(p.search(question.question) for p in patterns):
+            findings.append(
+                LintFinding(
+                    rule=LintRule.META_OPEN_QUESTION,
+                    severity="warning",
+                    message=(
+                        "This open question is about the proposal or its citations, not a "
+                        "question for the client; consider removing it"
+                    ),
+                    path=f"open_questions[{index}]",
+                )
+            )
+    return findings
+
+
 def lint_proposal(
     title: str,
     summary: str,
@@ -394,5 +422,6 @@ def lint_proposal(
         *_check_wording(title, summary, content, config),
         *_check_coverage(content, confirmed_requirements, config),
         *_check_citations(content),
+        *_check_meta_questions(content, config),
     ]
     return LintReport(findings=findings)
