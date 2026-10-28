@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     workbench_proxy: str = ""
     workbench_timeout: float = Field(default=90.0, gt=0, le=300)
     workbench_max_retries: int = Field(default=2, ge=0, le=5)
+    # Reasoning deployments only (GPT-5 / o-series); empty keeps the model default.
+    workbench_reasoning_effort: Literal["", "none", "low", "medium", "high"] = ""
 
     # Local-prototype guard rails for POST /api/ai/generate.
     ai_max_prompt_chars: int = Field(default=4000, ge=1, le=20_000)

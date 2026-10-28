@@ -52,5 +52,6 @@ def create_provider(settings: Settings) -> LLMProvider:
             proxy=settings.workbench_proxy.strip() or None,
             timeout=settings.workbench_timeout,
             max_retries=settings.workbench_max_retries,
+            reasoning_effort=settings.workbench_reasoning_effort or None,
         )
     )

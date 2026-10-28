@@ -196,6 +196,8 @@ def test_successful_response_matches_documented_contract() -> None:
         {"role": "user", "content": PROMPT},
     ]
     assert (body["max_tokens"], body["stream"]) == (50, False)
+    assert "max_completion_tokens" not in body
+    assert "reasoning_effort" not in body
     assert API_KEY not in request.content.decode()
 
     assert result.text == ANSWER

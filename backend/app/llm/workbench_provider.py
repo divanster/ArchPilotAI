@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -28,6 +28,15 @@ TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
 MAX_RETRY_AFTER_SECONDS = 30.0
 BACKOFF_BASE_SECONDS = 0.5
 
+ReasoningEffort = Literal["none", "low", "medium", "high"]
+# GPT-5 and o-series deployments are reasoning models (Azure OpenAI reasoning-model docs). GPT-4.x
+# and everything else keep the classic request. `\b` keeps gpt-50 or o30 from matching.
+_REASONING_DEPLOYMENT = re.compile(r"^(gpt-5|o[134])\b", re.IGNORECASE)
+
+
+def is_reasoning_deployment(deployment: str) -> bool:
+    return bool(_REASONING_DEPLOYMENT.match(deployment.strip()))
+
 
 class WorkbenchConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -41,6 +50,8 @@ class WorkbenchConfig(BaseModel):
     proxy: str | None = None
     timeout: float = 90.0
     max_retries: int = 2
+    # Only sent to reasoning deployments; None leaves the model's own default in place.
+    reasoning_effort: ReasoningEffort | None = None
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -122,6 +133,19 @@ class WorkbenchProvider:
             "stream": False,
         }
 
+    def _request_body(self, request: LLMRequest) -> dict[str, Any]:
+        """Chat Completions body; reasoning deployments get their documented parameter set."""
+        if not is_reasoning_deployment(self._config.deployment):
+            return self._body(request)
+        body = self._body(request)
+        # Documented for GPT-5 reasoning models: `max_tokens` and `temperature` are unsupported,
+        # `max_completion_tokens` is required and also covers reasoning tokens.
+        del body["temperature"]
+        body["max_completion_tokens"] = body.pop("max_tokens")
+        if self._config.reasoning_effort is not None:
+            body["reasoning_effort"] = self._config.reasoning_effort
+        return body
+
     def generate(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
         attempts = self._config.max_retries + 1
@@ -139,7 +163,7 @@ class WorkbenchProvider:
                         self._url(),
                         params={"api-version": self._config.api_version},
                         headers=self._headers(),
-                        json=self._body(request),
+                        json=self._request_body(request),
                     )
                 except httpx.TimeoutException:
                     last_error = LLMTimeoutError()
