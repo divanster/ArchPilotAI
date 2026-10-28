@@ -2,10 +2,12 @@ import uuid
 from pathlib import Path
 
 import pytest
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from alembic import command
+from app.models.plan import ImplementationPlan, PlanDependencyEdit, PlanTask
 from tests.conftest import alembic_config
 
 
@@ -15,10 +17,25 @@ def test_migration_matches_expected_schema(postgres_url: str) -> None:
     assert set(columns) == {"id", "name", "description", "status", "created_at", "updated_at"}
     assert columns["name"]["nullable"] is False
     assert columns["description"]["nullable"] is True
+    head = ScriptDirectory.from_config(alembic_config(postgres_url)).get_current_head()
     with engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0010_knowledge_graph"
-        )
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == head
+    engine.dispose()
+
+
+def test_plan_tables_match_the_models(postgres_url: str) -> None:
+    engine = create_engine(postgres_url)
+    inspector = inspect(engine)
+    for model in (ImplementationPlan, PlanTask, PlanDependencyEdit):
+        name = model.__tablename__
+        model_columns = list(model.__table__.columns)
+        actual = {c["name"]: c for c in inspector.get_columns(name)}
+        assert set(actual) == {c.name for c in model_columns}, name
+        for column in model_columns:
+            assert actual[column.name]["nullable"] is column.nullable, (name, column.name)
+    edits = {c["name"] for c in inspector.get_columns("plan_dependency_edits")}
+    assert {"action", "task_key", "depends_on_key", "reason", "author", "created_at"} <= edits
+    assert "dependency_sources" in {c["name"] for c in inspector.get_columns("plan_tasks")}
     engine.dispose()
 
 
