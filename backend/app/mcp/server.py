@@ -77,6 +77,27 @@ def create_server(ctx: ToolContext) -> FastMCP:
         )
 
     @mcp.tool()
+    def get_patch(project_id: str, task_key: str, version: int | None = None) -> dict[str, Any]:
+        """A proposed code patch for a task of the approved plan (default: latest accepted
+        version, else the latest). Files, notes, assumptions, test_suggestions and warnings;
+        cut sections are reported in `truncated_sections`. Read-only; code is never executed.
+        """
+        return _run(
+            "get_patch",
+            {"project_id": project_id, "task_key": task_key, "version": version},
+            lambda: tools.get_patch(ctx, project_id, task_key, version),
+        )
+
+    @mcp.tool()
+    def get_workspace_tree(project_id: str) -> dict[str, Any]:
+        """The accepted generated files of a project (path, size, hash); capped at 500 entries."""
+        return _run(
+            "get_workspace_tree",
+            {"project_id": project_id},
+            lambda: tools.get_workspace_tree(ctx, project_id),
+        )
+
+    @mcp.tool()
     def get_impact(project_id: str, node_id: str, mode: str = "direct") -> dict[str, Any]:
         """What depends on a graph node of the approved architecture. mode: direct or transitive."""
         return _run(

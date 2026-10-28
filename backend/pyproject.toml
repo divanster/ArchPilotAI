@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
+  "pyyaml>=6",
   "python-multipart>=0.0.9",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
@@ -43,3 +44,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app", "tests", "alembic"]
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true

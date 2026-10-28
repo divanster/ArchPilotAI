@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.ai import require_non_production
-from app.api.deps import PlanServiceDep
+from app.api.deps import PatchRepositoryDep, PlanServiceDep
+from app.domain.patch import task_status
 from app.domain.plan import PlanCycleError
 from app.models.plan import PlanTask
 from app.services.plan import (
@@ -100,8 +101,10 @@ class PlanResponse(PlanSummary):
     tasks: list[PlanTaskOut]
 
 
-def _task_out(detail: PlanDetail, task: PlanTask) -> PlanTaskOut:
+def _task_out(detail: PlanDetail, task: PlanTask, derived: dict[uuid.UUID, str]) -> PlanTaskOut:
     out = PlanTaskOut.model_validate(task)
+    # todo / proposed / accepted is derived from the task's patches.
+    out.status = derived.get(task.id, "todo")
     for key in task.depends_on:
         edit = detail.manual_reason(task, key)
         out.dependencies.append(
@@ -116,7 +119,8 @@ def _task_out(detail: PlanDetail, task: PlanTask) -> PlanTaskOut:
     return out
 
 
-def _full(detail: PlanDetail) -> PlanResponse:
+def _full(detail: PlanDetail, derived: dict[uuid.UUID, str] | None = None) -> PlanResponse:
+    statuses = derived or {}
     return PlanResponse(
         **PlanSummary.model_validate(detail.plan).model_dump(exclude={"task_count"}),
         task_count=len(detail.tasks),
@@ -128,7 +132,7 @@ def _full(detail: PlanDetail) -> PlanResponse:
         manual_edits=[ManualEditOut.model_validate(e) for e in detail.edits],
         previous_version=detail.previous_version,
         previous_manual_edits=[ManualEditOut.model_validate(e) for e in detail.previous_edits],
-        tasks=[_task_out(detail, t) for t in detail.tasks],
+        tasks=[_task_out(detail, t, statuses) for t in detail.tasks],
     )
 
 
@@ -159,11 +163,21 @@ def list_plans(project_id: uuid.UUID, service: PlanServiceDep) -> list[PlanSumma
 
 
 @router.get("/{plan_id}", response_model=PlanResponse)
-def get_plan(project_id: uuid.UUID, plan_id: uuid.UUID, service: PlanServiceDep) -> PlanResponse:
+def get_plan(
+    project_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    service: PlanServiceDep,
+    patches: PatchRepositoryDep,
+) -> PlanResponse:
     try:
-        return _full(service.get(project_id, plan_id))
+        detail = service.get(project_id, plan_id)
     except NotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    derived = {
+        task_id: task_status(found)
+        for task_id, found in patches.statuses_by_task(project_id, plan_id).items()
+    }
+    return _full(detail, derived)
 
 
 def _decide(

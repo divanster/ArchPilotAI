@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     embedding_dimension: int = Field(default=0, ge=0, le=16_384)
     embedding_batch_size: int = Field(default=16, ge=1, le=2048)
 
+    # Patch-only coding agent (Phase 11A). Generated code lives in the database; a folder is only
+    # written on an explicit export, and must be OUTSIDE the ArchPilotAI repository.
+    workspace_root: str = ""
+    patch_max_output_tokens: int = Field(default=8000, ge=1, le=8000)
+    patch_max_files: int = Field(default=20, ge=1, le=100)
+    patch_max_file_bytes: int = Field(default=100_000, ge=1, le=1_000_000)
+    patch_max_patch_bytes: int = Field(default=400_000, ge=1, le=5_000_000)
+    patch_max_context_chars: int = Field(default=60_000, ge=1_000, le=200_000)
+
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
 

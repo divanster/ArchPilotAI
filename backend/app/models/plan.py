@@ -76,6 +76,8 @@ class PlanTask(Base):
         ),
         UniqueConstraint("plan_id", "key", name="uq_plan_task_key"),
         UniqueConstraint("plan_id", "order_index", name="uq_plan_task_order"),
+        # Target of the composite foreign key from code_patches.
+        UniqueConstraint("id", "project_id", name="uq_plan_task_id_project"),
         CheckConstraint(f"kind IN {TASK_KINDS}", name="ck_plan_task_kind"),
         CheckConstraint("status IN ('todo')", name="ck_plan_task_status"),
         Index("ix_plan_tasks_plan", "plan_id"),

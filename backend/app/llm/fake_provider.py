@@ -9,6 +9,7 @@ from app.llm.architecture_prompt import (
 from app.llm.contracts import LLMRequest, LLMResponse, TokenUsage
 from app.llm.exceptions import LLMError
 from app.llm.extraction_prompt import fake_extraction_answer, is_extraction_request
+from app.llm.patch_prompt import fake_patch_answer, is_patch_request
 
 
 class FakeLLMProvider:
@@ -22,10 +23,13 @@ class FakeLLMProvider:
         error: LLMError | None = None,
         extraction_text: str | None = None,
         architecture_text: str | None = None,
+        patch_text: str | None = None,
     ) -> None:
         self._responses = dict(responses or {})
         self._model = model
         self._error = error
+        # Fixed answer for patch prompts; None derives a small valid patch from the context.
+        self._patch_text = patch_text
         # Fixed answer for requirements-extraction prompts; None derives one from the document.
         self._extraction_text = extraction_text
         # Fixed answer for architecture prompts; None derives one from the supplied context.
@@ -51,6 +55,12 @@ class FakeLLMProvider:
                 self._extraction_text
                 if self._extraction_text is not None
                 else fake_extraction_answer(request.prompt)
+            )
+        if text is None and is_patch_request(request.system_prompt):
+            text = (
+                self._patch_text
+                if self._patch_text is not None
+                else fake_patch_answer(request.prompt)
             )
         if text is None and is_revision_request(request.system_prompt):
             text = (

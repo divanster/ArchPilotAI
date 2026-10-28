@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import PatchPanel from "./PatchPanel";
 import ProjectHeader from "./ProjectHeader";
 import { StatusBadge } from "./ui";
 import {
   buildPlan,
   decidePlan,
   editPlanDependency,
+  ApiError,
+  exportWorkspace,
   getPlan,
   listPlans,
   listProposals,
@@ -194,7 +197,9 @@ function TaskCard({
   open,
   onToggleSection,
   onEdit,
+  children,
 }: {
+  children?: ReactNode;
   task: PlanTask;
   titles: Map<string, string>;
   allTasks: PlanTask[];
@@ -222,6 +227,9 @@ function TaskCard({
           {task.key} · {task.title}
         </h3>
         <span className="badge badge-type">{task.kind}</span>
+        <span className="badge" data-testid={`task-status-${task.key}`}>
+          {task.status}
+        </span>
       </div>
       {task.description && <p className="sub">{task.description}</p>}
       {task.flags.length > 0 && (
@@ -347,6 +355,7 @@ function TaskCard({
           </ul>
         </div>
       )}
+      {children}
     </li>
   );
 }
@@ -373,6 +382,8 @@ export default function PlanSection({
   const [author, setAuthor] = useState("");
   const [openSections, setOpenSections] = useState<Set<string>>(new Set());
   const [showOlder, setShowOlder] = useState(false);
+  const [foreign, setForeign] = useState<string | null>(null);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
   const fields: EditorFields = { reason, author, setReason, setAuthor };
   const load = useCallback(async () => {
     setLoadError(null);
@@ -442,6 +453,36 @@ export default function PlanSection({
         }),
       "Dependency edit failed",
     );
+  }
+
+  async function refreshPlan() {
+    if (!selected) return;
+    try {
+      setSelected(await getPlan(projectId, selected.id));
+    } catch {
+      // keep the current view; the next load will retry
+    }
+  }
+
+  async function doExport(confirm: boolean) {
+    setBusy(true);
+    setError(null);
+    setExportMsg(null);
+    try {
+      const r = await exportWorkspace(projectId, confirm);
+      setForeign(null);
+      setExportMsg(
+        `Exported to ${r.folder}: ${r.written.length} written, ${r.unchanged.length} unchanged.`,
+      );
+    } catch (e) {
+      if (e instanceof ApiError && (e.detail as { code?: string } | null)?.code === "foreign_files") {
+        setForeign(e.message);
+      } else {
+        setError(e instanceof Error ? e.message : "Export failed");
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   const draft = selected?.status === "draft";
@@ -650,9 +691,37 @@ export default function PlanSection({
                   })
                 }
                 onEdit={edit}
-              />
+              >
+                <PatchPanel
+                  projectId={projectId}
+                  planId={selected.id}
+                  task={t}
+                  approved={selected.status === "approved"}
+                  onChanged={() => void refreshPlan()}
+                />
+              </TaskCard>
             ))}
           </ol>
+          {selected.status === "approved" && (
+            <div className="card">
+              <h3>Workspace export</h3>
+              <p className="sub">
+                Writes accepted files to the configured workspace folder. Nothing is executed.
+              </p>
+              <button type="button" disabled={busy} onClick={() => void doExport(false)}>
+                Export workspace
+              </button>
+              {foreign && (
+                <div role="alert">
+                  <p>{foreign}</p>
+                  <button type="button" onClick={() => void doExport(true)}>
+                    Confirm overwrite
+                  </button>
+                </div>
+              )}
+              {exportMsg && <p role="status">{exportMsg}</p>}
+            </div>
+          )}
         </div>
       )}
     </section>

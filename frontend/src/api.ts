@@ -40,23 +40,63 @@ export interface ProjectInput {
   status: ProjectStatus;
 }
 
-async function errorMessage(response: Response): Promise<string> {
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+interface PatchFailure {
+  code: string;
+  path?: string | null;
+}
+
+function describeDetail(detail: object): string | null {
+  const d = detail as { message?: unknown; failures?: unknown; paths?: unknown };
+  if (typeof d.message !== "string") return null;
+  let text = d.message;
+  if (Array.isArray(d.failures)) {
+    const items = (d.failures as PatchFailure[])
+      .slice(0, 20)
+      .map((f) => (f.path ? `${f.code} (${f.path})` : f.code));
+    if (items.length > 0) text += ` [${items.join(", ")}]`;
+  }
+  if (Array.isArray(d.paths) && d.paths.length > 0) {
+    text += ` [${(d.paths as string[]).slice(0, 20).join(", ")}]`;
+  }
+  return text;
+}
+
+async function errorInfo(response: Response): Promise<{ message: string; detail: unknown }> {
   try {
     const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") return body.detail;
+    if (typeof body.detail === "string") return { message: body.detail, detail: body.detail };
     if (Array.isArray(body.detail)) {
-      return body.detail
-        .map((d) =>
-          typeof d === "object" && d && "msg" in d
-            ? String(d.msg)
-            : "invalid value",
-        )
-        .join("; ");
+      return {
+        message: body.detail
+          .map((d) =>
+            typeof d === "object" && d && "msg" in d
+              ? String(d.msg)
+              : "invalid value",
+          )
+          .join("; "),
+        detail: body.detail,
+      };
+    }
+    if (body.detail && typeof body.detail === "object") {
+      const described = describeDetail(body.detail);
+      if (described) return { message: described, detail: body.detail };
     }
   } catch {
     // fall through to generic message
   }
-  return `Request failed (${response.status})`;
+  return { message: `Request failed (${response.status})`, detail: null };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -68,7 +108,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         : undefined,
   });
   if (!response.ok) {
-    const message = await errorMessage(response);
+    const { message, detail } = await errorInfo(response);
     // A 404 without a JSON "detail" does not come from this backend's router (FastAPI always
     // sends one), which usually means another service is listening on the API address.
     if (response.status === 404 && message.startsWith("Request failed")) {
@@ -77,7 +117,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           "Check that the ArchPilotAI backend is running on this address.",
       );
     }
-    throw new Error(message);
+    throw new ApiError(message, response.status, detail);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -765,4 +805,127 @@ export const decidePlan = (
 ) =>
   request<ImplementationPlan>(`${plansPath(projectId)}/${id}/${decision}`, {
     method: "POST",
+  });
+
+export type PatchStatus = "proposed" | "accepted" | "rejected";
+
+export interface PatchFileView {
+  path: string;
+  change: "create" | "modify" | "delete";
+  content: string;
+  previous_content_hash: string | null;
+  diff: string;
+  diff_truncated: boolean;
+}
+
+export interface PatchSummary {
+  id: string;
+  task_key: string;
+  version: number;
+  status: PatchStatus;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  created_at: string;
+  reviewed_by: string | null;
+  review_reason: string | null;
+  file_count: number;
+}
+
+export interface CodePatchDetail extends PatchSummary {
+  plan_id: string;
+  task_id: string;
+  notes: string[];
+  assumptions: string[];
+  test_suggestions: string[];
+  warnings: string[];
+  blocking_acknowledged: boolean;
+  validation: "passed" | "stale";
+  stale: { code: string; path: string | null }[];
+  files: PatchFileView[];
+}
+
+export interface TechnologyConfirmation {
+  task_key: string;
+  name: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface WorkspaceFileInfo {
+  path: string;
+  content_hash: string;
+  size: number;
+  source_patch_id: string;
+}
+
+export interface ExportResult {
+  folder: string;
+  written: string[];
+  unchanged: string[];
+  overwritten: string[];
+  left_on_disk: string[];
+  foreign_untouched: number;
+}
+
+const taskPath = (projectId: string, planId: string, key: string) =>
+  `${plansPath(projectId)}/${planId}/tasks/${key}`;
+
+export const listTechnologyConfirmations = (
+  projectId: string,
+  planId: string,
+  key: string,
+) =>
+  request<TechnologyConfirmation[]>(
+    `${taskPath(projectId, planId, key)}/technology-confirmation`,
+  );
+
+export const confirmTechnology = (
+  projectId: string,
+  planId: string,
+  key: string,
+  body: { name: string; reason: string },
+) =>
+  request<TechnologyConfirmation>(
+    `${taskPath(projectId, planId, key)}/technology-confirmation`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+export const listPatches = (projectId: string, planId: string, key: string) =>
+  request<PatchSummary[]>(`${taskPath(projectId, planId, key)}/patches`);
+
+export const generatePatch = (
+  projectId: string,
+  planId: string,
+  key: string,
+  acknowledgeBlockingQuestions: boolean,
+) =>
+  request<CodePatchDetail>(`${taskPath(projectId, planId, key)}/patches`, {
+    method: "POST",
+    body: JSON.stringify({
+      acknowledge_blocking_questions: acknowledgeBlockingQuestions,
+    }),
+  });
+
+export const getPatch = (projectId: string, patchId: string) =>
+  request<CodePatchDetail>(`${projectPath(projectId)}/patches/${patchId}`);
+
+export const reviewPatch = (
+  projectId: string,
+  patchId: string,
+  action: "accept" | "reject",
+  body: { reviewer: string; reason: string },
+) =>
+  request<CodePatchDetail>(
+    `${projectPath(projectId)}/patches/${patchId}/${action}`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+export const getWorkspace = (projectId: string) =>
+  request<{ files: WorkspaceFileInfo[] }>(`${projectPath(projectId)}/workspace`);
+
+export const exportWorkspace = (projectId: string, confirmOverwrite: boolean) =>
+  request<ExportResult>(`${projectPath(projectId)}/workspace/export`, {
+    method: "POST",
+    body: JSON.stringify({ confirm_overwrite: confirmOverwrite }),
   });

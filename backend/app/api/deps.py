@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
 from app.domain.chunking import ChunkSettings
+from app.domain.patch import PatchLimits
 from app.embeddings.contracts import EmbeddingProvider
 from app.embeddings.factory import create_embedding_provider
-from app.llm.contracts import LLMProvider
+from app.llm.contracts import LLMProvider, LLMRequest, LLMResponse
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.factory import create_provider
 from app.repositories.architecture import ArchitectureRepository
@@ -20,6 +21,7 @@ from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.embedding import EmbeddingRepository
 from app.repositories.graph import GraphRepository
+from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
@@ -31,6 +33,7 @@ from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
 from app.services.graph import GraphService
 from app.services.hybrid import HybridRetrievalService
+from app.services.patch import PatchService
 from app.services.plan import PlanService
 from app.services.project import ProjectService
 from app.services.requirement import RequirementService
@@ -169,6 +172,54 @@ def get_plan_service(session: SessionDep) -> PlanService:
 
 
 PlanServiceDep = Annotated[PlanService, Depends(get_plan_service)]
+
+
+def get_patch_repository(session: SessionDep) -> PatchRepository:
+    return PatchRepository(session)
+
+
+PatchRepositoryDep = Annotated[PatchRepository, Depends(get_patch_repository)]
+
+
+class _NoGeneration:
+    """Stands in for the provider on read/review endpoints, which never call the model."""
+
+    provider_name = "none"
+    model_name = "none"
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        raise RuntimeError("This endpoint does not generate")
+
+
+def _patch_service(session: Session, provider: LLMProvider) -> PatchService:
+    settings = get_settings()
+    return PatchService(
+        provider,
+        ProjectRepository(session),
+        PlanRepository(session),
+        ArchitectureRepository(session),
+        RequirementRepository(session),
+        PatchRepository(session),
+        limits=PatchLimits(
+            settings.patch_max_files,
+            settings.patch_max_file_bytes,
+            settings.patch_max_patch_bytes,
+        ),
+        max_output_tokens=settings.patch_max_output_tokens,
+        max_context_chars=settings.patch_max_context_chars,
+    )
+
+
+def get_patch_service(session: SessionDep, provider: LLMProviderDep) -> PatchService:
+    return _patch_service(session, provider)
+
+
+def get_patch_review_service(session: SessionDep) -> PatchService:
+    return _patch_service(session, _NoGeneration())
+
+
+PatchServiceDep = Annotated[PatchService, Depends(get_patch_service)]
+PatchReviewServiceDep = Annotated[PatchService, Depends(get_patch_review_service)]
 
 
 def get_architecture_service(session: SessionDep) -> ArchitectureService:

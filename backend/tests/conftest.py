@@ -83,7 +83,9 @@ def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE plan_dependency_edits, plan_tasks, implementation_plans, "
+                "TRUNCATE TABLE workspace_files, patch_files, code_patches, "
+                "technology_confirmations, "
+                "plan_dependency_edits, plan_tasks, implementation_plans, "
                 "graph_edges, graph_nodes, "
                 "chunk_embeddings, document_chunks, "
                 "architecture_proposals, "

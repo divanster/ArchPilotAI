@@ -17,12 +17,14 @@ from app.core.config import get_settings
 from app.domain.architecture import ArchitectureContent, ProposalStatus
 from app.domain.chunking import ChunkSettings
 from app.domain.graph import MAX_IMPACT_DEPTH, ImpactMode
+from app.domain.patch import task_status
 from app.domain.requirement import RequirementStatus
 from app.domain.search import MAX_TOP_K, InvalidQueryError
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.graph import GraphRepository
+from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
@@ -313,9 +315,14 @@ def get_plan(
                 else f"The project has no implementation plan version {version}"
             )
         plan = detail.plan
+        derived = {
+            task_id: task_status(found)
+            for task_id, found in PatchRepository(session).statuses_by_task(pid, plan.id).items()
+        }
         tasks_json = []
         for t in detail.tasks:
             item = t.as_json()
+            item["status"] = derived.get(t.id, "todo")
             for dep in item["dependencies"]:
                 edit = detail.manual_reason(t, dep["key"])
                 if edit is not None:
@@ -360,6 +367,117 @@ def get_plan(
     result["truncated_sections"] = report
     result["truncated"] = flag[0] or bool(report)
     return result
+
+
+MAX_PATCH_FILES = 20
+MAX_PATCH_FILE_CHARS = 20_000
+MAX_TREE_ENTRIES = 500
+MAX_DIFF_CHARS = 20_000
+
+
+def get_patch(
+    ctx: ToolContext, project_id: str, task_key: str, version: int | None = None
+) -> dict[str, Any]:
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        plans = PlanService(
+            PlanRepository(session),
+            ArchitectureRepository(session),
+            GraphRepository(session),
+            ProjectRepository(session),
+            RequirementRepository(session),
+        )
+        detail = plans.get_version(pid, None)
+        if detail is None:
+            raise ToolInputError("The project has no approved implementation plan")
+        task = next((t for t in detail.tasks if t.key == task_key), None)
+        if task is None:
+            raise ToolInputError(f"Unknown task_key {task_key}")
+        repo = PatchRepository(session)
+        patches = sorted(repo.for_task(pid, task.id), key=lambda p: p.version)
+        if not patches:
+            raise ToolInputError(f"Task {task_key} has no patch yet")
+        if version is None:
+            accepted = [p for p in patches if p.status == "accepted"]
+            patch = (accepted or patches)[-1]
+        else:
+            found = [p for p in patches if p.version == version]
+            if not found:
+                raise ToolInputError(f"Task {task_key} has no patch version {version}")
+            patch = found[0]
+        files = list(repo.files(pid, patch.id))
+        report: dict[str, dict[str, int]] = {}
+        flag = [False]
+        shown = []
+        for f in files[:MAX_PATCH_FILES]:
+            content, cut = _truncate(f.content, MAX_PATCH_FILE_CHARS)
+            if cut:
+                report[f"files[{f.path}].content"] = {
+                    "returned": len(content),
+                    "total": len(f.content),
+                }
+            shown.append(
+                {
+                    "path": f.path,
+                    "change": f.change,
+                    "content": content,
+                    "previous_content_hash": f.previous_content_hash,
+                }
+            )
+        if len(files) > MAX_PATCH_FILES:
+            report["files"] = {"returned": MAX_PATCH_FILES, "total": len(files)}
+        sections = {
+            "notes": patch.notes,
+            "assumptions": patch.assumptions,
+            "test_suggestions": patch.test_suggestions,
+            "warnings": patch.warnings,
+        }
+        capped = {name: _cap_section(name, value, report, flag) for name, value in sections.items()}
+        result: dict[str, Any] = {
+            "project_id": str(pid),
+            "task_key": task.key,
+            "patch_id": str(patch.id),
+            "version": patch.version,
+            "status": patch.status,
+            "versions": [{"version": p.version, "status": p.status} for p in patches],
+            "provider": patch.provider,
+            "model": patch.model,
+            "prompt_version": patch.prompt_version,
+            "reviewed_by": patch.reviewed_by,
+            "review_reason": patch.review_reason,
+            "validation": "passed",
+            "files": shown,
+            **capped,
+        }
+    result["truncated_sections"] = report
+    result["truncated"] = flag[0] or bool(report)
+    return result
+
+
+def get_workspace_tree(ctx: ToolContext, project_id: str) -> dict[str, Any]:
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        files = list(PatchRepository(session).workspace(pid))
+        entries = [
+            {
+                "path": f.path,
+                "size": len(f.content.encode("utf-8")),
+                "content_hash": f.content_hash,
+                "source_patch_id": str(f.source_patch_id),
+            }
+            for f in files[:MAX_TREE_ENTRIES]
+        ]
+        total = len(files)
+    report: dict[str, dict[str, int]] = {}
+    if total > MAX_TREE_ENTRIES:
+        report["files"] = {"returned": MAX_TREE_ENTRIES, "total": total}
+    return {
+        "project_id": str(pid),
+        "total": total,
+        "files": entries,
+        "truncated_sections": report,
+        "truncated": bool(report),
+    }
 
 
 def _graph_service(session: Session) -> GraphService:
