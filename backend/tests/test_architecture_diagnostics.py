@@ -14,6 +14,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.architecture import (
+    RESERVED_KEYS,
     ArchitectureContent,
     ArchitectureError,
     DecisionOrigin,
@@ -396,6 +397,8 @@ def schema_field_names() -> set[str]:
     def walk(schema: dict[str, Any], defs: dict[str, Any]) -> None:
         for name, prop in schema.get("properties", {}).items():
             names.add(name)
+            if name in RESERVED_KEYS:  # written by the service, never by the model
+                continue
             for ref in _refs(prop):
                 key = ref.rsplit("/", 1)[-1]
                 if key not in seen:

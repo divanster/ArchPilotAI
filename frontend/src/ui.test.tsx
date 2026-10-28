@@ -53,6 +53,12 @@ describe("routes", () => {
       arg: "abc",
     });
     expect(parseHash("")).toEqual({ page: "dashboard" });
+    expect(parseHash("#/documents/p1/d%201")).toEqual({
+      page: "documents",
+      arg: "p1",
+      sub: "d 1",
+    });
+    expect(hrefFor("documents", "p1", "d 1")).toBe("#/documents/p1/d%201");
     expect(parseHash("#/nope")).toEqual({ page: "dashboard" });
     expect(hrefFor("documents", "a b")).toBe("#/documents/a%20b");
     expect(hrefFor("playground")).toBe("#/playground");

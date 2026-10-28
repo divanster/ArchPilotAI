@@ -165,6 +165,10 @@ def get_architecture_generation_service(
         max_context_chars=settings.architecture_max_context_chars,
         max_unconfirmed_chars=settings.architecture_max_unconfirmed_chars,
         max_output_tokens=settings.architecture_max_output_tokens,
+        chunks=ChunkRepository(session),
+        scan_limit=settings.retrieval_max_scan_chunks,
+        passages_per_requirement=settings.architecture_passages_per_requirement,
+        max_passages=settings.architecture_max_passages,
     )
 
 

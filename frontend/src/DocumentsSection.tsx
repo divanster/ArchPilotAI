@@ -26,9 +26,12 @@ function validateFile(file: File): string | null {
 export default function DocumentsSection({
   projectId,
   onChanged,
+  openDocumentId,
 }: {
   projectId: string;
   onChanged?: () => void;
+  /** Document to preview once the list has loaded (from a citation link). */
+  openDocumentId?: string;
 }) {
   const [documents, setDocuments] = useState<DocumentSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -56,6 +59,13 @@ export default function DocumentsSection({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!openDocumentId || !documents) return;
+    const doc = documents.find((d) => d.id === openDocumentId);
+    if (doc) void handlePreview(doc);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openDocumentId, documents === null]);
 
   async function handleUpload() {
     if (!file) {

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import ArchitectureDiagram from "./ArchitectureDiagram";
 import { StatusBadge } from "./ui";
+import { hrefFor } from "./routes";
 import {
   generateArchitecture,
   getProposal,
@@ -12,6 +13,8 @@ import {
   type CoverageEntry,
   type CoverageStatus,
   type DecisionOrigin,
+  type PassageSource,
+  type RetrievalInfo,
   type ProposalPatch,
   type ProposalSummary,
 } from "./api";
@@ -31,6 +34,63 @@ const COVERAGE_LABELS: Record<CoverageStatus, string> = {
 };
 
 type Titles = Map<string, string>;
+
+interface SourceContext {
+  projectId: string;
+  sources: Map<string, PassageSource>;
+}
+
+const Sources = createContext<SourceContext>({ projectId: "", sources: new Map() });
+
+const RETRIEVAL_TEXT: Record<RetrievalInfo["status"], string> = {
+  used: "Keyword search supplied unconfirmed document passages as context.",
+  no_matches: "Documents are indexed, but no passages matched the requirements.",
+  not_indexed: "Document context not used: documents are not indexed.",
+  no_documents: "Document context not used: the project has no documents.",
+  disabled: "Document context was disabled for this generation.",
+};
+
+function RetrievalNote({ info }: { info: RetrievalInfo | null | undefined }) {
+  if (!info) {
+    return (
+      <p className="muted" data-testid="retrieval-note">
+        Document context not recorded
+      </p>
+    );
+  }
+  const extra: string[] = [];
+  if (info.status === "used") extra.push(`${info.passages_provided} passage(s)`);
+  if (info.unindexed_documents > 0 && info.status !== "not_indexed")
+    extra.push(`${info.unindexed_documents} document(s) not indexed`);
+  if (info.truncated) extra.push("limited by the context budget");
+  return (
+    <p className="muted" data-testid="retrieval-note">
+      {RETRIEVAL_TEXT[info.status]}
+      {extra.length > 0 && ` (${extra.join("; ")})`} Passages are evidence, not
+      requirements.
+    </p>
+  );
+}
+
+function Citations({ ids }: { ids: string[] | undefined }) {
+  const { projectId, sources } = useContext(Sources);
+  if (!ids || ids.length === 0) return null;
+  return (
+    <ul className="chip-list" aria-label="Cited passages">
+      {ids.map((id) => {
+        const s = sources.get(id);
+        if (!s) return <li className="chip" key={id}>Source unavailable</li>;
+        return (
+          <li className="chip" key={id} data-testid="cited-passage">
+            <a href={hrefFor("documents", projectId, s.document_id)}>
+              {s.filename} [{s.source_start}–{s.source_end}]
+            </a>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 function CoverageMatrix({
   matrix,
@@ -143,6 +203,7 @@ function DecisionCard({
         <TextList label="Risks" items={decision.risks} />
       </dl>
       <Refs ids={decision.supporting_requirement_ids} titles={titles} />
+      <Citations ids={decision.source_passage_ids} />
     </li>
   );
 }
@@ -172,9 +233,11 @@ function DecisionGroup({
 function ProposalView({
   proposal,
   titles,
+  projectId,
   onPatch,
 }: {
   proposal: ArchitectureProposal;
+  projectId: string;
   titles: Titles;
   onPatch: (patch: ProposalPatch) => Promise<void>;
 }) {
@@ -186,6 +249,7 @@ function ProposalView({
   const c = proposal.content;
   const draft = proposal.status === "draft";
   const stale = proposal.stale_requirement_ids;
+  const sources = new Map((c.source_passages ?? []).map((s) => [s.chunk_id, s]));
   const elements = new Map<string, string>();
   for (const comp of c.components) elements.set(comp.id, comp.name);
   for (const d of [
@@ -227,6 +291,7 @@ function ProposalView({
   }
 
   return (
+    <Sources.Provider value={{ projectId, sources }}>
     <div className="stack" data-testid="proposal">
       <div className="card">
         <div className="row">
@@ -318,6 +383,7 @@ function ProposalView({
         <p>{c.solution_overview}</p>
       </div>
 
+      <RetrievalNote info={c.retrieval} />
       <CoverageMatrix matrix={c.coverage_matrix} titles={titles} elements={elements} />
 
       <div className="card">
@@ -348,6 +414,7 @@ function ProposalView({
               <span className="badge badge-type">{comp.type}</span>
               <p>{comp.responsibility}</p>
               <Refs ids={comp.requirement_ids} titles={titles} />
+              <Citations ids={comp.source_passage_ids} />
             </li>
           ))}
         </ul>
@@ -367,12 +434,16 @@ function ProposalView({
               <p>{r.description}</p>
               <p className="muted">Mitigation: {r.mitigation}</p>
               <Refs ids={r.requirement_ids} titles={titles} />
+              <Citations ids={r.source_passage_ids} />
             </li>
           ))}
         </ul>
         <ul aria-label="Assumptions">
           {c.assumptions.map((a, i) => (
-            <li key={i}>Assumption: {a.statement}</li>
+            <li key={i}>
+              Assumption: {a.statement}
+              <Citations ids={a.source_passage_ids} />
+            </li>
           ))}
         </ul>
       </div>
@@ -385,6 +456,7 @@ function ProposalView({
             <li key={i}>
               {q.question}
               {q.why_it_matters && <span className="muted"> — {q.why_it_matters}</span>}
+              <Citations ids={q.source_passage_ids} />
             </li>
           ))}
         </ul>
@@ -397,6 +469,7 @@ function ProposalView({
             {c.alternatives.map((a, i) => (
               <li key={i}>
                 <strong>{a.title}</strong>: {a.description} ({a.trade_offs})
+                <Citations ids={a.source_passage_ids} />
               </li>
             ))}
           </ul>
@@ -419,6 +492,7 @@ function ProposalView({
         </ol>
       </div>
     </div>
+    </Sources.Provider>
   );
 }
 
@@ -536,6 +610,7 @@ export default function ArchitectureSection({ projectId }: { projectId: string }
           key={selected.id}
           proposal={selected}
           titles={titles}
+          projectId={projectId}
           onPatch={handlePatch}
         />
       )}

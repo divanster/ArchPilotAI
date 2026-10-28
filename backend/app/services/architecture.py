@@ -4,7 +4,10 @@ from dataclasses import dataclass
 
 from app.domain.architecture import (
     ArchitectureContent,
+    FailureCategory,
+    InvalidArchitectureOutputError,
     ProposalStatus,
+    cited_passage_ids,
     content_to_json,
     referenced_requirement_ids,
     verify_references,
@@ -89,8 +92,20 @@ class ArchitectureService:
                 "Generate a new version instead."
             )
         confirmed = self._confirmed_ids(project_id)
+        new_content: ArchitectureContent | None = None
         if change.content is not None:
-            verify_references(change.content, confirmed, require_complete=False)
+            # Provenance is never editable: keep the stored sources and only allow citing them.
+            stored = ArchitectureContent.model_validate(proposal.content)
+            known = {p.chunk_id for p in stored.source_passages}
+            if not cited_passage_ids(change.content) <= known:
+                raise InvalidArchitectureOutputError(
+                    "An item cites a passage that is not a recorded source of this proposal",
+                    category=FailureCategory.REFERENCE,
+                )
+            new_content = change.content.model_copy(
+                update={"source_passages": stored.source_passages, "retrieval": stored.retrieval}
+            )
+            verify_references(new_content, confirmed, require_complete=False)
         if change.status is ProposalStatus.APPROVED:
             cited = referenced_requirement_ids(ArchitectureContent.model_validate(proposal.content))
             if not cited <= confirmed:
@@ -103,8 +118,8 @@ class ArchitectureService:
             proposal.title = change.title
         if change.summary is not None:
             proposal.summary = change.summary
-        if change.content is not None:
-            proposal.content = content_to_json(change.content)
+        if new_content is not None:
+            proposal.content = content_to_json(new_content)
         if change.status is not None:
             proposal.status = change.status.value
         return self._architecture.save(proposal)

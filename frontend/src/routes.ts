@@ -7,6 +7,8 @@ export interface Route {
   page: Page;
   /** Page-specific argument: a project id, or "new" on the projects page. */
   arg?: string;
+  /** Optional second argument, e.g. a document id to open on the documents page. */
+  sub?: string;
 }
 
 const PAGES: Page[] = [
@@ -19,18 +21,20 @@ const PAGES: Page[] = [
 ];
 
 export function parseHash(hash: string): Route {
-  const [, page, arg] = hash.split("/");
+  const [, page, arg, sub] = hash.split("/");
   if (PAGES.includes(page as Page)) {
     return {
       page: page as Page,
       arg: arg ? decodeURIComponent(arg) : undefined,
+      ...(sub ? { sub: decodeURIComponent(sub) } : {}),
     };
   }
   return { page: "dashboard" };
 }
 
-export function hrefFor(page: Page, arg?: string): string {
-  return `#/${page}${arg ? `/${encodeURIComponent(arg)}` : ""}`;
+export function hrefFor(page: Page, arg?: string, sub?: string): string {
+  const tail = arg && sub ? `/${encodeURIComponent(sub)}` : "";
+  return `#/${page}${arg ? `/${encodeURIComponent(arg)}` : ""}${tail}`;
 }
 
 export function navigate(page: Page, arg?: string) {

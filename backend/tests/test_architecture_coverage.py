@@ -280,7 +280,7 @@ def flat(text: str) -> str:
 
 
 def test_prompt_version_is_bumped() -> None:
-    assert PROMPT_VERSION == "architecture-v5"
+    assert PROMPT_VERSION == "architecture-v6"
     assert f"ARCHPILOT_PROMPT_VERSION={PROMPT_VERSION}" in SYSTEM_PROMPT
 
 

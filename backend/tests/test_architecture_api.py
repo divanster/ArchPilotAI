@@ -101,7 +101,7 @@ def test_generates_a_draft_from_confirmed_requirements(client: TestClient, engin
     assert body["status"] == "draft"
     assert body["version"] == 1
     assert (body["provider"], body["model"]) == ("fake", "fake-model-1")
-    assert body["prompt_version"] == "architecture-v5"
+    assert body["prompt_version"] == "architecture-v6"
     assert body["stale_requirement_ids"] == []
     content = ArchitectureContent.model_validate(body["content"])
     assert content.diagram.nodes and content.implementation_phases
@@ -118,7 +118,10 @@ def test_generates_a_draft_from_confirmed_requirements(client: TestClient, engin
     assert not any(i in request.prompt for i in ids)
     assert context["confirmed_requirements"][0]["source"]["quote"] in DOC
     assert all(c["status"] == "unconfirmed" for c in context["unconfirmed_context"])
-    assert context["unconfirmed_context"], "document text is offered, labelled unconfirmed"
+    # Nothing is indexed, so no excerpts are offered, and the proposal records why.
+    assert context["unconfirmed_context"] == []
+    assert body["content"]["retrieval"]["status"] == "not_indexed"
+    assert body["content"]["retrieval"]["unindexed_documents"] == 1
     assert request.temperature == 0
 
 
@@ -491,7 +494,8 @@ def test_too_many_confirmed_requirements_is_refused(client: TestClient, engine: 
 
 def test_unconfirmed_context_is_bounded(client: TestClient, engine: Engine) -> None:
     pid, _ = confirmed_project(client)
-    make_doc(client, pid, "filler " * 2000, "big.txt")
+    did = make_doc(client, pid, "The system shall list projects. " * 400, "big.txt")
+    assert client.post(f"/api/projects/{pid}/documents/{did}/index", json={}).status_code == 200
     provider = FakeLLMProvider()
     use(provider)
     assert generate(client, pid).status_code == 201

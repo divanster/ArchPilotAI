@@ -381,6 +381,8 @@ export interface Decision {
   rationale: string;
   origin: DecisionOrigin;
   supporting_requirement_ids: string[];
+  /** Absent on proposals stored before retrieval-grounded generation. */
+  source_passage_ids?: string[];
   alternatives_considered: string[];
   assumptions: string[];
   risks: string[];
@@ -398,6 +400,7 @@ export interface ArchComponent {
   responsibility: string;
   technology: string | null;
   requirement_ids: string[];
+  source_passage_ids?: string[];
 }
 
 export interface ArchRisk {
@@ -405,6 +408,7 @@ export interface ArchRisk {
   severity: "low" | "medium" | "high";
   mitigation: string;
   requirement_ids: string[];
+  source_passage_ids?: string[];
 }
 
 export interface DiagramNode {
@@ -429,6 +433,29 @@ export interface CoverageEntry {
   gap: string | null;
 }
 
+export interface PassageSource {
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  source_start: number;
+  source_end: number;
+}
+
+export type RetrievalStatus =
+  | "used"
+  | "no_matches"
+  | "not_indexed"
+  | "no_documents"
+  | "disabled";
+
+export interface RetrievalInfo {
+  status: RetrievalStatus;
+  passages_provided: number;
+  unindexed_documents: number;
+  budget_chars: number;
+  truncated: boolean;
+}
+
 export interface ArchitectureContent {
   solution_overview: string;
   recommended_stack: StackItem[];
@@ -438,17 +465,23 @@ export interface ArchitectureContent {
   security_architecture: Decision[];
   non_functional_design: Decision[];
   risks: ArchRisk[];
-  assumptions: { statement: string; requirement_ids: string[] }[];
+  assumptions: {
+    statement: string;
+    requirement_ids: string[];
+    source_passage_ids?: string[];
+  }[];
   open_questions: {
     question: string;
     why_it_matters: string | null;
     requirement_ids: string[];
+    source_passage_ids?: string[];
   }[];
   alternatives: {
     title: string;
     description: string;
     trade_offs: string;
     requirement_ids: string[];
+    source_passage_ids?: string[];
   }[];
   implementation_phases: {
     name: string;
@@ -458,6 +491,9 @@ export interface ArchitectureContent {
   diagram: { nodes: DiagramNode[]; edges: DiagramEdge[] };
   /** null or absent: proposal predates the matrix, so coverage was not recorded. */
   coverage_matrix?: CoverageEntry[] | null;
+  /** Written by the service. Absent on proposals that predate retrieval. */
+  source_passages?: PassageSource[];
+  retrieval?: RetrievalInfo | null;
 }
 
 export interface ProposalSummary {

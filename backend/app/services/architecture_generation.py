@@ -11,6 +11,8 @@ from app.domain.architecture import (
     ArchitectureError,
     ContextTooLargeError,
     NoConfirmedRequirementsError,
+    PassageCatalog,
+    PassageSource,
     ProposalStatus,
     ProviderMetadata,
     build_alias_map,
@@ -23,9 +25,11 @@ from app.llm.architecture_prompt import SYSTEM_PROMPT, build_prompt, new_nonce
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.models.architecture import ArchitectureProposal
 from app.repositories.architecture import ArchitectureRepository
+from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services.architecture_context import ArchitectureContextRetriever, RequirementQuery
 from app.services.project import ProjectNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,17 @@ class ArchitectureGenerationService:
         max_context_chars: int,
         max_unconfirmed_chars: int,
         max_output_tokens: int,
+        chunks: ChunkRepository | None = None,
+        scan_limit: int = 20_000,
+        passages_per_requirement: int = 3,
+        max_passages: int = 12,
     ) -> None:
+        self._retriever = ArchitectureContextRetriever(
+            chunks,
+            scan_limit=scan_limit,
+            per_requirement=passages_per_requirement,
+            max_passages=max_passages,
+        )
         self._provider = provider
         self._projects = projects
         self._documents = documents
@@ -72,7 +86,9 @@ class ArchitectureGenerationService:
         finally:
             _generation_lock.release()
 
-    def _build_context(self, project_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, uuid.UUID]]:
+    def _build_context(
+        self, project_id: uuid.UUID
+    ) -> tuple[dict[str, Any], dict[str, uuid.UUID], PassageCatalog]:
         project = self._projects.get(project_id)
         assert project is not None
         confirmed = self._requirements.list(project_id, "confirmed")
@@ -111,22 +127,35 @@ class ArchitectureGenerationService:
         if used > self._max_context_chars:
             raise ContextTooLargeError("The confirmed requirements exceed the context limit")
         budget = min(self._max_unconfirmed_chars, self._max_context_chars - used)
-        if documents and budget > 200:
-            share = budget // len(documents) - 120  # leave room for the JSON wrapper
-            for document in documents:
-                if share <= 0:
-                    break
-                context["unconfirmed_context"].append(
-                    {
-                        "status": "unconfirmed",
-                        "document": document.original_filename,
-                        "excerpt": document.extracted_text[:share],
-                    }
-                )
-        return context, aliases
+        retrieved = self._retriever.retrieve(
+            project_id,
+            [RequirementQuery(alias_of[r.id], r.title, r.description) for r in confirmed],
+            has_documents=bool(documents),
+            budget_chars=budget,
+        )
+        # Passage aliases are a namespace of their own and are only valid for this request.
+        sources: dict[str, PassageSource] = {}
+        for number, row in enumerate(retrieved.passages, start=1):
+            alias = f"P{number:03d}"
+            sources[alias] = PassageSource(
+                chunk_id=row.chunk_id,
+                document_id=row.document_id,
+                filename=row.filename,
+                source_start=row.source_start,
+                source_end=row.source_end,
+            )
+            context["unconfirmed_context"].append(
+                {
+                    "id": alias,
+                    "status": "unconfirmed",
+                    "document": row.filename,
+                    "excerpt": row.text,
+                }
+            )
+        return context, aliases, PassageCatalog(sources, retrieved.info)
 
     def _generate(self, project_id: uuid.UUID) -> ArchitectureProposal:
-        context, aliases = self._build_context(project_id)
+        context, aliases, catalog = self._build_context(project_id)
         nonce = new_nonce()
         while nonce in json.dumps(context):
             nonce = new_nonce()
@@ -159,6 +188,7 @@ class ArchitectureGenerationService:
                 finish_reason=metadata.finish_reason,
                 max_chars=self._max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
                 aliases=aliases,
+                passages=catalog,
             )
             verify_references(generated, set(aliases.values()))
         except ArchitectureError as exc:

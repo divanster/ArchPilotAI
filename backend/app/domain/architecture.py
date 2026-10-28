@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -18,7 +18,7 @@ from pydantic import (
 )
 from pydantic_core import ErrorDetails, PydanticCustomError
 
-PROMPT_VERSION = "architecture-v5"
+PROMPT_VERSION = "architecture-v6"
 
 
 class ProposalStatus(StrEnum):
@@ -151,10 +151,50 @@ Long = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Ref = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
 ReqIds = Annotated[list[uuid.UUID], Field(max_length=50)]
 TextList = Annotated[list[Text], Field(max_length=10)]
+# Chunk ids of cited document passages. The model writes request-scoped aliases (P001, ...);
+# they are resolved to chunk ids before validation and storage.
+PassageIds = Annotated[list[uuid.UUID], Field(max_length=5)]
+UNKNOWN_PASSAGE_REFERENCE = "unknown_passage_reference"
+DUPLICATE_PASSAGE_SOURCE = "duplicate_passage_source"
+MAX_PASSAGE_SOURCES = 60
+# Fields only the service may write; model output containing them is refused.
+RESERVED_KEYS = ("source_passages", "retrieval")
 
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class PassageSource(_Strict):
+    """Where a cited, unconfirmed passage came from. The document text is immutable, so the
+    document id and offsets stay valid even if the chunk index is rebuilt later."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    filename: Annotated[str, StringConstraints(max_length=500)]
+    source_start: Annotated[int, Field(ge=0)]
+    source_end: Annotated[int, Field(ge=0)]
+
+
+RetrievalStatus = Literal["used", "no_matches", "not_indexed", "no_documents", "disabled"]
+
+
+class RetrievalInfo(_Strict):
+    """What document context the generation request was given (never the text itself)."""
+
+    status: RetrievalStatus
+    passages_provided: Annotated[int, Field(ge=0)]
+    unindexed_documents: Annotated[int, Field(ge=0)]
+    budget_chars: Annotated[int, Field(ge=0)]
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class PassageCatalog:
+    """The passages offered in one generation request, keyed by request-scoped alias."""
+
+    sources: Mapping[str, PassageSource]
+    info: RetrievalInfo
 
 
 class Decision(_Strict):
@@ -167,6 +207,7 @@ class Decision(_Strict):
     rationale: Text
     origin: DecisionOrigin
     supporting_requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
     alternatives_considered: TextList = Field(default_factory=list)
     assumptions: TextList = Field(default_factory=list)
     risks: TextList = Field(default_factory=list)
@@ -199,6 +240,7 @@ class Component(_Strict):
     responsibility: Text
     technology: Short | None = None
     requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
 
 
 class Risk(_Strict):
@@ -206,17 +248,20 @@ class Risk(_Strict):
     severity: Severity
     mitigation: Text
     requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
 
 
 class Assumption(_Strict):
     statement: Text
     requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
 
 
 class OpenQuestion(_Strict):
     question: Text
     why_it_matters: Text | None = None
     requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
 
 
 class Alternative(_Strict):
@@ -224,6 +269,7 @@ class Alternative(_Strict):
     description: Text
     trade_offs: Text
     requirement_ids: ReqIds = Field(default_factory=list)
+    source_passage_ids: PassageIds = Field(default_factory=list)
 
 
 class Phase(_Strict):
@@ -305,12 +351,29 @@ class ArchitectureContent(_Strict):
     diagram: Diagram
     # None means "not recorded" (proposals created before the matrix existed).
     coverage_matrix: Annotated[list[CoverageEntry], Field(max_length=200)] | None = None
+    # Provenance of cited document passages and of the retrieval step. Written by the service,
+    # never by the model. Empty / None for proposals created before Phase 7C.
+    source_passages: Annotated[list[PassageSource], Field(max_length=MAX_PASSAGE_SOURCES)] = Field(
+        default_factory=list
+    )
+    retrieval: RetrievalInfo | None = None
 
     @model_validator(mode="after")
     def _component_ids_unique(self) -> "ArchitectureContent":
         ids = [c.id for c in self.components]
         if len(set(ids)) != len(ids):
             raise PydanticCustomError(DUPLICATE_COMPONENT_ID, "component ids must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def _passage_citations_have_sources(self) -> "ArchitectureContent":
+        sources = [p.chunk_id for p in self.source_passages]
+        if len(set(sources)) != len(sources):
+            raise PydanticCustomError(DUPLICATE_PASSAGE_SOURCE, "passage sources must be unique")
+        if not cited_passage_ids(self) <= set(sources):
+            raise PydanticCustomError(
+                UNKNOWN_PASSAGE_REFERENCE, "an item cites a passage that has no recorded source"
+            )
         return self
 
 
@@ -365,6 +428,22 @@ def _id_lists(content: ArchitectureContent) -> Iterable[list[uuid.UUID]]:
     ):
         for entry in section:
             yield entry.requirement_ids
+
+
+def cited_passage_ids(content: ArchitectureContent) -> set[uuid.UUID]:
+    cited: set[uuid.UUID] = set()
+    for decision in _decisions(content):
+        cited.update(decision.source_passage_ids)
+    for section in (
+        content.components,
+        content.risks,
+        content.assumptions,
+        content.open_questions,
+        content.alternatives,
+    ):
+        for entry in section:
+            cited.update(entry.source_passage_ids)
+    return cited
 
 
 def referenced_requirement_ids(content: ArchitectureContent) -> set[uuid.UUID]:
@@ -431,6 +510,8 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
     Alternative,
     Phase,
     CoverageEntry,
+    PassageSource,
+    RetrievalInfo,
     DiagramNode,
     DiagramEdge,
     Diagram,
@@ -496,6 +577,7 @@ def parse_generated(
     finish_reason: str | None = None,
     max_chars: int | None = None,
     aliases: Mapping[str, uuid.UUID] | None = None,
+    passages: PassageCatalog | None = None,
 ) -> GeneratedArchitecture:
     """Strictly parse model output. Failures carry content-free diagnostics; nothing is repaired.
 
@@ -517,8 +599,12 @@ def parse_generated(
         }
         category = FailureCategory.OUTPUT_SIZE if truncated else FailureCategory.JSON_PARSE
         raise _invalid(category, diagnostics) from None
+    if isinstance(data, dict) and any(key in data for key in RESERVED_KEYS):
+        raise _invalid(FailureCategory.SCHEMA, {**base, "reason": "reserved_field"})
     if aliases is not None:
         data = resolve_aliases(data, aliases)
+    if passages is not None:
+        data = resolve_passage_aliases(data, passages)
     try:
         return GeneratedArchitecture.model_validate(data)
     except ValidationError as exc:
@@ -544,6 +630,8 @@ _REQUIREMENT_SECTIONS = (
     "alternatives",
     "implementation_phases",
 )
+# Phases may cite requirements but not passages.
+_PASSAGE_SECTIONS = tuple(s for s in _REQUIREMENT_SECTIONS if s != "implementation_phases")
 
 
 def build_alias_map(requirement_ids: Iterable[uuid.UUID]) -> dict[str, uuid.UUID]:
@@ -619,6 +707,58 @@ def resolve_aliases(data: Any, aliases: Mapping[str, uuid.UUID]) -> Any:
                 "aliases_available": len(aliases),
             },
         )
+    return resolved
+
+
+def resolve_passage_aliases(data: Any, catalog: PassageCatalog) -> Any:
+    """Replace passage aliases (P001, ...) with chunk ids and record the cited sources.
+
+    Exact matches against this request's catalog only. Requirement aliases and component or
+    decision ids are different namespaces and never match here. Citing is optional.
+    """
+    if not isinstance(data, dict):
+        return data
+    resolved = copy.deepcopy(data)
+    problems: list[dict[str, str]] = []
+    cited: set[str] = set()
+
+    def many(holder: dict[str, Any], path: str) -> None:
+        values = holder.get("source_passage_ids")
+        if not isinstance(values, list):
+            return  # absent is fine; a wrong shape is left for the schema validation
+        out: list[Any] = []
+        for i, value in enumerate(values):
+            if isinstance(value, str) and value in catalog.sources:
+                cited.add(value)
+                out.append(str(catalog.sources[value].chunk_id))
+                continue
+            reason = "not_a_string" if not isinstance(value, str) else "unknown_alias"
+            problems.append({"path": f"{path}.source_passage_ids[{i}]", "reason": reason})
+            out.append(value)
+        holder["source_passage_ids"] = out
+
+    for section in (*_DECISION_GROUPS, *_PASSAGE_SECTIONS):
+        items = resolved.get(section)
+        if isinstance(items, list):
+            for index, item in enumerate(items):
+                if isinstance(item, dict):
+                    many(item, f"{section}[{index}]")
+    if problems:
+        raise FabricatedReferenceError(
+            "The proposal cites passages that are not aliases of this request",
+            category=FailureCategory.REFERENCE,
+            diagnostics={
+                "namespace": "passage",
+                "invalid_references": len(problems),
+                "locations": problems[:MAX_LOGGED_ERRORS],
+                "locations_omitted": max(0, len(problems) - MAX_LOGGED_ERRORS),
+                "aliases_available": len(catalog.sources),
+            },
+        )
+    resolved["source_passages"] = [
+        catalog.sources[alias].model_dump(mode="json") for alias in sorted(cited)
+    ]
+    resolved["retrieval"] = catalog.info.model_dump(mode="json")
     return resolved
 
 

@@ -70,7 +70,9 @@ export default function App() {
           subtitle="Upload .txt or .md files and preview their text."
           projectId={route.arg}
         >
-          {(id) => <DocumentsSection key={id} projectId={id} />}
+          {(id) => (
+            <DocumentsSection key={id} projectId={id} openDocumentId={route.sub} />
+          )}
         </ProjectScopedPage>
       )}
       {route.page === "requirements" && (

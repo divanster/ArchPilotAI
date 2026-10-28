@@ -317,6 +317,90 @@ describe("coverage matrix", () => {
   });
 });
 
+describe("cited passages", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => vi.stubGlobal("fetch", fetchMock));
+  afterEach(() => {
+    fetchMock.mockReset();
+    vi.unstubAllGlobals();
+  });
+
+  const CHUNK = "55555555-5555-5555-5555-555555555555";
+  const DOC = "66666666-6666-6666-6666-666666666666";
+
+  function serve(p: ArchitectureProposal) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/requirements")) return json(reqs);
+      if (url.endsWith("/architecture")) return json([p]);
+      if (url.endsWith(`/architecture/${p.id}`)) return json(p);
+      return json({ detail: "nope" }, 404);
+    });
+  }
+
+  function cited(): ArchitectureProposal {
+    const base = proposal();
+    base.content.security_architecture = [{ ...decision, source_passage_ids: [CHUNK] }];
+    base.content.source_passages = [
+      { chunk_id: CHUNK, document_id: DOC, filename: "<b>notes</b>.md", source_start: 10, source_end: 42 },
+    ];
+    base.content.retrieval = {
+      status: "used",
+      passages_provided: 1,
+      unindexed_documents: 0,
+      budget_chars: 6000,
+      truncated: false,
+    };
+    return base;
+  }
+
+  it("shows the filename and offsets with a link to the document preview, as plain text", async () => {
+    serve(cited());
+    render(<ArchitectureSection projectId={PID} />);
+    const link = await screen.findByRole("link", { name: /notes.*\[10–42\]/ });
+    expect(link.getAttribute("href")).toBe(`#/documents/${PID}/${DOC}`);
+    expect(link.textContent).toContain("<b>notes</b>.md");
+    expect(link.querySelector("b")).toBeNull();
+    expect(screen.getByTestId("retrieval-note").textContent).toMatch(
+      /evidence, not requirements/,
+    );
+  });
+
+  it("explains when documents were not indexed", async () => {
+    const p = proposal();
+    p.content.retrieval = {
+      status: "not_indexed",
+      passages_provided: 0,
+      unindexed_documents: 2,
+      budget_chars: 6000,
+      truncated: false,
+    };
+    serve(p);
+    render(<ArchitectureSection projectId={PID} />);
+    expect((await screen.findByTestId("retrieval-note")).textContent).toMatch(
+      /not indexed/,
+    );
+    expect(screen.queryByTestId("cited-passage")).toBeNull();
+  });
+
+  it("displays an old proposal unchanged, without claiming retrieval was used", async () => {
+    serve(proposal());
+    render(<ArchitectureSection projectId={PID} />);
+    expect((await screen.findByTestId("retrieval-note")).textContent).toBe(
+      "Document context not recorded",
+    );
+    expect(screen.queryByTestId("cited-passage")).toBeNull();
+    expect(screen.getByText("Overview text")).toBeTruthy();
+  });
+
+  it("does not invent a source for an unknown citation", async () => {
+    const p = cited();
+    p.content.source_passages = [];
+    serve(p);
+    render(<ArchitectureSection projectId={PID} />);
+    expect(await screen.findByText("Source unavailable")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /notes/ })).toBeNull();
+  });
+});
 describe("ArchitectureDiagram", () => {
   it("keeps edge labels apart from each other and from nodes", () => {
     const nodes = ["hub", "a", "b", "c", "d"].map((id) => ({

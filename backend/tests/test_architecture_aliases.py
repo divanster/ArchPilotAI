@@ -325,7 +325,7 @@ def test_prompt_context_uses_stable_aliases_in_order(client: TestClient, engine:
     with Session(engine) as session:
         first = service(session, Canned(""))._build_context(uuid.UUID(pid))
         second = service(session, Canned(""))._build_context(uuid.UUID(pid))
-    context, aliases = first
+    context, aliases, _ = first
     assert [r["id"] for r in context["confirmed_requirements"]] == ["R001", "R002"]
     assert first == second
     assert set(aliases.values()) == {uuid.UUID(i) for i in ids[:2]}
@@ -336,8 +336,8 @@ def test_alias_maps_are_per_request_and_per_project(client: TestClient, engine: 
     pid_a, ids_a = confirmed_project(client)
     pid_b, ids_b = confirmed_project(client)
     with Session(engine) as session:
-        _, map_a = service(session, Canned(""))._build_context(uuid.UUID(pid_a))
-        _, map_b = service(session, Canned(""))._build_context(uuid.UUID(pid_b))
+        _, map_a, _ = service(session, Canned(""))._build_context(uuid.UUID(pid_a))
+        _, map_b, _ = service(session, Canned(""))._build_context(uuid.UUID(pid_b))
     assert list(map_a) == list(map_b) == ["R001", "R002"]
     assert set(map_a.values()).isdisjoint(map_b.values())
     assert set(map_b.values()) == {uuid.UUID(i) for i in ids_b[:2]}
@@ -366,7 +366,7 @@ def test_saved_proposal_references_are_uuids_in_the_database(
     with Session(engine) as session:
         row = session.scalars(select(ArchitectureProposal)).one()
         stored = json.dumps(row.content)
-        assert row.prompt_version == "architecture-v5"
+        assert row.prompt_version == "architecture-v6"
     assert all(i in stored for i in ids[:2])
     assert not any(f'"R00{n}"' in stored for n in range(1, 10))
 

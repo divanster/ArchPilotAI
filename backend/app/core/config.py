@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     architecture_max_requirements: int = Field(default=60, ge=1, le=200)
     architecture_max_context_chars: int = Field(default=24_000, ge=1, le=100_000)
     architecture_max_unconfirmed_chars: int = Field(default=4_000, ge=0, le=20_000)
+    # Retrieval-grounded context (Phase 7C): the char budget above caps the passages (0 = none).
+    architecture_passages_per_requirement: int = Field(default=3, ge=1, le=10)
+    architecture_max_passages: int = Field(default=12, ge=1, le=50)
     architecture_max_output_tokens: int = Field(default=8000, ge=1, le=8000)
 
     # Document chunking and keyword retrieval (Phase 7A). Overlap must be at most size // 2.
