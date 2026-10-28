@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.mcp import tools
 from app.mcp.server import create_server
 from app.mcp.tools import ReadOnlyViolationError, ToolContext, ToolInputError, read_only_session
+from app.models.architecture import ArchitectureProposal
 from app.models.base import Base
 from app.models.project import Project
 from tests.test_architecture_api import arch_url
@@ -101,8 +102,11 @@ def test_get_requirements_truncates(world: World, monkeypatch: pytest.MonkeyPatc
 def test_get_architecture_latest_approved_and_version(world: World) -> None:
     result = tools.get_architecture(world.ctx, world.pid)
     assert result["proposal_id"] == world.proposal_id
-    assert result["status"] == "approved"
-    assert "components" in result["content"]
+    assert result["status"] == result["approval_status"] == "approved"
+    assert "content" not in result
+    assert "components" in result["sections_index"]
+    assert result["truncated"] is False
+    assert result["truncated_sections"] == {}
     assert (
         tools.get_architecture(world.ctx, world.pid, result["version"])["version"]
         == (result["version"])
@@ -113,12 +117,96 @@ def test_get_architecture_latest_approved_and_version(world: World) -> None:
         tools.get_architecture(world.ctx, world.other)
 
 
-def test_get_architecture_truncates(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tools, "MAX_LIST_ITEMS", 1)
-    monkeypatch.setattr(tools, "MAX_STRING_CHARS", 20)
+def test_get_architecture_index_counts_match_sections(world: World) -> None:
+    index = tools.get_architecture(world.ctx, world.pid)["sections_index"]
+    full = tools.get_architecture(world.ctx, world.pid, sections=list(index))["content"]
+    assert list(full) == list(index)
+    for name, value in full.items():
+        if isinstance(value, list):
+            assert index[name]["items"] == len(value)
+
+
+def test_get_architecture_lint_findings_present(world: World) -> None:
     result = tools.get_architecture(world.ctx, world.pid)
+    assert "lint_findings" in result
+    assert result["lint_findings"] is None or "findings" in result["lint_findings"]
+
+
+def test_get_architecture_lint_findings_null_when_never_linted(
+    world: World, engine: Engine
+) -> None:
+    with Session(engine) as session:
+        proposal = session.get(ArchitectureProposal, uuid.UUID(world.proposal_id))
+        assert proposal is not None
+        proposal.lint_findings = None
+        session.commit()
+    assert tools.get_architecture(world.ctx, world.pid)["lint_findings"] is None
+
+
+def test_get_architecture_sections_selection(world: World) -> None:
+    result = tools.get_architecture(
+        world.ctx, world.pid, sections=["recommended_stack", "components"]
+    )
+    assert list(result["content"]) == ["recommended_stack", "components"]
+    assert "sections_index" not in result
+
+
+def test_get_architecture_sections_order_is_stable(world: World) -> None:
+    a = tools.get_architecture(world.ctx, world.pid, sections=["components", "recommended_stack"])
+    b = tools.get_architecture(
+        world.ctx, world.pid, sections=["recommended_stack", "components", "components"]
+    )
+    assert a["content"] == b["content"]
+    assert list(a["content"]) == list(b["content"])
+
+
+def test_get_architecture_unknown_section(world: World) -> None:
+    with pytest.raises(ToolInputError, match="Unknown section.*nope.*Valid sections:.*components"):
+        tools.get_architecture(world.ctx, world.pid, sections=["components", "nope"])
+
+
+def test_get_architecture_reports_truncation_per_section(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = tools.get_architecture(world.ctx, world.pid)["sections_index"]
+    name = next(n for n, v in index.items() if (v["items"] or 0) > 1)
+    total = index[name]["items"]
+    monkeypatch.setattr(tools, "MAX_SECTION_ITEMS", 1)
+    result = tools.get_architecture(world.ctx, world.pid, sections=[name])
+    assert len(result["content"][name]) == 1
     assert result["truncated"] is True
-    assert all(len(c) <= 1 for c in result["content"].values() if isinstance(c, list))
+    assert result["truncated_sections"][name] == {"returned": 1, "total": total}
+
+
+def test_get_architecture_size_budget_reports_cut(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = tools.get_architecture(world.ctx, world.pid)["sections_index"]
+    name = next(n for n, v in index.items() if (v["items"] or 0) > 1)
+    monkeypatch.setattr(tools, "MAX_ARCHITECTURE_CHARS", 10)
+    result = tools.get_architecture(world.ctx, world.pid, sections=[name])
+    report = result["truncated_sections"][name]
+    assert report["total"] == index[name]["items"]
+    assert report["returned"] == len(result["content"][name]) < report["total"]
+    assert result["truncated"] is True
+
+
+def test_get_architecture_truncates_strings(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tools, "MAX_STRING_CHARS", 20)
+    result = tools.get_architecture(world.ctx, world.pid, sections=["solution_overview"])
+    assert len(result["content"]["solution_overview"]) <= 20
+    assert result["truncated"] is True
+
+
+def test_requirement_code_derivation(world: World) -> None:
+    assert tools._requirement_code("REQ-001: The system shall") == "REQ-001"
+    assert tools._requirement_code("NFR-12: too short") is None
+    assert tools._requirement_code("see REQ-001: text") is None
+    assert tools._requirement_code("req-001: lowercase") is None
+    assert tools._requirement_code("ABCDE-001: too long") is None
+    items = tools.get_requirements(world.ctx, world.pid)["requirements"]
+    assert all("code" in r for r in items)
+    assert all(r["code"] is None for r in items)
 
 
 def test_get_impact_direct_and_transitive(world: World) -> None:
@@ -212,6 +300,7 @@ def test_no_tool_modifies_the_database(world: World, engine: Engine) -> None:
         for fn in (tools.get_architecture, tools.get_orphans):
             with contextlib.suppress(ToolInputError):
                 fn(world.ctx, pid)
+    tools.get_architecture(world.ctx, world.pid, sections=["components", "coverage_matrix"])
     tools.list_projects(world.ctx)
     tools.get_impact(world.ctx, world.pid, node, "transitive")
     assert dump(engine) == before

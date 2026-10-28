@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -36,7 +37,9 @@ MAX_PROJECTS = 100
 MAX_REQUIREMENTS = 100
 MAX_ORPHANS = 100
 MAX_IMPACT_HITS = 100
-MAX_LIST_ITEMS = 20  # per list inside an architecture proposal
+MAX_LIST_ITEMS = 20  # per nested list inside an architecture section
+MAX_SECTION_ITEMS = 200  # per top-level architecture section list (coverage_matrix is the longest)
+_REQUIREMENT_CODE = re.compile(r"^([A-Z]{2,4}-\d{3}):")
 MAX_STRING_CHARS = 1000
 MAX_QUOTE_CHARS = 500
 MAX_ARCHITECTURE_CHARS = 60_000
@@ -90,19 +93,31 @@ def _truncate(text: str, limit: int) -> tuple[str, bool]:
     return (text[:limit], True) if len(text) > limit else (text, False)
 
 
-def _cap(value: Any, flag: list[bool]) -> Any:
-    """Bound lists and strings inside a JSON-like value; record in `flag` if anything was cut."""
+def _cap(
+    value: Any,
+    path: str,
+    report: dict[str, dict[str, int]],
+    flag: list[bool],
+    list_limit: int | None = None,
+) -> Any:
+    """Bound lists and strings in a JSON-like value. Cut lists are recorded in `report` by path."""
     if isinstance(value, str):
         text, cut = _truncate(value, MAX_STRING_CHARS)
         flag[0] = flag[0] or cut
         return text
     if isinstance(value, list):
-        if len(value) > MAX_LIST_ITEMS:
-            flag[0] = True
-        return [_cap(v, flag) for v in value[:MAX_LIST_ITEMS]]
+        limit = MAX_LIST_ITEMS if list_limit is None else list_limit
+        if len(value) > limit:
+            report[path] = {"returned": limit, "total": len(value)}
+        return [_cap(v, f"{path}[{i}]", report, flag) for i, v in enumerate(value[:limit])]
     if isinstance(value, dict):
-        return {k: _cap(v, flag) for k, v in value.items()}
+        return {k: _cap(v, f"{path}.{k}", report, flag) for k, v in value.items()}
     return value
+
+
+def _cap_section(name: str, value: Any, report: dict[str, dict[str, int]], flag: list[bool]) -> Any:
+    """A requested section gets the full MAX_SECTION_ITEMS cap; nested lists use MAX_LIST_ITEMS."""
+    return _cap(value, name, report, flag, MAX_SECTION_ITEMS)
 
 
 def _node(node: Any) -> dict[str, Any]:
@@ -134,6 +149,11 @@ def list_projects(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+def _requirement_code(quote: str) -> str | None:
+    match = _REQUIREMENT_CODE.match(quote)
+    return match.group(1) if match else None
+
+
 def get_requirements(
     ctx: ToolContext, project_id: str, status: str = "confirmed"
 ) -> dict[str, Any]:
@@ -161,6 +181,8 @@ def get_requirements(
                 "title": r.title,
                 "description": _truncate(r.description, MAX_STRING_CHARS)[0],
                 "status": r.status,
+                # Derived from the source text (e.g. "REQ-001: ..."), not stored; else null.
+                "code": _requirement_code(r.source_quote),
                 "source": {
                     "document_id": str(r.document_id),
                     "source_start": r.source_start,
@@ -185,7 +207,10 @@ def _architecture_service(session: Session) -> ArchitectureService:
 
 
 def get_architecture(
-    ctx: ToolContext, project_id: str, version: int | None = None
+    ctx: ToolContext,
+    project_id: str,
+    version: int | None = None,
+    sections: list[str] | None = None,
 ) -> dict[str, Any]:
     with read_only_session(ctx) as session:
         pid = _project(session, project_id)
@@ -201,27 +226,55 @@ def get_architecture(
                 raise ToolInputError(f"The project has no architecture version {version}")
             proposal = matches[0]
         content = ArchitectureContent.model_validate(proposal.content).model_dump(mode="json")
+        # Section names are the top-level keys of `content`, which are also the proposal field
+        # paths; source_passages holds the document and offsets of every cited passage.
+        valid = list(content)
+        if sections:
+            unknown = [s for s in sections if s not in content]
+            if unknown:
+                raise ToolInputError(
+                    f"Unknown section(s): {', '.join(unknown)}. Valid sections: {', '.join(valid)}"
+                )
         result: dict[str, Any] = {
             "project_id": str(pid),
             "proposal_id": str(proposal.id),
             "version": proposal.version,
             "status": proposal.status,
+            "approval_status": proposal.status,
             "title": proposal.title,
             "summary": _truncate(proposal.summary, MAX_STRING_CHARS)[0],
+            # None when the version was never linted.
+            "lint_findings": proposal.lint_findings,
         }
         flag = [len(proposal.summary) > MAX_STRING_CHARS]
-    # Top-level keys of `content` are the proposal field paths; content.source_passages holds
-    # the document and offsets of every cited passage.
-    capped = _cap(content, flag)
-    result["content"] = capped
-    if len(json.dumps(result, default=str)) > MAX_ARCHITECTURE_CHARS:
-        flag[0] = True
-        result["content"] = {
-            k: (f"[{len(v)} items omitted for size]" if isinstance(v, list) else v)
-            for k, v in capped.items()
+    report: dict[str, dict[str, int]] = {}
+    result["lint_findings"] = _cap(result["lint_findings"], "lint_findings", report, flag)
+    if not sections:
+        result["sections_index"] = {
+            name: {"items": len(v) if isinstance(v, list) else (None if v is None else 1)}
+            for name, v in content.items()
         }
-        result["content"]["source_passages"] = capped.get("source_passages", [])
-    result["truncated"] = flag[0]
+        result["hint"] = "Pass sections=[...] to get_architecture to fetch section content."
+    else:
+        wanted = set(sections)
+        selected: dict[str, Any] = {}
+        used = 0
+        for name in valid:  # canonical order, whatever order the caller used
+            if name not in wanted:
+                continue
+            value = _cap_section(name, content[name], report, flag)
+            size = len(json.dumps(value, default=str))
+            if isinstance(value, list) and used + size > MAX_ARCHITECTURE_CHARS:
+                total = len(content[name])
+                while value and used + len(json.dumps(value, default=str)) > MAX_ARCHITECTURE_CHARS:
+                    value = value[: max(len(value) // 2, 0)] if len(value) > 1 else []
+                report[name] = {"returned": len(value), "total": total}
+                size = len(json.dumps(value, default=str))
+            used += size
+            selected[name] = value
+        result["content"] = selected
+    result["truncated_sections"] = report
+    result["truncated"] = flag[0] or bool(report)
     return result
 
 

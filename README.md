@@ -205,8 +205,12 @@ python -m app.mcp              # speaks MCP on stdin/stdout; logs go to stderr
 ```
 
 It uses the same database selection as the API (`backend/.env`). Tools: `list_projects`,
-`get_requirements(project_id, status="confirmed")`, `get_architecture(project_id, version=None)`
-(latest approved by default), `get_impact(project_id, node_id, mode="direct")`,
+`get_requirements(project_id, status="confirmed")` (each item has `code`, derived from the source
+quote when it starts with e.g. `REQ-001:`, else null),
+`get_architecture(project_id, version=None, sections=None)` (latest approved by default; without
+`sections` it returns the summary, `lint_findings`, status and an index of sections with item
+counts; with `sections` only those sections, and `truncated_sections` reports
+`{returned, total}` for every cut list), `get_impact(project_id, node_id, mode="direct")`,
 `get_orphans(project_id)`, `search_documents(project_id, query, top_k=5)` (BM25). Results carry
 source references (document id and offsets, proposal field path) and a `truncated` flag when a
 cap was applied. Unknown or malformed ids return a clear error. Each call logs the tool name,

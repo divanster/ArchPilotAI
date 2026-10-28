@@ -30,7 +30,10 @@ def create_server(ctx: ToolContext) -> FastMCP:
 
     @mcp.tool()
     def get_requirements(project_id: str, status: str = "confirmed") -> dict[str, Any]:
-        """Requirements with source offsets. status: proposed, confirmed or rejected."""
+        """Requirements with source offsets. status: proposed, confirmed or rejected.
+
+        `code` is derived from the source quote (^[A-Z]{2,4}-\\d{3}:), null otherwise.
+        """
         return _run(
             "get_requirements",
             {"project_id": project_id, "status": status},
@@ -38,12 +41,19 @@ def create_server(ctx: ToolContext) -> FastMCP:
         )
 
     @mcp.tool()
-    def get_architecture(project_id: str, version: int | None = None) -> dict[str, Any]:
-        """Architecture proposal (latest approved by default) with source passages."""
+    def get_architecture(
+        project_id: str, version: int | None = None, sections: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Architecture proposal (latest approved by default), with lint_findings and status.
+
+        Without `sections`: summary plus an index of sections with item counts. With `sections`
+        (e.g. ["coverage_matrix"]): only those sections; cut lists are reported in
+        `truncated_sections` as {name: {returned, total}}.
+        """
         return _run(
             "get_architecture",
-            {"project_id": project_id, "version": version},
-            lambda: tools.get_architecture(ctx, project_id, version),
+            {"project_id": project_id, "version": version, "sections": sections},
+            lambda: tools.get_architecture(ctx, project_id, version, sections),
         )
 
     @mcp.tool()
