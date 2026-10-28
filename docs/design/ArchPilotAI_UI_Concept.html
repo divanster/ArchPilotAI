@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArchPilotAI — UI concept</title>
+<style>
+  :root{
+    --bg:#f5f6fa; --card:#ffffff; --ink:#151a2d; --muted:#6a7288; --line:#e4e7f0;
+    --brand:#4f46e5; --brand-soft:#eef0ff; --ok:#12805c; --ok-soft:#e3f6ee;
+    --warn:#a15c07; --warn-soft:#fff3dc; --bad:#b42318; --bad-soft:#fde8e6;
+    --nav:#0f1226; --nav-ink:#b8bfdc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 "Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg);display:flex;min-height:100vh}
+  /* Sidebar */
+  aside{width:236px;background:var(--nav);color:var(--nav-ink);padding:20px 14px;display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+  .logo{display:flex;align-items:center;gap:10px;color:#fff;font-weight:700;font-size:16px;padding:4px 10px 18px}
+  .logo i{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#6d63ff,#2bb3ff);display:inline-block}
+  .nav-h{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6f7699;padding:12px 10px 4px}
+  .nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:var(--nav-ink);text-decoration:none}
+  .nav a.on{background:#1d2142;color:#fff}
+  .nav a .d{width:8px;height:8px;border-radius:50%;background:#3a4070}
+  .nav a.on .d{background:#7c74ff}
+  .status{margin-top:auto;background:#171b38;border-radius:12px;padding:12px;font-size:12px}
+  .status b{color:#fff}
+  .pill-ok{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px}
+  /* Main */
+  main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .top{display:flex;align-items:center;justify-content:space-between;padding:14px 28px;background:#fff;border-bottom:1px solid var(--line)}
+  .crumbs{color:var(--muted)} .crumbs b{color:var(--ink)}
+  .top .act{display:flex;gap:10px;align-items:center}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 14px;font-weight:600;color:var(--ink);cursor:pointer}
+  .btn.p{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn.g{background:var(--ok);border-color:var(--ok);color:#fff}
+  .avatar{width:32px;height:32px;border-radius:50%;background:#dfe3ff;color:var(--brand);display:grid;place-items:center;font-weight:700}
+  .content{padding:22px 28px 40px;display:flex;flex-direction:column;gap:18px}
+  /* Project header + stepper */
+  .ph{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
+  .ph h1{margin:0;font-size:20px}
+  .ph p{margin:2px 0 14px;color:var(--muted)}
+  .steps{display:flex;gap:0;align-items:center}
+  .step{flex:1;display:flex;align-items:center;gap:10px;position:relative}
+  .step:not(:last-child)::after{content:"";height:2px;background:var(--line);flex:1;margin:0 10px}
+  .step.done:not(:last-child)::after{background:var(--ok)}
+  .dot{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:12px;background:#eef0f6;color:var(--muted);flex-shrink:0}
+  .step.done .dot{background:var(--ok);color:#fff}
+  .step.cur .dot{background:var(--brand);color:#fff;box-shadow:0 0 0 4px var(--brand-soft)}
+  .step .l{line-height:1.15} .step .l small{color:var(--muted);display:block;font-size:11px}
+  .step .l b{font-size:13px}
+  /* Grid */
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
+  .card h2{margin:0 0 4px;font-size:16px}
+  .card .sub{color:var(--muted);margin:0 0 12px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .tab{padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--muted);font-weight:600;font-size:12.5px}
+  .tab.on{background:var(--brand-soft);color:var(--brand);border-color:#cfd3ff}
+  .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:700}
+  .b-ok{background:var(--ok-soft);color:var(--ok)} .b-warn{background:var(--warn-soft);color:var(--warn)}
+  .b-ai{background:var(--brand-soft);color:var(--brand)} .b-req{background:#e8f3ff;color:#0b63b8} .b-pref{background:#f1ecff;color:#6b3fc7}
+  .b-draft{background:#eef0f6;color:var(--muted)}
+  /* Diagram */
+  .diagram{border:1px dashed var(--line);border-radius:12px;background:linear-gradient(#fafbff,#fff);padding:10px}
+  .diagram svg{width:100%;height:auto;display:block}
+  /* Tech table */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--line)}
+  td{padding:10px;border-bottom:1px solid #f0f2f8;vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  .src{color:var(--brand);font-size:12px}
+  /* Right panel */
+  .side{display:flex;flex-direction:column;gap:14px;position:sticky;top:16px}
+  .score{display:flex;gap:10px}
+  .sc{flex:1;background:#fafbff;border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center}
+  .sc b{display:block;font-size:22px}
+  .sc small{color:var(--muted)}
+  .find{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #f0f2f8}
+  .find:last-child{border-bottom:0}
+  .ico{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:800;flex-shrink:0}
+  .i-ok{background:var(--ok-soft);color:var(--ok)} .i-w{background:var(--warn-soft);color:var(--warn)}
+  .find small{color:var(--muted);display:block}
+  .compare{display:flex;align-items:center;gap:8px;font-weight:700}
+  .arrow{color:var(--muted)}
+  .note{background:var(--warn-soft);color:#6b4204;border-radius:10px;padding:10px 12px;font-size:12.5px}
+  textarea{width:100%;min-height:62px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font:inherit;resize:vertical}
+  .row{display:flex;gap:10px}
+  .row .btn{flex:1}
+  .prog{height:8px;background:#eef0f6;border-radius:999px;overflow:hidden}
+  .prog i{display:block;height:100%;width:92%;background:linear-gradient(90deg,#34d399,#4f46e5)}
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="logo"><i></i>ArchPilotAI</div>
+  <div class="nav">
+    <div class="nav-h">Workspace</div>
+    <a href="#"><span class="d"></span>Dashboard</a>
+    <a href="#" class="on"><span class="d"></span>Projects</a>
+    <a href="#"><span class="d"></span>AI Playground</a>
+    <div class="nav-h">Project Atlas</div>
+    <a href="#"><span class="d"></span>1 · Documents</a>
+    <a href="#"><span class="d"></span>2 · Requirements</a>
+    <a href="#" class="on"><span class="d"></span>3 · Architecture</a>
+    <a href="#"><span class="d"></span>4 · Knowledge graph</a>
+    <a href="#"><span class="d"></span>5 · Plan &amp; build</a>
+  </div>
+  <div class="status">
+    <div><span class="pill-ok"></span><b>Backend</b> ok</div>
+    <div><span class="pill-ok"></span><b>Database</b> PostgreSQL</div>
+    <div style="margin-top:6px;color:#8e96bb">Model: gpt-4.1 · Workbench</div>
+  </div>
+</aside>
+
+<main>
+  <div class="top">
+    <div class="crumbs">Projects / <b>Project Atlas</b> / Architecture</div>
+    <div class="act">
+      <button class="btn">Export brief</button>
+      <button class="btn p">Generate architecture</button>
+      <div class="avatar">IY</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <!-- Project header with workflow stepper -->
+    <section class="ph">
+      <h1>Project Atlas</h1>
+      <p>Synthetic test project · 1 document · 24 confirmed requirements</p>
+      <div class="steps">
+        <div class="step done"><span class="dot">✓</span><span class="l"><b>Documents</b><small>1 indexed</small></span></div>
+        <div class="step done"><span class="dot">✓</span><span class="l"><b>Requirements</b><small>24 confirmed</small></span></div>
+        <div class="step cur"><span class="dot">3</span><span class="l"><b>Architecture</b><small>V7 approved</small></span></div>
+        <div class="step"><span class="dot">4</span><span class="l"><b>Graph</b><small>not built</small></span></div>
+        <div class="step"><span class="dot">5</span><span class="l"><b>Plan &amp; build</b><small>locked</small></span></div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
+
+        <section class="card">
+          <div class="tabs">
+            <span class="tab">V1</span><span class="tab">V2</span><span class="tab">V3</span><span class="tab">V4</span>
+            <span class="tab">V5</span><span class="tab">V6</span><span class="tab on">V7 · revised from V6</span>
+          </div>
+          <h2>Project Atlas Architecture Proposal <span class="badge b-ok">Approved</span></h2>
+          <p class="sub">gpt-4.1 · architecture-revise-v2 · proposal text describes a design, not a delivered system.</p>
+          <p style="margin:0">A React/TypeScript frontend, a REST backend, PostgreSQL for transactional data and Microsoft Azure as the preferred cloud platform, with Entra ID for authentication and role-based access control.</p>
+        </section>
+
+        <section class="card">
+          <h2>Component diagram</h2>
+          <p class="sub">Click a component to see what depends on it.</p>
+          <div class="diagram">
+            <svg viewBox="0 0 760 250" role="img" aria-label="Component diagram">
+              <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8z" fill="#8b93b1"/></marker></defs>
+              <g font-size="12" font-weight="600" text-anchor="middle">
+                <g stroke="#8b93b1" stroke-width="1.5" fill="none" marker-end="url(#a)">
+                  <path d="M175 70 H280"/><path d="M450 60 L560 40"/><path d="M450 85 L560 120"/>
+                  <path d="M365 100 V160"/><path d="M110 100 V190 H560" /><path d="M450 100 L560 200"/>
+                </g>
+                <rect x="40" y="40" width="140" height="60" rx="12" fill="#eef0ff" stroke="#c7ccff"/><text x="110" y="75" fill="#3730a3">Web Frontend</text>
+                <rect x="285" y="40" width="170" height="60" rx="12" fill="#e3f6ee" stroke="#b6e6d2"/><text x="370" y="75" fill="#0b5d42">REST API Backend</text>
+                <rect x="285" y="160" width="170" height="56" rx="12" fill="#fff3dc" stroke="#f3d79a"/><text x="370" y="192" fill="#7a4a05">Transactional DB</text>
+                <rect x="560" y="15" width="170" height="52" rx="12" fill="#f1ecff" stroke="#d9ccff"/><text x="645" y="46" fill="#4c2a9b">Document Storage</text>
+                <rect x="560" y="95" width="170" height="52" rx="12" fill="#e8f3ff" stroke="#bcdcff"/><text x="645" y="126" fill="#0b4f94">AI Summarizer</text>
+                <rect x="560" y="175" width="170" height="52" rx="12" fill="#fde8e6" stroke="#f6c1bb"/><text x="645" y="206" fill="#8a1c12">Microsoft Entra ID</text>
+              </g>
+            </svg>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Technology stack</h2>
+          <p class="sub">Every choice shows who decided it and which requirement it traces to.</p>
+          <table>
+            <tr><th>Area</th><th>Choice</th><th>Origin</th><th>Evidence</th></tr>
+            <tr><td>Frontend</td><td>React, TypeScript</td><td><span class="badge b-req">Required by client</span></td><td class="src">CON-001 · chars 2366–2435</td></tr>
+            <tr><td>Backend</td><td>Node.js, Express</td><td><span class="badge b-ai">Recommended by AI</span></td><td class="src">CON-002 requires only REST</td></tr>
+            <tr><td>Database</td><td>PostgreSQL</td><td><span class="badge b-pref">Client preference</span></td><td class="src">CON-004</td></tr>
+            <tr><td>Identity</td><td>Microsoft Entra ID</td><td><span class="badge b-req">Required by client</span></td><td class="src">FR-003</td></tr>
+            <tr><td>Secrets</td><td>Azure Key Vault</td><td><span class="badge b-ai">Recommended by AI</span></td><td class="src">CON-005 requires no secrets in code</td></tr>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>Requirement coverage</h2>
+          <p class="sub">The model's own claim — a person must review it.</p>
+          <div class="prog"><i></i></div>
+          <p style="margin:8px 0 12px"><b>22 addressed</b> · <span class="badge b-warn">2 partial</span> · 0 unresolved</p>
+          <table>
+            <tr><th>Requirement</th><th>Design</th><th>Status</th><th>Gap</th></tr>
+            <tr><td>AI-assisted document summaries</td><td>AI Summarizer</td><td><span class="badge b-warn">Partial</span></td><td>Depends on the open question about AI summary validation</td></tr>
+            <tr><td>AI-generated content identification</td><td>AI Summarizer</td><td><span class="badge b-warn">Partial</span></td><td>Human review process still undefined</td></tr>
+            <tr><td>Document search</td><td>Search + indexing</td><td><span class="badge b-ok">Addressed</span></td><td>—</td></tr>
+          </table>
+        </section>
+      </div>
+
+      <!-- Right review panel -->
+      <div class="side">
+        <section class="card">
+          <h2>Review</h2>
+          <p class="sub">Automatic checks are advisory. A person decides.</p>
+          <div class="compare"><span>Findings</span><span class="badge b-warn">5</span><span class="arrow">→</span><span class="badge b-ok">0</span></div>
+          <div style="margin-top:10px">
+            <div class="find"><span class="ico i-ok">✓</span><div>Origin<small>Key Vault moved to a separate AI recommendation</small></div></div>
+            <div class="find"><span class="ico i-ok">✓</span><div>Wording<small>Proposal language, no completed-work claims</small></div></div>
+            <div class="find"><span class="ico i-w">!</span><div>Citations<small>Most items cite the same passage — check relevance</small></div></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Decision</h2>
+          <div class="note">Approving records a baseline. It does not certify the design.</div>
+          <p class="sub" style="margin:12px 0 6px">Review note</p>
+          <textarea placeholder="Why approve or reject? Known limitations…"></textarea>
+          <div class="row" style="margin-top:10px">
+            <button class="btn g">Approve</button>
+            <button class="btn">Reject</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn">Revise with findings</button>
+            <button class="btn">Edit</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Next step</h2>
+          <p class="sub">Build the knowledge graph to see which decisions depend on each requirement.</p>
+          <button class="btn p" style="width:100%">Build graph →</button>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>
