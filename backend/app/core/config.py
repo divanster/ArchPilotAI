@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     architecture_passages_per_requirement: int = Field(default=3, ge=1, le=10)
     architecture_max_passages: int = Field(default=12, ge=1, le=50)
     architecture_max_output_tokens: int = Field(default=8000, ge=1, le=8000)
+    # Extra product / service names for the origin lint (added to the built-in list).
+    lint_extra_product_terms: list[str] = Field(default_factory=list)
 
     # Document chunking and keyword retrieval (Phase 7A). Overlap must be at most size // 2.
     retrieval_chunk_size: int = Field(default=1000, ge=100, le=8000)

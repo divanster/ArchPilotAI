@@ -24,6 +24,7 @@ from app.repositories.requirement import RequirementRepository
 from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
+from app.services.architecture_lint import lint_config_from_settings
 from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
 from app.services.hybrid import HybridRetrievalService
@@ -145,6 +146,7 @@ def get_architecture_service(session: SessionDep) -> ArchitectureService:
         ArchitectureRepository(session),
         ProjectRepository(session),
         RequirementRepository(session),
+        lint_config=lint_config_from_settings(get_settings()),
     )
 
 
@@ -169,6 +171,7 @@ def get_architecture_generation_service(
         scan_limit=settings.retrieval_max_scan_chunks,
         passages_per_requirement=settings.architecture_passages_per_requirement,
         max_passages=settings.architecture_max_passages,
+        lint_config=lint_config_from_settings(settings),
     )
 
 

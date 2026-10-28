@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.domain.architecture import ArchitectureContent, ProposalStatus
+from app.domain.semantic_lint import LintReport
 
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Summary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=5000)]
@@ -33,6 +34,8 @@ class ProposalSummary(BaseModel):
 
 class ProposalResponse(ProposalSummary):
     content: ArchitectureContent
+    # Advisory review findings; null for drafts stored before the lint existed (never linted).
+    lint_findings: LintReport | None = None
 
 
 class ProposalUpdate(BaseModel):

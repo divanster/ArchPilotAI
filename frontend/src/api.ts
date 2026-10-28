@@ -514,8 +514,31 @@ export interface ProposalSummary {
   stale_requirement_ids: string[];
 }
 
+export type LintRule =
+  | "origin_overclaim"
+  | "completed_implementation_wording"
+  | "coverage_all_addressed"
+  | "frontend_only_backend_requirement"
+  | "passages_not_cited";
+
+export interface LintFinding {
+  rule: LintRule;
+  severity: "warning" | "info";
+  message: string;
+  /** Schema path of the item concerned; null for the whole proposal. */
+  path: string | null;
+  terms: string[];
+}
+
+export interface LintReport {
+  version: number;
+  findings: LintFinding[];
+}
+
 export interface ArchitectureProposal extends ProposalSummary {
   content: ArchitectureContent;
+  /** Advisory. null or absent: the draft predates the lint, so it was not run. */
+  lint_findings?: LintReport | null;
 }
 
 export interface ProposalPatch {

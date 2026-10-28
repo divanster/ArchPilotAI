@@ -132,6 +132,107 @@ describe("ArchitectureSection", () => {
     expect(screen.getAllByTestId("diagram-edge")).toHaveLength(1);
   });
 
+  describe("review findings", () => {
+    const findings = {
+      version: 1,
+      findings: [
+        {
+          rule: "origin_overclaim" as const,
+          severity: "warning" as const,
+          message: "Labelled required by the client, but names a product none of its requirements mention",
+          path: "recommended_stack[0]",
+          terms: ["Redis"],
+        },
+        {
+          rule: "completed_implementation_wording" as const,
+          severity: "warning" as const,
+          message: "Reads as completed or guaranteed work",
+          path: "solution_overview",
+          terms: ["ensures"],
+        },
+        {
+          rule: "coverage_all_addressed" as const,
+          severity: "warning" as const,
+          message: "All 2 coverage entries are 'addressed'",
+          path: null,
+          terms: [],
+        },
+        {
+          rule: "frontend_only_backend_requirement" as const,
+          severity: "warning" as const,
+          message: "Backend requirement mapped only to the frontend",
+          path: "coverage_matrix[0]",
+          terms: ["search"],
+        },
+        {
+          rule: "passages_not_cited" as const,
+          severity: "info" as const,
+          message: "3 document passage(s) were supplied but none is cited",
+          path: null,
+          terms: [],
+        },
+      ],
+    };
+
+    it("shows findings grouped by type, labelled advisory, above Approve", async () => {
+      route([proposal({ lint_findings: findings })]);
+      render(<ArchitectureSection projectId={PID} />);
+      const panel = await screen.findByTestId("review-findings");
+      expect(within(panel).getByText("Review findings")).toBeInTheDocument();
+      expect(panel).toHaveTextContent(/advisory/i);
+      expect(panel).toHaveTextContent(/never block approval/i);
+      const groups = within(panel).getAllByTestId("lint-group");
+      expect(groups.map((g) => g.querySelector("h4")?.textContent)).toEqual([
+        "Origin (1)",
+        "Wording (1)",
+        "Coverage (2)",
+        "Citations (1)",
+      ]);
+      expect(within(panel).getAllByTestId("lint-finding")).toHaveLength(5);
+      expect(panel).toHaveTextContent("recommended_stack[0]");
+      expect(panel).toHaveTextContent("Redis");
+      const approve = screen.getByRole("button", { name: "Approve" });
+      expect(
+        panel.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("does not block approval", async () => {
+      const p = proposal({ lint_findings: findings });
+      route([p], (_url, init) =>
+        init?.method === "PATCH" ? json({ ...p, status: "approved" }) : undefined,
+      );
+      render(<ArchitectureSection projectId={PID} />);
+      const approve = await screen.findByRole("button", { name: "Approve" });
+      expect(approve).toBeEnabled();
+      fireEvent.click(approve);
+      await waitFor(() =>
+        expect(screen.getByTestId("proposal-status")).toHaveTextContent("approved"),
+      );
+    });
+
+    it("says so when there are no findings", async () => {
+      route([proposal({ lint_findings: { version: 1, findings: [] } })]);
+      render(<ArchitectureSection projectId={PID} />);
+      expect(await screen.findByTestId("lint-empty")).toHaveTextContent("No findings.");
+      expect(screen.queryByTestId("lint-group")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("lint-not-run")).not.toBeInTheDocument();
+    });
+
+    it.each([
+      ["null", { lint_findings: null }],
+      ["absent", {}],
+    ])("shows 'Lint not run' for an old draft (%s)", async (_name, over) => {
+      route([proposal(over)]);
+      render(<ArchitectureSection projectId={PID} />);
+      expect(await screen.findByTestId("lint-not-run")).toHaveTextContent(
+        "Lint not run for this version",
+      );
+      expect(screen.queryByTestId("lint-empty")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+    });
+  });
+
   it("approves a draft", async () => {
     const p = proposal();
     route([p], (_url, init) =>

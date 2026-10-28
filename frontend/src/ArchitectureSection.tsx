@@ -13,6 +13,8 @@ import {
   type CoverageEntry,
   type CoverageStatus,
   type DecisionOrigin,
+  type LintReport,
+  type LintRule,
   type PassageSource,
   type RetrievalInfo,
   type ProposalPatch,
@@ -34,6 +36,62 @@ const COVERAGE_LABELS: Record<CoverageStatus, string> = {
 };
 
 type Titles = Map<string, string>;
+
+const LINT_GROUPS: { label: string; rules: LintRule[] }[] = [
+  { label: "Origin", rules: ["origin_overclaim"] },
+  { label: "Wording", rules: ["completed_implementation_wording"] },
+  {
+    label: "Coverage",
+    rules: ["coverage_all_addressed", "frontend_only_backend_requirement"],
+  },
+  { label: "Citations", rules: ["passages_not_cited"] },
+];
+
+function ReviewFindings({ report }: { report: LintReport | null | undefined }) {
+  if (!report) {
+    return (
+      <section className="card" aria-labelledby="review-findings" data-testid="review-findings">
+        <h3 id="review-findings">Review findings</h3>
+        <p className="muted" data-testid="lint-not-run">
+          Lint not run for this version
+        </p>
+      </section>
+    );
+  }
+  const groups = LINT_GROUPS.map((g) => ({
+    label: g.label,
+    items: report.findings.filter((f) => g.rules.includes(f.rule)),
+  })).filter((g) => g.items.length > 0);
+  return (
+    <section className="card" aria-labelledby="review-findings" data-testid="review-findings">
+      <h3 id="review-findings">Review findings</h3>
+      <p className="muted">
+        Advisory only: automatic checks for a person to weigh. They never block
+        approval.
+      </p>
+      {groups.length === 0 ? (
+        <p data-testid="lint-empty">No findings.</p>
+      ) : (
+        groups.map((g) => (
+          <div key={g.label} data-testid="lint-group">
+            <h4>
+              {g.label} ({g.items.length})
+            </h4>
+            <ul>
+              {g.items.map((f, i) => (
+                <li key={`${f.rule}-${f.path ?? ""}-${i}`} data-testid="lint-finding">
+                  {f.message}
+                  {f.path && <> — <code>{f.path}</code></>}
+                  {f.terms.length > 0 && <> ({f.terms.join(", ")})</>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      )}
+    </section>
+  );
+}
 
 interface SourceContext {
   projectId: string;
@@ -350,6 +408,9 @@ function ProposalView({
           </p>
         )}
         {error && <p role="alert">{error}</p>}
+        {!editing && (
+          <ReviewFindings report={proposal.lint_findings} />
+        )}
         {!editing && (
           <div className="row">
             <button

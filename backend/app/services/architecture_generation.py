@@ -21,6 +21,7 @@ from app.domain.architecture import (
     safe_finish_reason,
     verify_references,
 )
+from app.domain.semantic_lint import LintConfig
 from app.llm.architecture_prompt import SYSTEM_PROMPT, build_prompt, new_nonce
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.models.architecture import ArchitectureProposal
@@ -30,6 +31,7 @@ from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.architecture_context import ArchitectureContextRetriever, RequirementQuery
+from app.services.architecture_lint import compute_lint
 from app.services.project import ProjectNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,9 @@ class ArchitectureGenerationService:
         scan_limit: int = 20_000,
         passages_per_requirement: int = 3,
         max_passages: int = 12,
+        lint_config: LintConfig | None = None,
     ) -> None:
+        self._lint_config = lint_config
         self._retriever = ArchitectureContextRetriever(
             chunks,
             scan_limit=scan_limit,
@@ -218,6 +222,14 @@ class ArchitectureGenerationService:
             latency_ms=response.latency_ms,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
+            lint_findings=compute_lint(
+                self._requirements,
+                project_id,
+                generated.title,
+                generated.summary,
+                generated,
+                self._lint_config,
+            ),
         )
         saved = self._architecture.add(proposal)
         logger.info("architecture saved project=%s version=%d", project_id, saved.version)

@@ -12,10 +12,12 @@ from app.domain.architecture import (
     referenced_requirement_ids,
     verify_references,
 )
+from app.domain.semantic_lint import LintConfig
 from app.models.architecture import ArchitectureProposal
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services.architecture_lint import compute_lint
 from app.services.project import ProjectNotFoundError
 
 
@@ -46,7 +48,9 @@ class ArchitectureService:
         architecture: ArchitectureRepository,
         projects: ProjectRepository,
         requirements: RequirementRepository,
+        lint_config: LintConfig | None = None,
     ) -> None:
+        self._lint_config = lint_config
         self._architecture = architecture
         self._projects = projects
         self._requirements = requirements
@@ -122,4 +126,14 @@ class ArchitectureService:
             proposal.content = content_to_json(new_content)
         if change.status is not None:
             proposal.status = change.status.value
+        if change.status is None:
+            # Findings follow the text a reviewer now sees; the content itself is untouched.
+            proposal.lint_findings = compute_lint(
+                self._requirements,
+                project_id,
+                proposal.title,
+                proposal.summary,
+                new_content or ArchitectureContent.model_validate(proposal.content),
+                self._lint_config,
+            )
         return self._architecture.save(proposal)
