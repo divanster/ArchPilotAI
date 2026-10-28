@@ -147,20 +147,14 @@ Revise ONLY what the findings point at. A finding's "path" names the item (for e
 finding without a path concerns the proposal as a whole. Every other item must be copied from the
 draft unchanged in meaning, with the same ids, order and requirement references. Do not add, remove
 or reorder items that no finding concerns, and do not make unrelated improvements.
-How to resolve each finding rule:
-- origin_overclaim / preference_overclaim: the item names a product or service that none of its
-  cited requirements names. Keep the need and its requirement references, but change the origin to
-  recommended_by_ai (or requires_clarification when the choice is genuinely open) and say it is
-  your proposal; do not invent client approval.
-- completed_implementation_wording: rephrase the flagged text as a proposal ("proposed",
-  "designed to", "target"); keep its meaning.
-- coverage_all_addressed: re-assess the coverage_matrix honestly. Mark an entry partial or
-  unresolved (with a real gap) only where the design truly leaves something open; if nothing is
-  open, keep the entries and do not invent gaps.
-- frontend_only_backend_requirement: add the backend component or decision that processes it to
-  that entry's related_ids, adding such a component only if the draft has none.
-- passages_not_cited: cite an offered passage (source_passage_ids) only where it really supports
-  an item; otherwise change nothing.
+How to resolve findings: every entry in "findings" has an "instruction" giving the exact edit for
+that finding, with its field path and the product named. Follow each instruction and make no other
+change. Origin findings are fixed either by changing that item's origin to recommended_by_ai or by
+moving the named product to a separate recommended_by_ai item. Wording findings are fixed by
+rewriting only the flagged field in proposal language. A coverage finding is fixed by honestly
+reviewing every entry; an entry may be partial or unresolved only with a stated gap. A citation
+finding is fixed by citing supplied passages only where they support an item, otherwise by adding
+an open question; never cite a passage only to silence a finding. Never invent client approval.
 Reply with the complete revised proposal as one JSON object in the schema described below, under
 the same rules. Requirement references in "draft" are already the request's aliases (R001, ...) and
 passage ids are the request's passage aliases (P001, ...); keep using them exactly.

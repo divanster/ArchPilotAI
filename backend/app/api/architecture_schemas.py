@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -30,6 +30,8 @@ class ProposalSummary(BaseModel):
     revised_from_id: uuid.UUID | None = None
     revised_from_version: int | None = None
     revised_from_findings: int | None = None
+    # Per finding type {before, resolved, still_present, introduced}; null if not a revision.
+    revised_outcome: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     # Cited requirements that are no longer confirmed; such a proposal cannot be approved.

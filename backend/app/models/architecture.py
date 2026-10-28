@@ -59,6 +59,10 @@ class ArchitectureProposal(Base):
     revised_from_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Findings the source draft had when it was revised (the "before" count).
     revised_from_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Per finding type: resolved / still present after the revision (null: not a revision).
+    revised_outcome: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

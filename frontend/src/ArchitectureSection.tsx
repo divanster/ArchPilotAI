@@ -17,6 +17,7 @@ import {
   type LintReport,
   type LintRule,
   type PassageSource,
+  type RevisionOutcome,
   type RetrievalInfo,
   type ProposalPatch,
   type ProposalSummary,
@@ -48,10 +49,20 @@ const LINT_GROUPS: { label: string; rules: LintRule[] }[] = [
   { label: "Citations", rules: ["passages_not_cited"] },
 ];
 
+const RULE_LABELS: Record<string, string> = {
+  origin_overclaim: "Origin",
+  preference_overclaim: "Preference",
+  completed_implementation_wording: "Wording",
+  coverage_all_addressed: "Coverage (all addressed)",
+  frontend_only_backend_requirement: "Coverage (frontend only)",
+  passages_not_cited: "Citations",
+};
+
 function ReviewFindings({
   report,
   revisedFrom,
   findingsBefore,
+  outcome,
   canRevise,
   revising,
   onRevise,
@@ -59,6 +70,7 @@ function ReviewFindings({
   report: LintReport | null | undefined;
   revisedFrom?: number | null;
   findingsBefore?: number | null;
+  outcome?: RevisionOutcome | null;
   canRevise: boolean;
   revising: boolean;
   onRevise: () => void;
@@ -90,6 +102,19 @@ function ReviewFindings({
             </>
           )}
         </p>
+      )}
+      {revisedFrom != null && outcome && (
+        <ul data-testid="revision-outcome" aria-label="Revision outcome by finding type">
+          {Object.entries(outcome.rules).map(([rule, o]) => (
+            <li key={rule} data-testid="outcome-rule">
+              {RULE_LABELS[rule] ?? rule}:{" "}
+              {o.before > 0 && <>{o.resolved} resolved, {o.still_present} still present</>}
+              {(o.introduced ?? 0) > 0 && (
+                <>{o.before > 0 ? ", " : ""}{o.introduced} new</>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
       <p className="muted">
         Advisory only: automatic checks for a person to weigh. They never block
@@ -458,6 +483,7 @@ function ProposalView({
             report={proposal.lint_findings}
             revisedFrom={proposal.revised_from_version}
             findingsBefore={proposal.revised_from_findings}
+            outcome={proposal.revised_outcome}
             canRevise={draft}
             revising={busy}
             onRevise={() => void revise()}

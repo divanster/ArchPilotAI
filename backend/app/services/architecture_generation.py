@@ -25,7 +25,7 @@ from app.domain.architecture import (
     safe_finish_reason,
     verify_references,
 )
-from app.domain.revision import draft_for_revision, findings_for_revision
+from app.domain.revision import draft_for_revision, findings_for_revision, revision_outcome
 from app.domain.semantic_lint import LintConfig
 from app.llm.architecture_prompt import (
     REVISION_SYSTEM_PROMPT,
@@ -229,7 +229,7 @@ class ArchitectureGenerationService:
                 system_prompt=REVISION_SYSTEM_PROMPT,
                 build=build_revision_prompt,
                 prompt_version=REVISION_PROMPT_VERSION,
-                revised_from=(source.id, source.version, len(findings)),
+                revised_from=(source.id, source.version, len(findings), source.lint_findings or {}),
             )
         finally:
             _generation_lock.release()
@@ -244,7 +244,7 @@ class ArchitectureGenerationService:
         system_prompt: str,
         build: Callable[[dict[str, Any], str], str],
         prompt_version: str,
-        revised_from: tuple[uuid.UUID, int, int] | None = None,
+        revised_from: tuple[uuid.UUID, int, int, dict[str, Any]] | None = None,
     ) -> ArchitectureProposal:
         nonce = new_nonce()
         while nonce in json.dumps(context):
@@ -295,6 +295,14 @@ class ArchitectureGenerationService:
             )
             raise
 
+        lint = compute_lint(
+            self._requirements,
+            project_id,
+            generated.title,
+            generated.summary,
+            generated,
+            self._lint_config,
+        )
         proposal = ArchitectureProposal(
             project_id=project_id,
             title=generated.title,
@@ -308,17 +316,11 @@ class ArchitectureGenerationService:
             revised_from_id=revised_from[0] if revised_from else None,
             revised_from_version=revised_from[1] if revised_from else None,
             revised_from_findings=revised_from[2] if revised_from else None,
+            revised_outcome=revision_outcome(revised_from[3], lint) if revised_from else None,
             latency_ms=response.latency_ms,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
-            lint_findings=compute_lint(
-                self._requirements,
-                project_id,
-                generated.title,
-                generated.summary,
-                generated,
-                self._lint_config,
-            ),
+            lint_findings=lint,
         )
         saved = self._architecture.add(proposal)
         logger.info("architecture saved project=%s version=%d", project_id, saved.version)

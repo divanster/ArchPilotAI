@@ -517,6 +517,18 @@ export interface ProposalSummary {
   revised_from_version?: number | null;
   /** Findings the source version had when it was revised (the "before" count). */
   revised_from_findings?: number | null;
+  /** Per finding type, after a revision; null/absent when not a revision. */
+  revised_outcome?: RevisionOutcome | null;
+}
+
+export interface RevisionOutcome {
+  rules: Record<
+    string,
+    { before: number; resolved: number; still_present: number; introduced?: number }
+  >;
+  resolved: number;
+  still_present: number;
+  introduced: number;
 }
 
 export type LintRule =

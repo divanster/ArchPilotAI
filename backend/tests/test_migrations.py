@@ -17,7 +17,7 @@ def test_migration_matches_expected_schema(postgres_url: str) -> None:
     assert columns["description"]["nullable"] is True
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0008_proposal_revision"
+            "0009_revision_outcome"
         )
     engine.dispose()
 

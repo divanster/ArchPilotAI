@@ -264,6 +264,44 @@ describe("ArchitectureSection", () => {
       expect(screen.queryByTestId("revised-from")).toBeNull();
     });
 
+    it("shows resolved / still present per finding type next to before → after", async () => {
+      const revised = proposal({
+        id: "p2",
+        version: 2,
+        revised_from_id: "p1",
+        revised_from_version: 1,
+        revised_from_findings: 5,
+        revised_outcome: {
+          rules: {
+            origin_overclaim: { before: 1, resolved: 1, still_present: 0 },
+            coverage_all_addressed: { before: 1, resolved: 0, still_present: 1 },
+            passages_not_cited: { before: 0, resolved: 0, still_present: 0, introduced: 1 },
+          },
+          resolved: 1,
+          still_present: 1,
+          introduced: 1,
+        },
+        lint_findings: { version: 1, findings: findings.findings.slice(2, 3) },
+      });
+      route([revised]);
+      render(<ArchitectureSection projectId={PID} />);
+      const outcome = await screen.findByTestId("revision-outcome");
+      const rows = within(outcome).getAllByTestId("outcome-rule").map((r) => r.textContent);
+      expect(rows).toEqual([
+        "Origin: 1 resolved, 0 still present",
+        "Coverage (all addressed): 0 resolved, 1 still present",
+        "Citations: 1 new",
+      ]);
+      expect(screen.getByTestId("findings-change")).toHaveTextContent("5 → 1");
+    });
+
+    it("shows no outcome list for a draft that is not a revision", async () => {
+      route([proposal({ lint_findings: findings })]);
+      render(<ArchitectureSection projectId={PID} />);
+      await screen.findByTestId("review-findings");
+      expect(screen.queryByTestId("revision-outcome")).toBeNull();
+    });
+
     it("does not block approval", async () => {
       const p = proposal({ lint_findings: findings });
       route([p], (_url, init) =>
