@@ -8,7 +8,7 @@ import {
   type DocumentDetail,
   type DocumentSummary,
 } from "./api";
-
+import DocumentSearch from "./DocumentSearch";
 const PREVIEW_CHARS = 5000;
 const ALLOWED = /\.(txt|md)$/i;
 
@@ -238,6 +238,14 @@ export default function DocumentsSection({
           )}
         </div>
       </div>
+
+      {documents && (
+        <DocumentSearch
+          projectId={projectId}
+          documents={documents}
+          onOpenPreview={(doc) => void handlePreview(doc)}
+        />
+      )}
     </section>
   );
 }

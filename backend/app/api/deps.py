@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
+from app.domain.chunking import ChunkSettings
 from app.llm.contracts import LLMProvider
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.factory import create_provider
 from app.repositories.architecture import ArchitectureRepository
+from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
@@ -22,6 +24,7 @@ from app.services.document import DocumentService
 from app.services.project import ProjectService
 from app.services.requirement import RequirementService
 from app.services.requirement_extraction import RequirementExtractionService
+from app.services.retrieval import RetrievalService
 
 
 def get_engine() -> Engine:
@@ -160,3 +163,17 @@ def get_architecture_generation_service(
 ArchitectureGenerationServiceDep = Annotated[
     ArchitectureGenerationService, Depends(get_architecture_generation_service)
 ]
+
+
+def get_retrieval_service(session: SessionDep) -> RetrievalService:
+    settings = get_settings()
+    return RetrievalService(
+        ChunkRepository(session),
+        DocumentRepository(session),
+        ProjectRepository(session),
+        ChunkSettings(settings.retrieval_chunk_size, settings.retrieval_chunk_overlap),
+        settings.retrieval_max_scan_chunks,
+    )
+
+
+RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]

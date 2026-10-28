@@ -1,10 +1,11 @@
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.document import Document
+from app.models.document_chunk import DocumentChunk
 
 
 class DocumentRepository:
@@ -40,6 +41,13 @@ class DocumentRepository:
         return self._session.scalars(stmt).all()
 
     def delete(self, document: Document) -> None:
+        # Explicit as well as the foreign-key cascade; rolls back with the document if it is in use.
+        self._session.execute(
+            delete(DocumentChunk).where(
+                DocumentChunk.project_id == document.project_id,
+                DocumentChunk.document_id == document.id,
+            )
+        )
         self._session.delete(document)
         try:
             self._session.commit()

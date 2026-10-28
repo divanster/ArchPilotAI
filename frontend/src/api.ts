@@ -139,6 +139,70 @@ export const deleteDocument = (projectId: string, documentId: string) =>
     method: "DELETE",
   });
 
+export interface IndexStatus {
+  document_id: string;
+  state: "not_indexed" | "indexed" | "stale";
+  chunk_count: number;
+  chunker_version: string | null;
+  current_chunker_version: string;
+  indexed_at: string | null;
+}
+
+export interface IndexResult extends IndexStatus {
+  action: "indexed" | "reindexed" | "unchanged";
+}
+
+export interface SearchResult {
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  chunk_index: number;
+  text: string;
+  source_start: number;
+  source_end: number;
+  score: number;
+  matched_terms: string[];
+}
+
+export interface SearchResponse {
+  query_terms: string[];
+  results: SearchResult[];
+  scanned_chunks: number;
+  unindexed_documents: number;
+  scan_limited: boolean;
+}
+
+export const getIndexStatus = (projectId: string, documentId: string) =>
+  request<IndexStatus>(
+    `${documentsPath(projectId)}/${documentId}/index-status`,
+  );
+
+export const indexDocument = (
+  projectId: string,
+  documentId: string,
+  reindex: boolean,
+) =>
+  request<IndexResult>(`${documentsPath(projectId)}/${documentId}/index`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reindex }),
+  });
+
+export const searchDocuments = (
+  projectId: string,
+  query: string,
+  documentId: string | null,
+) =>
+  request<SearchResponse>(`/api/projects/${projectId}/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      document_id: documentId,
+      top_k: 10,
+    }),
+  });
+
 export interface AIUsage {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -231,7 +295,6 @@ export const updateRequirement = (
     method: "PATCH",
     body: JSON.stringify(patch),
   });
-
 
 export type ProposalStatus = "draft" | "approved" | "rejected";
 export type DecisionOrigin =

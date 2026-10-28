@@ -146,6 +146,25 @@ python -m app.llm.smoke --confirm-authorized-for-archpilotai
 It prints only status, provider, model, latency and token counts. Run it only with credentials
 and a charge code authorized for ArchPilotAI. See `docs/adr/0003-llm-provider-and-workbench.md`.
 
+## Document search (Phase 7A: keyword retrieval only)
+
+Documents can be explicitly indexed into chunks (`para-v1`) and searched by keyword. This is a
+lexical baseline, **not** hybrid RAG: no embeddings, no vector search, no LLM calls, and it is not
+connected to architecture generation. Nothing is indexed automatically.
+
+- `POST /api/projects/{id}/documents/{doc}/index` (`{"reindex": bool}`), `GET .../index-status`,
+  `POST /api/projects/{id}/search` (`query`, optional `document_id`, `top_k` 1-20).
+- Chunking: paragraph packing up to `ARCHPILOT_RETRIEVAL_CHUNK_SIZE` (default 1000 chars); long
+  paragraphs are split at whitespace with `ARCHPILOT_RETRIEVAL_CHUNK_OVERLAP` (default 150,
+  must be <= size/2). Offsets are Python code points into the stored text, CRLF preserved:
+  `document.text[source_start:source_end] == chunk.text`. Changing settings marks indexes `stale`
+  (still searchable) until reindexed.
+- Ranking: project-filtered chunks are scored in Python with BM25 (k1=1.2, b=0.75) over
+  NFKC-casefolded `\w+` tokens, ties broken by filename, document id, chunk index. Limitations: no
+  stemming, synonyms, phrases or typo tolerance; statistics are per search scope; the scan is
+  bounded by `ARCHPILOT_RETRIEVAL_MAX_SCAN_CHUNKS` (default 20000; `scan_limited` is reported).
+- Migration (run manually; not run automatically): from `backend`, with your usual database
+  settings, `python -m alembic upgrade head` (adds `0005_document_chunks`).
 ## Security
 
 See [SECURITY.md](SECURITY.md). Never commit client documents or secrets.

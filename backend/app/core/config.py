@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     architecture_max_unconfirmed_chars: int = Field(default=4_000, ge=0, le=20_000)
     architecture_max_output_tokens: int = Field(default=8000, ge=1, le=8000)
 
+    # Document chunking and keyword retrieval (Phase 7A). Overlap must be at most size // 2.
+    retrieval_chunk_size: int = Field(default=1000, ge=100, le=8000)
+    retrieval_chunk_overlap: int = Field(default=150, ge=0, le=4000)
+    retrieval_max_scan_chunks: int = Field(default=20_000, ge=1, le=200_000)
+
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
 
@@ -76,6 +81,12 @@ class Settings(BaseSettings):
         if not value.strip() or value.strip() == ":memory:":
             raise ValueError("must be a file path (in-memory SQLite is not supported)")
         return value
+
+    @model_validator(mode="after")
+    def _chunk_overlap_progresses(self) -> "Settings":
+        if self.retrieval_chunk_overlap > self.retrieval_chunk_size // 2:
+            raise ValueError("retrieval_chunk_overlap must be at most retrieval_chunk_size // 2")
+        return self
 
     @model_validator(mode="after")
     def _database_mode_allowed(self) -> "Settings":

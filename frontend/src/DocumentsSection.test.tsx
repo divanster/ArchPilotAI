@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DocumentsSection from "./DocumentsSection";
+
+// Search is covered by DocumentSearch.test.tsx; keep these fetch sequences isolated.
+vi.mock("./DocumentSearch", () => ({ default: () => null }));
 import type { DocumentSummary } from "./api";
 
 const PID = "11111111-1111-1111-1111-111111111111";

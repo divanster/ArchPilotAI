@@ -24,12 +24,17 @@ test("uploads a synthetic document and keeps it after refresh", async ({
   });
   await page.getByRole("button", { name: "Upload document" }).click();
   await expect(
-    page.getByRole("button", { name: "synthetic-requirements.md" }),
+    page.getByRole("button", {
+      name: "synthetic-requirements.md",
+      exact: true,
+    }),
   ).toBeVisible();
 
   await page.reload();
   await expect(page.getByText("Backend: ok")).toBeVisible();
-  await page.getByRole("button", { name: "synthetic-requirements.md" }).click();
+  await page
+    .getByRole("button", { name: "synthetic-requirements.md", exact: true })
+    .click();
   await expect(
     page.getByRole("group", { name: "Document preview" }),
   ).toContainText(marker);

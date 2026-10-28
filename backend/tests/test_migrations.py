@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -16,7 +17,7 @@ def test_migration_matches_expected_schema(postgres_url: str) -> None:
     assert columns["description"]["nullable"] is True
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "0004_architecture"
+            "0005_document_chunks"
         )
     engine.dispose()
 
@@ -205,4 +206,53 @@ def test_architecture_downgrade_and_upgrade_roundtrip(postgres_url: str) -> None
         engine.dispose()
     check = create_engine(postgres_url)
     assert "architecture_proposals" in inspect(check).get_table_names()
+    check.dispose()
+
+
+def test_document_chunks_schema_and_constraints(postgres_url: str) -> None:
+    engine = create_engine(postgres_url)
+    inspector = inspect(engine)
+    assert "document_chunks" in inspector.get_table_names()
+    columns = {c["name"] for c in inspector.get_columns("document_chunks")}
+    assert {
+        "id",
+        "project_id",
+        "document_id",
+        "chunk_index",
+        "text",
+        "source_start",
+        "source_end",
+        "chunker_version",
+    } <= columns
+    uniques = {
+        u["column_names"] and tuple(u["column_names"])
+        for u in inspector.get_unique_constraints("document_chunks")
+    }
+    assert ("document_id", "chunk_index") in uniques
+    engine.dispose()
+
+
+def test_document_chunks_migration_on_isolated_sqlite_file(tmp_path: Path) -> None:
+    url = f"sqlite:///{(tmp_path / 'chunks.db').as_posix()}"
+    command.upgrade(alembic_config(url), "head")
+    engine = create_engine(url)
+    try:
+        assert "document_chunks" in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_document_chunks_downgrade_and_upgrade_roundtrip(postgres_url: str) -> None:
+    cfg = alembic_config(postgres_url)
+    engine = create_engine(postgres_url)
+    try:
+        command.downgrade(cfg, "0004_architecture")
+        tables = inspect(engine).get_table_names()
+        assert "document_chunks" not in tables
+        assert {"documents", "architecture_proposals"} <= set(tables)
+    finally:
+        command.upgrade(cfg, "head")
+        engine.dispose()
+    check = create_engine(postgres_url)
+    assert "document_chunks" in inspect(check).get_table_names()
     check.dispose()

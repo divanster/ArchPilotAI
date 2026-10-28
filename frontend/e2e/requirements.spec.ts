@@ -27,11 +27,13 @@ test("extracts requirements with the fake provider and persists human review", a
   });
   await page.getByRole("button", { name: "Upload document" }).click();
   await expect(
-    page.getByRole("button", { name: "synthetic-spec.md" }),
+    page.getByRole("button", { name: "synthetic-spec.md", exact: true }),
   ).toBeVisible();
 
   await page.getByRole("link", { name: /Requirements/ }).click();
-  await page.getByLabel("Project", { exact: true }).selectOption({ label: name });
+  await page
+    .getByLabel("Project", { exact: true })
+    .selectOption({ label: name });
   const requirements = page.getByRole("region", { name: "Requirements" });
   await requirements
     .getByLabel("Document to extract from")
