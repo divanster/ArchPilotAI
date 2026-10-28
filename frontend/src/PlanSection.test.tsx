@@ -154,6 +154,7 @@ describe("PlanSection", () => {
     mockFetch([plan()]);
     render(<PlanSection projectId={PID} />);
     await screen.findByText("T-001 · Implement API");
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit dependencies" })[0]);
     fireEvent.change(screen.getByLabelText("Dependency for T-001"), { target: { value: "t2" } });
     const add = screen.getAllByRole("button", { name: "Add" })[0] as HTMLButtonElement;
     expect(add.disabled).toBe(true);
@@ -183,6 +184,7 @@ describe("PlanSection", () => {
     render(<PlanSection projectId={PID} />);
     expect(await screen.findByText("derived: nfr rule")).toBeTruthy();
     expect(screen.queryByText("Add dependency")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit dependencies" })).toBeNull();
     expect(screen.getByText(/Manual edits of version 1 \(not carried over\)/)).toBeTruthy();
     expect(screen.getByText(/Why \(ivan\)/)).toBeTruthy();
   });
@@ -234,6 +236,92 @@ describe("PlanSection", () => {
     render(<PlanSection projectId={PID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Build plan" }));
     expect(await screen.findByText(/No approved architecture/)).toBeTruthy();
+  });
+
+  it("hides the dependency form, opens one at a time, and Escape restores focus", async () => {
+    mockFetch([plan()]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    expect(screen.queryByLabelText("Dependency for T-001")).toBeNull();
+    const buttons = screen.getAllByRole("button", { name: "Edit dependencies" });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]);
+    expect(screen.getByLabelText("Dependency for T-001")).toBeTruthy();
+    fireEvent.click(buttons[1]);
+    expect(screen.queryByLabelText("Dependency for T-001")).toBeNull();
+    expect(screen.getByLabelText("Dependency for T-002")).toBeTruthy();
+    fireEvent.keyDown(screen.getByLabelText("Reason for T-002"), { key: "Escape" });
+    expect(screen.queryByLabelText("Dependency for T-002")).toBeNull();
+    expect(document.activeElement).toBe(buttons[1]);
+  });
+
+  it("disables cycle-creating candidates and remembers reason across opens", async () => {
+    mockFetch([plan()]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    const buttons = screen.getAllByRole("button", { name: "Edit dependencies" });
+    fireEvent.click(buttons[0]);
+    const option = screen.getByRole("option", { name: /T-002/ }) as HTMLOptionElement;
+    expect(option.disabled).toBe(true);
+    expect(option.title).toBe("Would create a cycle");
+    fireEvent.change(screen.getByLabelText("Reason for T-001"), { target: { value: "Because" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(buttons[0]);
+    expect((screen.getByLabelText("Reason for T-001") as HTMLInputElement).value).toBe("Because");
+  });
+
+  it("asks for confirmation before removing a derived dependency", async () => {
+    mockFetch([plan()]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit dependencies" })[1]);
+    fireEvent.change(screen.getByLabelText("Reason for T-002"), { target: { value: "r" } });
+    fireEvent.change(screen.getByLabelText("Author for T-002"), { target: { value: "a" } });
+    fireEvent.click(screen.getByRole("button", { name: /Remove derived dependency/ }));
+    expect(screen.getByText(/next Rebuild will restore T-001/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm removal" }));
+    await waitFor(() => expect(screen.queryByText("T-001", { selector: "span" })).toBeNull());
+  });
+
+  it("collapses older drafts but keeps approved versions visible", async () => {
+    const versions = [6, 5, 4, 3, 2, 1].map((v) =>
+      plan({ id: `pl${v}`, version: v, status: v === 2 ? "approved" : "draft" }),
+    );
+    mockFetch(versions);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    const list = screen.getByRole("list", { name: "Plan versions" });
+    const labels = () => Array.from(list.querySelectorAll("button.tab")).map((b) => b.textContent);
+    expect(labels().some((l) => l?.startsWith("V2"))).toBe(true);
+    expect(labels().some((l) => l?.startsWith("V1"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 older drafts" }));
+    expect(labels().some((l) => l?.startsWith("V1"))).toBe(true);
+  });
+
+  it("collapses requirements and criteria by default with counts, and toggles all", async () => {
+    mockFetch([plan()]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    const summary = screen.getByText("Linked requirements (1)");
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(details.open).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(details.open).toBe(false);
+  });
+
+  it("trims a trailing numbered heading from the description only on match", async () => {
+    mockFetch([plan()]);
+    const { unmount } = render(
+      <PlanSection projectId={PID} projectDescription={"Build a portal.\n2. Business objectives"} />,
+    );
+    await screen.findByText("T-001 · Implement API");
+    expect(screen.getByText("Build a portal.")).toBeTruthy();
+    expect(screen.queryByText(/Business objectives/)).toBeNull();
+    unmount();
+    render(<PlanSection projectId={PID} projectDescription={"Build a portal.\n2. business objectives"} />);
+    expect(await screen.findByText(/2\. business objectives/)).toBeTruthy();
   });
 });
 

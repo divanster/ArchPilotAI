@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ProjectHeader from "./ProjectHeader";
 import { StatusBadge } from "./ui";
 import {
@@ -17,13 +17,47 @@ import {
 
 const AI_FLAG_PREFIX = "AI recommendation";
 
+interface EditorFields {
+  reason: string;
+  author: string;
+  setReason: (v: string) => void;
+  setAuthor: (v: string) => void;
+}
+
+// Adding task -> target closes a cycle when target already depends on task, directly or not.
+function wouldCycle(allTasks: PlanTask[], task: PlanTask, target: PlanTask): boolean {
+  const byKey = new Map(allTasks.map((t) => [t.key, t]));
+  const seen = new Set<string>();
+  const stack = [target.key];
+  while (stack.length > 0) {
+    const key = stack.pop() as string;
+    if (key === task.key) return true;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    for (const next of byKey.get(key)?.depends_on ?? []) stack.push(next);
+  }
+  return false;
+}
+
+function stripTrailingHeading(text: string): string {
+  const trimmed = text.trimEnd();
+  const idx = trimmed.lastIndexOf("\n");
+  const last = trimmed.slice(idx + 1);
+  if (!/^\s*\d+\.\s+[A-Z][\w ]+$/.test(last)) return text;
+  return trimmed.slice(0, idx < 0 ? 0 : idx).trimEnd();
+}
+
 function DependencyEditor({
   task,
   allTasks,
+  fields,
+  onClose,
   onEdit,
 }: {
   task: PlanTask;
   allTasks: PlanTask[];
+  fields: EditorFields;
+  onClose: () => void;
   onEdit: (
     action: "add" | "remove",
     task: PlanTask,
@@ -33,15 +67,24 @@ function DependencyEditor({
   ) => Promise<void>;
 }) {
   const [target, setTarget] = useState("");
-  const [reason, setReason] = useState("");
-  const [author, setAuthor] = useState("");
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const { reason, author, setReason, setAuthor } = fields;
   const candidates = allTasks.filter((t) => t.id !== task.id && !task.depends_on.includes(t.key));
   const ready = reason.trim() !== "" && author.trim() !== "";
   const byKey = new Map(allTasks.map((t) => [t.key, t]));
+  const sourceOf = new Map(task.dependencies.map((d) => [d.key, d.source]));
 
   return (
-    <details>
-      <summary>Add dependency</summary>
+    <div
+      role="group"
+      aria-label={`Edit dependencies for ${task.key}`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="stack">
         <label>
           Depends on
@@ -52,7 +95,12 @@ function DependencyEditor({
           >
             <option value="">Select a task…</option>
             {candidates.map((t) => (
-              <option key={t.id} value={t.id}>
+              <option
+                key={t.id}
+                value={t.id}
+                disabled={wouldCycle(allTasks, task, t)}
+                title={wouldCycle(allTasks, task, t) ? "Would create a cycle" : undefined}
+              >
                 {t.key} · {t.title}
               </option>
             ))}
@@ -89,21 +137,49 @@ function DependencyEditor({
           </button>
           {task.depends_on.map((key) => {
             const other = byKey.get(key);
+            const derived = sourceOf.get(key) === "diagram" || sourceOf.get(key) === "nfr rule";
             return (
               <button
                 key={key}
                 type="button"
                 disabled={!ready || !other}
-                onClick={() => other && void onEdit("remove", task, other, reason, author)}
+                onClick={() => {
+                  if (!other) return;
+                  if (derived) setConfirmKey(key);
+                  else void onEdit("remove", task, other, reason, author);
+                }}
               >
-                Remove {key}
+                {derived ? `Remove derived dependency ${key}` : `Remove ${key}`}
               </button>
             );
           })}
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
         </div>
+        {confirmKey && (
+          <div role="alert">
+            <p>The next Rebuild will restore {confirmKey}. Remove it anyway?</p>
+            <div className="btn-row">
+              <button
+                type="button"
+                onClick={() => {
+                  const other = byKey.get(confirmKey);
+                  setConfirmKey(null);
+                  if (other) void onEdit("remove", task, other, reason, author);
+                }}
+              >
+                Confirm removal
+              </button>
+              <button type="button" onClick={() => setConfirmKey(null)}>
+                Keep dependency
+              </button>
+            </div>
+          </div>
+        )}
         <p className="hint">Add and remove need a reason and your name; they are recorded.</p>
       </div>
-    </details>
+    </div>
   );
 }
 
@@ -112,12 +188,22 @@ function TaskCard({
   titles,
   allTasks,
   editable,
+  editing,
+  onToggleEditor,
+  fields,
+  open,
+  onToggleSection,
   onEdit,
 }: {
   task: PlanTask;
   titles: Map<string, string>;
   allTasks: PlanTask[];
   editable: boolean;
+  editing: boolean;
+  onToggleEditor: (open: boolean) => void;
+  fields: EditorFields;
+  open: Set<string>;
+  onToggleSection: (key: string, isOpen: boolean) => void;
   onEdit: (
     action: "add" | "remove",
     task: PlanTask,
@@ -126,6 +212,9 @@ function TaskCard({
     author: string,
   ) => Promise<void>;
 }) {
+  const editButton = useRef<HTMLButtonElement>(null);
+  const reqKey = `${task.id}:req`;
+  const acKey = `${task.id}:ac`;
   return (
     <li className="card" data-testid={`task-${task.key}`}>
       <div className="title-row">
@@ -176,7 +265,30 @@ function TaskCard({
               </span>
             ))}
       </p>
-      {editable && <DependencyEditor task={task} allTasks={allTasks} onEdit={onEdit} />}
+      {editable && (
+        <>
+          <button
+            type="button"
+            ref={editButton}
+            aria-expanded={editing}
+            onClick={() => onToggleEditor(!editing)}
+          >
+            Edit dependencies
+          </button>
+          {editing && (
+            <DependencyEditor
+              task={task}
+              allTasks={allTasks}
+              fields={fields}
+              onEdit={onEdit}
+              onClose={() => {
+                onToggleEditor(false);
+                editButton.current?.focus();
+              }}
+            />
+          )}
+        </>
+      )}
       {task.notes.length > 0 && (
         <ul aria-label={`Dependency notes for ${task.key}`}>
           {task.notes.map((n, i) => (
@@ -190,8 +302,11 @@ function TaskCard({
       {task.related.length > 0 && (
         <p className="muted">Related: {task.related.join(", ")}</p>
       )}
-      <div>
-        <strong>Linked requirements</strong>
+      <details
+        open={open.has(reqKey)}
+        onToggle={(e) => onToggleSection(reqKey, e.currentTarget.open)}
+      >
+        <summary>Linked requirements ({task.requirement_ids.length})</summary>
         {task.requirement_ids.length === 0 ? (
           <p className="muted">None.</p>
         ) : (
@@ -201,9 +316,9 @@ function TaskCard({
             ))}
           </ul>
         )}
-      </div>
-      <div>
-        <strong>Acceptance criteria</strong>
+      </details>
+      <details open={open.has(acKey)} onToggle={(e) => onToggleSection(acKey, e.currentTarget.open)}>
+        <summary>Acceptance criteria ({task.acceptance_criteria.length})</summary>
         {task.acceptance_criteria.length === 0 ? (
           <p className="muted">None recorded.</p>
         ) : (
@@ -221,7 +336,7 @@ function TaskCard({
             ))}
           </ul>
         )}
-      </div>
+      </details>
       {task.blocking_questions.length > 0 && (
         <div role="note">
           <strong>Blocking questions</strong>
@@ -253,7 +368,12 @@ export default function PlanSection({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [author, setAuthor] = useState("");
+  const [openSections, setOpenSections] = useState<Set<string>>(new Set());
+  const [showOlder, setShowOlder] = useState(false);
+  const fields: EditorFields = { reason, author, setReason, setAuthor };
   const load = useCallback(async () => {
     setLoadError(null);
     try {
@@ -328,13 +448,22 @@ export default function PlanSection({
   const unmappedNotes = selected
     ? selected.tasks.reduce((n, t) => n + t.notes.length, 0)
     : 0;
+  const sectionKeys = (selected?.tasks ?? []).flatMap((t) => [`${t.id}:req`, `${t.id}:ac`]);
+  const allOpen = sectionKeys.length > 0 && sectionKeys.every((k) => openSections.has(k));
+  const sortedSummaries = [...(summaries ?? [])].sort((a, b) => b.version - a.version);
+  const latestIds = new Set(sortedSummaries.slice(0, 3).map((s) => s.id));
+  const isVisible = (s: PlanSummary) =>
+    latestIds.has(s.id) || s.status !== "draft" || s.id === selected?.id;
+  const older = sortedSummaries.filter((s) => !isVisible(s));
+  const shownVersions = showOlder ? sortedSummaries : sortedSummaries.filter(isVisible);
+  const description = projectDescription ? stripTrailingHeading(projectDescription) : projectDescription;
 
   return (
     <section aria-label="Plan" className="stack">
       <ProjectHeader
         projectId={projectId}
         name={projectName}
-        description={projectDescription}
+        description={description}
         proposals={proposals}
         confirmedCount={confirmedCount}
         plans={summaries ?? undefined}
@@ -371,7 +500,7 @@ export default function PlanSection({
         <div data-testid="plan">
           <div className="card">
             <ul className="arch-tabs" aria-label="Plan versions">
-              {(summaries ?? []).map((s) => (
+              {shownVersions.map((s) => (
                 <li key={s.id}>
                   <button
                     type="button"
@@ -390,6 +519,18 @@ export default function PlanSection({
                   </button>
                 </li>
               ))}
+              {older.length > 0 && (
+                <li>
+                  <button
+                    type="button"
+                    className="tab"
+                    aria-expanded={showOlder}
+                    onClick={() => setShowOlder((v) => !v)}
+                  >
+                    {showOlder ? "Hide older drafts" : `Show ${older.length} older drafts`}
+                  </button>
+                </li>
+              )}
             </ul>
             <div className="title-row">
               <h2>Plan version {selected.version}</h2>
@@ -479,6 +620,14 @@ export default function PlanSection({
             </div>
           )}
 
+          <div className="btn-row">
+            <button
+              type="button"
+              onClick={() => setOpenSections(allOpen ? new Set() : new Set(sectionKeys))}
+            >
+              {allOpen ? "Collapse all" : "Expand all"}
+            </button>
+          </div>
           <ol className="stack" aria-label="Plan tasks">
             {selected.tasks.map((t) => (
               <TaskCard
@@ -487,6 +636,19 @@ export default function PlanSection({
                 titles={titles}
                 allTasks={selected.tasks}
                 editable={!!draft}
+                editing={editingId === t.id}
+                onToggleEditor={(o) => setEditingId(o ? t.id : null)}
+                fields={fields}
+                open={openSections}
+                onToggleSection={(k, o) =>
+                  setOpenSections((cur) => {
+                    if (cur.has(k) === o) return cur;
+                    const next = new Set(cur);
+                    if (o) next.add(k);
+                    else next.delete(k);
+                    return next;
+                  })
+                }
                 onEdit={edit}
               />
             ))}
