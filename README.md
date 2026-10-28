@@ -193,6 +193,35 @@ approved probe, so it is unconfirmed (see ADR 0004).
 - Migration (manual): `python -m alembic upgrade head` adds `0006_chunk_embeddings` (and a
   unique `(id, project_id)` constraint on `document_chunks`). Not run automatically.
 - Future boundaries: see `docs/adr/0004-embeddings-and-hybrid-retrieval.md`.
+## MCP server (Phase 9: read-only, local stdio)
+
+A separate process exposes project knowledge to local AI agents. It only reads, uses the
+existing services, listens on no port (stdio only) and has no create/update/delete tools.
+
+```powershell
+cd backend
+pip install -e .[dev]          # installs the official `mcp` SDK (>=1.2,<2)
+python -m app.mcp              # speaks MCP on stdin/stdout; logs go to stderr
+```
+
+It uses the same database selection as the API (`backend/.env`). Tools: `list_projects`,
+`get_requirements(project_id, status="confirmed")`, `get_architecture(project_id, version=None)`
+(latest approved by default), `get_impact(project_id, node_id, mode="direct")`,
+`get_orphans(project_id)`, `search_documents(project_id, query, top_k=5)` (BM25). Results carry
+source references (document id and offsets, proposal field path) and a `truncated` flag when a
+cap was applied. Unknown or malformed ids return a clear error. Each call logs the tool name,
+arguments (never document text) and duration.
+
+Connect Claude Code (use the backend virtualenv's Python and an absolute path):
+
+```powershell
+claude mcp add archpilotai --cwd C:\path\to\ArchPilotAI\backend -- C:\path\to\ArchPilotAI\backend\.venv\Scripts\python.exe -m app.mcp
+```
+
+or in `.mcp.json`:
+`{"mcpServers": {"archpilotai": {"command": "C:/path/to/backend/.venv/Scripts/python.exe",
+"args": ["-m", "app.mcp"], "cwd": "C:/path/to/backend"}}}`
+
 ## Security
 
 See [SECURITY.md](SECURITY.md). Never commit client documents or secrets.
