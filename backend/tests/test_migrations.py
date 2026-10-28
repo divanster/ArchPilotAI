@@ -154,6 +154,11 @@ def test_architecture_schema_and_constraints(postgres_url: str) -> None:
         "output_tokens",
         "created_at",
         "updated_at",
+        "lint_findings",
+        "revised_from_id",
+        "revised_from_version",
+        "revised_from_findings",
+        "revised_outcome",
     }
     assert columns["content"]["nullable"] is False
     fk = inspector.get_foreign_keys("architecture_proposals")[0]
