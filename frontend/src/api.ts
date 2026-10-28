@@ -668,3 +668,58 @@ export const updateProposal = (
     method: "PATCH",
     body: JSON.stringify(patch),
   });
+
+export type PlanStatus = "draft" | "approved" | "rejected";
+
+export interface PlanTask {
+  id: string;
+  key: string;
+  title: string;
+  kind: string;
+  description: string;
+  source_ref: string;
+  component_ref: string | null;
+  requirement_ids: string[];
+  acceptance_criteria: string[];
+  depends_on: string[];
+  flags: string[];
+  blocking_questions: string[];
+  order_index: number;
+  status: string;
+}
+
+export interface PlanSummary {
+  id: string;
+  project_id: string;
+  proposal_id: string;
+  version: number;
+  status: PlanStatus;
+  generated_at: string;
+  source_graph_built_at: string | null;
+  task_count: number;
+}
+
+export interface ImplementationPlan extends PlanSummary {
+  unattached_questions: string[];
+  tasks: PlanTask[];
+}
+
+const plansPath = (projectId: string) => `${projectPath(projectId)}/plans`;
+
+export const listPlans = (projectId: string) =>
+  request<PlanSummary[]>(plansPath(projectId));
+
+export const getPlan = (projectId: string, id: string) =>
+  request<ImplementationPlan>(`${plansPath(projectId)}/${id}`);
+
+export const buildPlan = (projectId: string) =>
+  request<ImplementationPlan>(plansPath(projectId), { method: "POST" });
+
+export const decidePlan = (
+  projectId: string,
+  id: string,
+  decision: "approve" | "reject",
+) =>
+  request<ImplementationPlan>(`${plansPath(projectId)}/${id}/${decision}`, {
+    method: "POST",
+  });

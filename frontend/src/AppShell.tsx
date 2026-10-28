@@ -28,6 +28,7 @@ const PROJECT: NavItem[] = [
     label: "4 · Knowledge graph",
     hint: "Open the Graph tab on an architecture version",
   },
+  { page: "plan", label: "5 · Plan & build" },
 ];
 
 const PAGE_LABEL: Record<Page, string> = {
@@ -36,6 +37,7 @@ const PAGE_LABEL: Record<Page, string> = {
   documents: "Documents",
   requirements: "Requirements",
   architecture: "Architecture",
+  plan: "Plan & build",
   playground: "AI Playground",
 };
 
@@ -89,7 +91,10 @@ function NavEntry({
     );
   }
   const scoped =
-    item.page === "documents" || item.page === "requirements" || item.page === "architecture";
+    item.page === "documents" ||
+    item.page === "requirements" ||
+    item.page === "architecture" ||
+    item.page === "plan";
   return (
     <a
       className="nav-item"
@@ -230,7 +235,11 @@ function Breadcrumbs({
   const inProject = !!projectId && current !== "dashboard" && current !== "playground";
   const name = projectName ?? "Project";
   const known = projects.some((p) => p.id === projectId);
-  const scoped = current === "documents" || current === "requirements" || current === "architecture";
+  const scoped =
+    current === "documents" ||
+    current === "requirements" ||
+    current === "architecture" ||
+    current === "plan";
   return (
     <nav aria-label="Breadcrumb">
       <ol className="crumbs">

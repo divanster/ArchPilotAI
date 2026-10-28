@@ -321,6 +321,7 @@ def test_server_exposes_only_read_tools(world: World) -> None:
         "list_projects",
         "get_requirements",
         "get_architecture",
+        "get_plan",
         "get_impact",
         "get_orphans",
         "search_documents",

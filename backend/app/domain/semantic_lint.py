@@ -12,7 +12,7 @@ beyond the simple "not" / "never" prefix check.
 
 import re
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Literal
@@ -389,11 +389,21 @@ def _check_citations(content: ArchitectureContent) -> list[LintFinding]:
     ]
 
 
+def meta_question_matcher(config: LintConfig | None = None) -> Callable[[str], bool]:
+    """The meta_open_question rule as a predicate: True for a question about the proposal itself."""
+    patterns = [
+        re.compile(p, re.IGNORECASE)
+        for p in (config or LintConfig()).meta_question_patterns
+        if p.strip()
+    ]
+    return lambda text: any(p.search(text) for p in patterns)
+
+
 def _check_meta_questions(content: ArchitectureContent, config: LintConfig) -> list[LintFinding]:
-    patterns = [re.compile(p, re.IGNORECASE) for p in config.meta_question_patterns if p.strip()]
+    is_meta = meta_question_matcher(config)
     findings = []
     for index, question in enumerate(content.open_questions):
-        if any(p.search(question.question) for p in patterns):
+        if is_meta(question.question):
             findings.append(
                 LintFinding(
                     rule=LintRule.META_OPEN_QUESTION,

@@ -3,9 +3,12 @@ import type { Page } from "./routes";
 const ACTIVE_KEY = "archpilot.activeProject";
 const SECTION_KEY = "archpilot.lastSection.";
 
-export type ProjectPage = Extract<Page, "documents" | "requirements" | "architecture">;
+export type ProjectPage = Extract<
+  Page,
+  "documents" | "requirements" | "architecture" | "plan"
+>;
 
-export const PROJECT_PAGES: ProjectPage[] = ["documents", "requirements", "architecture"];
+export const PROJECT_PAGES: ProjectPage[] = ["documents", "requirements", "architecture", "plan"];
 
 function read(key: string): string | null {
   try {

@@ -7,6 +7,7 @@ import DocumentsSection from "./DocumentsSection";
 import ProjectScopedPage from "./ProjectScopedPage";
 import ProjectsPage from "./ProjectsPage";
 import ArchitectureSection from "./ArchitectureSection";
+import PlanSection from "./PlanSection";
 import RequirementsSection from "./RequirementsSection";
 import { PROJECT_PAGES, getActiveProject, setActiveProject } from "./activeProject";
 import { navigate, useRoute } from "./routes";
@@ -140,6 +141,24 @@ export default function App() {
         >
           {(id, project) => (
             <ArchitectureSection
+              key={id}
+              projectId={id}
+              projectName={project?.name}
+              projectDescription={project?.description}
+            />
+          )}
+        </ProjectScopedPage>
+      )}
+      {route.page === "plan" && (
+        <ProjectScopedPage
+          page="plan"
+          title="Plan & build"
+          subtitle="Ordered implementation tasks derived from the approved architecture, pending human review."
+          projectId={scopedId}
+          projectHeader
+        >
+          {(id, project) => (
+            <PlanSection
               key={id}
               projectId={id}
               projectName={project?.name}

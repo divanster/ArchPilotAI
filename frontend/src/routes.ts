@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 
 export type Page =
-  "dashboard" | "projects" | "documents" | "requirements" | "architecture" | "playground";
+  | "dashboard"
+  | "projects"
+  | "documents"
+  | "requirements"
+  | "architecture"
+  | "plan"
+  | "playground";
 
 export interface Route {
   page: Page;
@@ -17,6 +23,7 @@ const PAGES: Page[] = [
   "documents",
   "requirements",
   "architecture",
+  "plan",
   "playground",
 ];
 

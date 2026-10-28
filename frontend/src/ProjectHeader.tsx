@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { getGraph, getIndexStatus, listDocuments, type ProposalSummary } from "./api";
+import {
+  getGraph,
+  getIndexStatus,
+  listDocuments,
+  listPlans,
+  type PlanSummary,
+  type ProposalSummary,
+} from "./api";
 
 interface Props {
   projectId: string;
@@ -26,6 +33,7 @@ export default function ProjectHeader({
   const [indexed, setIndexed] = useState<number | null>(null);
   const [graphBuilt, setGraphBuilt] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [plans, setPlans] = useState<PlanSummary[]>([]);
 
   const approved = proposals
     .filter((p) => p.status === "approved")
@@ -64,6 +72,21 @@ export default function ProjectHeader({
     };
   }, [projectId, approvedId]);
 
+  useEffect(() => {
+    let active = true;
+    Promise.resolve(listPlans(projectId))
+      .then((p) => active && setPlans(Array.isArray(p) ? p : []))
+      .catch(() => active && setPlans([]));
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
+
+  const approvedPlan = plans
+    .filter((p) => p.status === "approved")
+    .sort((a, b) => b.version - a.version)[0];
+  const latestPlan = [...plans].sort((a, b) => b.version - a.version)[0];
+
   const steps: Step[] = [
     {
       label: "Documents indexed",
@@ -85,9 +108,17 @@ export default function ProjectHeader({
       done: !!approved && graphBuilt,
       detail: graphBuilt && approved ? "built" : "not built",
     },
-    { label: "Plan", done: false, detail: "not available" },
+    {
+      label: "Plan",
+      done: !!approvedPlan,
+      detail: approvedPlan
+        ? `V${approvedPlan.version} approved`
+        : latestPlan
+          ? `V${latestPlan.version} ${latestPlan.status}`
+          : "not built",
+    },
   ];
-  const currentIndex = steps.findIndex((s, i) => i < 4 && !s.done);
+  const currentIndex = steps.findIndex((s) => !s.done);
 
   return (
     <div className="ph">

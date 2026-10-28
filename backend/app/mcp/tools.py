@@ -23,10 +23,12 @@ from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.graph import GraphRepository
+from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.architecture import ArchitectureService
 from app.services.graph import GraphNodeNotFoundError, GraphService
+from app.services.plan import PlanService
 from app.services.project import ProjectNotFoundError, ProjectService
 from app.services.requirement import RequirementService
 from app.services.retrieval import RetrievalService
@@ -256,23 +258,90 @@ def get_architecture(
         }
         result["hint"] = "Pass sections=[...] to get_architecture to fetch section content."
     else:
-        wanted = set(sections)
-        selected: dict[str, Any] = {}
-        used = 0
-        for name in valid:  # canonical order, whatever order the caller used
-            if name not in wanted:
-                continue
-            value = _cap_section(name, content[name], report, flag)
+        result["content"] = _select_sections(content, valid, sections, report, flag)
+    result["truncated_sections"] = report
+    result["truncated"] = flag[0] or bool(report)
+    return result
+
+
+def _select_sections(
+    content: dict[str, Any],
+    valid: list[str],
+    sections: list[str],
+    report: dict[str, dict[str, int]],
+    flag: list[bool],
+) -> dict[str, Any]:
+    """Requested sections in canonical order, within the per-section and total size budgets."""
+    wanted = set(sections)
+    selected: dict[str, Any] = {}
+    used = 0
+    for name in valid:  # canonical order, whatever order the caller used
+        if name not in wanted:
+            continue
+        value = _cap_section(name, content[name], report, flag)
+        size = len(json.dumps(value, default=str))
+        if isinstance(value, list) and used + size > MAX_ARCHITECTURE_CHARS:
+            total = len(content[name])
+            while value and used + len(json.dumps(value, default=str)) > MAX_ARCHITECTURE_CHARS:
+                value = value[: max(len(value) // 2, 0)] if len(value) > 1 else []
+            report[name] = {"returned": len(value), "total": total}
             size = len(json.dumps(value, default=str))
-            if isinstance(value, list) and used + size > MAX_ARCHITECTURE_CHARS:
-                total = len(content[name])
-                while value and used + len(json.dumps(value, default=str)) > MAX_ARCHITECTURE_CHARS:
-                    value = value[: max(len(value) // 2, 0)] if len(value) > 1 else []
-                report[name] = {"returned": len(value), "total": total}
-                size = len(json.dumps(value, default=str))
-            used += size
-            selected[name] = value
-        result["content"] = selected
+        used += size
+        selected[name] = value
+    return selected
+
+
+def get_plan(
+    ctx: ToolContext,
+    project_id: str,
+    version: int | None = None,
+    sections: list[str] | None = None,
+) -> dict[str, Any]:
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        detail = PlanService(
+            PlanRepository(session),
+            ArchitectureRepository(session),
+            GraphRepository(session),
+            ProjectRepository(session),
+            RequirementRepository(session),
+        ).get_version(pid, version)
+        if detail is None:
+            raise ToolInputError(
+                "The project has no approved implementation plan"
+                if version is None
+                else f"The project has no implementation plan version {version}"
+            )
+        plan = detail.plan
+        content: dict[str, Any] = {
+            "tasks": [t.as_json() for t in detail.tasks],
+            "unattached_questions": list(plan.unattached_questions),
+        }
+        valid = list(content)
+        unknown = [s for s in sections or [] if s not in content]
+        if unknown:
+            raise ToolInputError(
+                f"Unknown section(s): {', '.join(unknown)}. Valid sections: {', '.join(valid)}"
+            )
+        result: dict[str, Any] = {
+            "project_id": str(pid),
+            "plan_id": str(plan.id),
+            "proposal_id": str(plan.proposal_id),
+            "version": plan.version,
+            "status": plan.status,
+            "approval_status": plan.status,
+            "generated_at": plan.generated_at.isoformat(),
+            "source_graph_built_at": (
+                plan.source_graph_built_at.isoformat() if plan.source_graph_built_at else None
+            ),
+        }
+    report: dict[str, dict[str, int]] = {}
+    flag = [False]
+    if not sections:
+        result["sections_index"] = {name: {"items": len(v)} for name, v in content.items()}
+        result["hint"] = "Pass sections=[...] to get_plan to fetch section content."
+    else:
+        result["content"] = _select_sections(content, valid, sections, report, flag)
     result["truncated_sections"] = report
     result["truncated"] = flag[0] or bool(report)
     return result

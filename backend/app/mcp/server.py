@@ -57,6 +57,23 @@ def create_server(ctx: ToolContext) -> FastMCP:
         )
 
     @mcp.tool()
+    def get_plan(
+        project_id: str, version: int | None = None, sections: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Implementation plan (latest approved by default): ordered tasks with dependencies,
+        requirement ids, acceptance criteria, flags and blocking questions.
+
+        Without `sections`: header plus an index of sections with item counts. With `sections`
+        (tasks, unattached_questions): only those; cut lists are reported in `truncated_sections`
+        as {name: {returned, total}}.
+        """
+        return _run(
+            "get_plan",
+            {"project_id": project_id, "version": version, "sections": sections},
+            lambda: tools.get_plan(ctx, project_id, version, sections),
+        )
+
+    @mcp.tool()
     def get_impact(project_id: str, node_id: str, mode: str = "direct") -> dict[str, Any]:
         """What depends on a graph node of the approved architecture. mode: direct or transitive."""
         return _run(
