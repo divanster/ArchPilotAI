@@ -90,7 +90,7 @@ class ArchitectureService:
             )
         confirmed = self._confirmed_ids(project_id)
         if change.content is not None:
-            verify_references(change.content, confirmed)
+            verify_references(change.content, confirmed, require_complete=False)
         if change.status is ProposalStatus.APPROVED:
             cited = referenced_requirement_ids(ArchitectureContent.model_validate(proposal.content))
             if not cited <= confirmed:

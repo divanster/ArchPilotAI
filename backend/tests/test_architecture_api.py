@@ -10,7 +10,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.architecture import ArchitectureContent
+from app.domain.architecture import ArchitectureContent, build_alias_map
 from app.llm.architecture_prompt import build_prompt, fake_architecture_answer
 from app.llm.contracts import LLMRequest, LLMResponse
 from app.llm.exceptions import LLMTimeoutError
@@ -62,6 +62,23 @@ def valid_payload(ids: list[str]) -> dict[str, Any]:
     return data
 
 
+def _swap(node: Any, table: dict[str, str]) -> Any:
+    if isinstance(node, str):
+        return table.get(node, node)
+    if isinstance(node, list):
+        return [_swap(n, table) for n in node]
+    if isinstance(node, dict):
+        return {k: _swap(v, table) for k, v in node.items()}
+    return node
+
+
+def alias_payload(ids: list[str]) -> dict[str, Any]:
+    """What a model answering the v5 prompt returns: requirement aliases instead of UUIDs."""
+    table = {str(rid): alias for alias, rid in build_alias_map(uuid.UUID(i) for i in ids).items()}
+    result: dict[str, Any] = _swap(valid_payload(ids), table)
+    return result
+
+
 def serve(payload: dict[str, Any] | str) -> FakeLLMProvider:
     text = payload if isinstance(payload, str) else json.dumps(payload)
     provider = FakeLLMProvider(architecture_text=text)
@@ -84,7 +101,7 @@ def test_generates_a_draft_from_confirmed_requirements(client: TestClient, engin
     assert body["status"] == "draft"
     assert body["version"] == 1
     assert (body["provider"], body["model"]) == ("fake", "fake-model-1")
-    assert body["prompt_version"] == "architecture-v3"
+    assert body["prompt_version"] == "architecture-v5"
     assert body["stale_requirement_ids"] == []
     content = ArchitectureContent.model_validate(body["content"])
     assert content.diagram.nodes and content.implementation_phases
@@ -92,10 +109,13 @@ def test_generates_a_draft_from_confirmed_requirements(client: TestClient, engin
     assert cited <= set(ids)
     assert count(engine) == 1
 
-    # The model only ever saw the confirmed set, labelled as authoritative data.
+    # The model only ever saw the confirmed set as request-scoped aliases, never UUIDs.
     request = provider.requests[0]
     context = json.loads(request.prompt.split("\n", 2)[2].rsplit("\nEND_CONTEXT_", 1)[0])
-    assert {r["id"] for r in context["confirmed_requirements"]} == set(ids)
+    assert {r["id"] for r in context["confirmed_requirements"]} == set(
+        build_alias_map(uuid.UUID(i) for i in ids)
+    )
+    assert not any(i in request.prompt for i in ids)
     assert context["confirmed_requirements"][0]["source"]["quote"] in DOC
     assert all(c["status"] == "unconfirmed" for c in context["unconfirmed_context"])
     assert context["unconfirmed_context"], "document text is offered, labelled unconfirmed"
@@ -109,9 +129,10 @@ def test_only_confirmed_requirements_are_authoritative(client: TestClient) -> No
     assert generate(client, pid).status_code == 201
     prompt = provider.requests[0].prompt
     context = json.loads(prompt.split("\n", 2)[2].rsplit("\nEND_CONTEXT_", 1)[0])
-    assert [r["id"] for r in context["confirmed_requirements"]] == [ids[0]]
-    # The proposed requirement's id must not appear as a requirement.
-    assert ids[1] not in json.dumps(context["confirmed_requirements"])
+    assert [r["id"] for r in context["confirmed_requirements"]] == ["R001"]
+    # The proposed requirement is not offered at all, and no UUID is sent.
+    assert "R002" not in json.dumps(context["confirmed_requirements"])
+    assert ids[0] not in prompt and ids[1] not in prompt
 
 
 def test_rejected_requirement_is_excluded(client: TestClient) -> None:
@@ -142,12 +163,12 @@ def test_unknown_project_is_404(client: TestClient) -> None:
 
 def test_fabricated_requirement_reference_is_rejected(client: TestClient, engine: Engine) -> None:
     pid, ids = confirmed_project(client)
-    payload = valid_payload(ids)
+    payload = alias_payload(ids)
     payload["risks"][0]["requirement_ids"] = [str(uuid.uuid4())]
     serve(payload)
     response = generate(client, pid)
     assert response.status_code == 422
-    assert "not confirmed requirements" in response.json()["detail"]
+    assert "not aliases of this request" in response.json()["detail"]
     assert count(engine) == 0
 
 
@@ -155,7 +176,7 @@ def test_reference_to_unconfirmed_requirement_is_rejected(
     client: TestClient, engine: Engine
 ) -> None:
     pid, ids = confirmed_project(client, confirm=1)
-    serve(valid_payload([ids[0], ids[1]]))  # ids[1] is only proposed
+    serve(alias_payload([ids[0], ids[1]]))  # R002 would be the proposed requirement
     assert generate(client, pid).status_code == 422
     assert count(engine) == 0
 
@@ -174,7 +195,7 @@ def test_invalid_json_is_rejected_without_echo(
 
 
 def mutate(ids: list[str], change: Any) -> dict[str, Any]:
-    payload = copy.deepcopy(valid_payload(ids))
+    payload = copy.deepcopy(alias_payload(ids))
     change(payload)
     return payload
 
@@ -251,14 +272,14 @@ def test_projects_are_isolated(client: TestClient, engine: Engine) -> None:
     )
     assert generate(client, pid_b).status_code == 409  # B has no confirmed requirements
 
-    # B cannot cite A's confirmed requirements.
+    # B cannot use A's aliases: A had R001 and R002, B's snapshot only has R001.
     did_b = make_doc(client, pid_b)
     created = extract(client, pid_b, did_b).json()["requirements"]
     assert (
         client.patch(req_url(pid_b, created[0]["id"]), json={"status": "confirmed"}).status_code
         == 200
     )
-    serve(valid_payload([ids_a[0]]))
+    serve(alias_payload(ids_a))
     assert generate(client, pid_b).status_code == 422
     assert count(engine) == 1
 

@@ -1,8 +1,9 @@
+import copy
 import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Annotated, Any
@@ -17,7 +18,7 @@ from pydantic import (
 )
 from pydantic_core import ErrorDetails, PydanticCustomError
 
-PROMPT_VERSION = "architecture-v3"
+PROMPT_VERSION = "architecture-v5"
 
 
 class ProposalStatus(StrEnum):
@@ -28,9 +29,16 @@ class ProposalStatus(StrEnum):
 
 class DecisionOrigin(StrEnum):
     REQUIRED_BY_CLIENT = "required_by_client"
+    PREFERRED_BY_CLIENT = "preferred_by_client"
     RECOMMENDED_BY_AI = "recommended_by_ai"
     ASSUMED = "assumed"
     REQUIRES_CLARIFICATION = "requires_clarification"
+
+
+class CoverageStatus(StrEnum):
+    ADDRESSED = "addressed"
+    PARTIAL = "partial"
+    UNRESOLVED = "unresolved"
 
 
 class NodeType(StrEnum):
@@ -58,6 +66,7 @@ class FailureCategory(StrEnum):
     JSON_PARSE = "json_parse"
     SCHEMA = "schema"
     REFERENCE = "reference"
+    COVERAGE = "coverage"
     GRAPH = "graph"
     OUTPUT_SIZE = "output_size"
 
@@ -65,6 +74,10 @@ class FailureCategory(StrEnum):
 # Fixed error types raised by the custom validators below (instead of free-text messages).
 EVIDENCE_REQUIRED = "evidence_required"
 DUPLICATE_COMPONENT_ID = "duplicate_component_id"
+DUPLICATE_ELEMENT_ID = "duplicate_element_id"
+MISSING_ELEMENT_ID = "missing_element_id"
+GAP_REQUIRED = "gap_required"
+RELATED_REQUIRED = "related_required"
 DUPLICATE_NODE_ID = "duplicate_node_id"
 UNKNOWN_EDGE_NODE = "unknown_edge_node"
 SELF_LOOP_EDGE = "self_loop_edge"
@@ -124,6 +137,10 @@ class NoConfirmedRequirementsError(ArchitectureError):
     code = "no_confirmed_requirements"
 
 
+class InvalidCoverageError(ArchitectureError):
+    code = "invalid_coverage"
+
+
 class ContextTooLargeError(ArchitectureError):
     code = "context_too_large"
 
@@ -143,6 +160,8 @@ class _Strict(BaseModel):
 class Decision(_Strict):
     """A major architecture decision. `origin` says who stands behind it."""
 
+    # Optional so proposals stored before the coverage matrix still load.
+    id: Ref | None = None
     name: Short
     decision: Text
     rationale: Text
@@ -158,6 +177,7 @@ class Decision(_Strict):
         # only assumptions and open points may stand without it.
         needs_evidence = self.origin in (
             DecisionOrigin.REQUIRED_BY_CLIENT,
+            DecisionOrigin.PREFERRED_BY_CLIENT,
             DecisionOrigin.RECOMMENDED_BY_AI,
         )
         if needs_evidence and not self.supporting_requirement_ids:
@@ -249,6 +269,26 @@ class Diagram(_Strict):
         return self
 
 
+class CoverageEntry(_Strict):
+    """One confirmed requirement mapped to the design. Semantic coverage still needs a human."""
+
+    requirement_id: uuid.UUID
+    related_ids: Annotated[list[Ref], Field(max_length=10)] = Field(default_factory=list)
+    verification: Text
+    status: CoverageStatus
+    gap: Text | None = None
+
+    @model_validator(mode="after")
+    def _status_is_consistent(self) -> "CoverageEntry":
+        if self.status is not CoverageStatus.UNRESOLVED and not self.related_ids:
+            raise PydanticCustomError(
+                RELATED_REQUIRED, "addressed or partial coverage names a component or decision"
+            )
+        if self.status is not CoverageStatus.ADDRESSED and not self.gap:
+            raise PydanticCustomError(GAP_REQUIRED, "partial or unresolved coverage states a gap")
+        return self
+
+
 class ArchitectureContent(_Strict):
     solution_overview: Long
     recommended_stack: Annotated[list[StackItem], Field(max_length=20)]
@@ -263,6 +303,8 @@ class ArchitectureContent(_Strict):
     alternatives: Annotated[list[Alternative], Field(max_length=15)]
     implementation_phases: Annotated[list[Phase], Field(min_length=1, max_length=12)]
     diagram: Diagram
+    # None means "not recorded" (proposals created before the matrix existed).
+    coverage_matrix: Annotated[list[CoverageEntry], Field(max_length=200)] | None = None
 
     @model_validator(mode="after")
     def _component_ids_unique(self) -> "ArchitectureContent":
@@ -272,9 +314,33 @@ class ArchitectureContent(_Strict):
         return self
 
 
+def _decisions(content: ArchitectureContent) -> Iterable[Decision]:
+    for group in (
+        content.recommended_stack,
+        content.integrations,
+        content.data_architecture,
+        content.security_architecture,
+        content.non_functional_design,
+    ):
+        yield from group
+
+
 class GeneratedArchitecture(ArchitectureContent):
     title: Short
     summary: Long
+    coverage_matrix: Annotated[list[CoverageEntry], Field(min_length=1, max_length=200)]
+
+    @model_validator(mode="after")
+    def _decision_ids(self) -> "GeneratedArchitecture":
+        ids = [d.id for d in _decisions(self)]
+        if any(i is None for i in ids):
+            raise PydanticCustomError(MISSING_ELEMENT_ID, "every decision needs an id")
+        everything = [*ids, *(c.id for c in self.components)]
+        if len(set(everything)) != len(everything):
+            raise PydanticCustomError(
+                DUPLICATE_ELEMENT_ID, "component and decision ids must be unique"
+            )
+        return self
 
 
 def _id_lists(content: ArchitectureContent) -> Iterable[list[uuid.UUID]]:
@@ -287,6 +353,8 @@ def _id_lists(content: ArchitectureContent) -> Iterable[list[uuid.UUID]]:
     ):
         for decision in group:
             yield decision.supporting_requirement_ids
+    for coverage in content.coverage_matrix or []:
+        yield [coverage.requirement_id]
     for section in (
         content.components,
         content.risks,
@@ -303,8 +371,15 @@ def referenced_requirement_ids(content: ArchitectureContent) -> set[uuid.UUID]:
     return {rid for ids in _id_lists(content) for rid in ids}
 
 
-def verify_references(content: ArchitectureContent, confirmed: set[uuid.UUID]) -> None:
-    """Every cited requirement must exist in this project and be confirmed."""
+def verify_references(
+    content: ArchitectureContent, confirmed: set[uuid.UUID], *, require_complete: bool = True
+) -> None:
+    """Every cited requirement must exist in this project and be confirmed.
+
+    A recorded coverage matrix must also list each confirmed requirement exactly once (unless
+    `require_complete` is off, for edits made after new requirements were confirmed) and only
+    point at components or decisions of this proposal. This checks structure, not meaning.
+    """
     cited = referenced_requirement_ids(content)
     if not cited <= confirmed:
         raise FabricatedReferenceError(
@@ -314,6 +389,34 @@ def verify_references(content: ArchitectureContent, confirmed: set[uuid.UUID]) -
                 "cited_distinct": len(cited),
                 "not_confirmed_distinct": len(cited - confirmed),
                 "confirmed_available": len(confirmed),
+            },
+        )
+    verify_coverage(content, confirmed, require_complete=require_complete)
+
+
+def verify_coverage(
+    content: ArchitectureContent, confirmed: set[uuid.UUID], *, require_complete: bool
+) -> None:
+    matrix = content.coverage_matrix
+    if matrix is None:
+        return
+    listed = Counter(entry.requirement_id for entry in matrix)
+    known = {c.id for c in content.components} | {
+        d.id for d in _decisions(content) if d.id is not None
+    }
+    duplicates = sum(1 for n in listed.values() if n > 1)
+    missing = len(confirmed - set(listed)) if require_complete else 0
+    unknown_related = sum(1 for e in matrix for rid in e.related_ids if rid not in known)
+    if duplicates or missing or unknown_related:
+        raise InvalidCoverageError(
+            "The coverage matrix must list every confirmed requirement exactly once "
+            "and only reference components or decisions of this proposal",
+            category=FailureCategory.COVERAGE,
+            diagnostics={
+                "entries": len(matrix),
+                "duplicate_requirements": duplicates,
+                "missing_requirements": missing,
+                "unknown_related_ids": unknown_related,
             },
         )
 
@@ -327,6 +430,7 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
     OpenQuestion,
     Alternative,
     Phase,
+    CoverageEntry,
     DiagramNode,
     DiagramEdge,
     Diagram,
@@ -387,9 +491,17 @@ def _invalid(
 
 
 def parse_generated(
-    raw: str, *, finish_reason: str | None = None, max_chars: int | None = None
+    raw: str,
+    *,
+    finish_reason: str | None = None,
+    max_chars: int | None = None,
+    aliases: Mapping[str, uuid.UUID] | None = None,
 ) -> GeneratedArchitecture:
-    """Strictly parse model output. Failures carry content-free diagnostics; nothing is repaired."""
+    """Strictly parse model output. Failures carry content-free diagnostics; nothing is repaired.
+
+    With `aliases`, requirement references must be this request's aliases and are resolved to
+    UUIDs before schema validation; without it, references must already be UUIDs.
+    """
     base: dict[str, Any] = {"raw_chars": len(raw), "finish_reason": finish_reason}
     if max_chars is not None and len(raw) > max_chars:
         raise _invalid(FailureCategory.OUTPUT_SIZE, {**base, "reason": "response_too_large"})
@@ -405,6 +517,8 @@ def parse_generated(
         }
         category = FailureCategory.OUTPUT_SIZE if truncated else FailureCategory.JSON_PARSE
         raise _invalid(category, diagnostics) from None
+    if aliases is not None:
+        data = resolve_aliases(data, aliases)
     try:
         return GeneratedArchitecture.model_validate(data)
     except ValidationError as exc:
@@ -413,6 +527,99 @@ def parse_generated(
         graph_only = bool(types) and summary["errors_omitted"] == 0 and types <= GRAPH_CODES
         category = FailureCategory.GRAPH if graph_only else FailureCategory.SCHEMA
         raise _invalid(category, {**base, **summary}) from None
+
+
+_DECISION_GROUPS = (
+    "recommended_stack",
+    "integrations",
+    "data_architecture",
+    "security_architecture",
+    "non_functional_design",
+)
+_REQUIREMENT_SECTIONS = (
+    "components",
+    "risks",
+    "assumptions",
+    "open_questions",
+    "alternatives",
+    "implementation_phases",
+)
+
+
+def build_alias_map(requirement_ids: Iterable[uuid.UUID]) -> dict[str, uuid.UUID]:
+    """R001, R002, ... for one request, ordered by UUID so query order never matters."""
+    ordered = sorted(set(requirement_ids), key=str)
+    width = max(3, len(str(len(ordered))))
+    return {f"R{n:0{width}d}": rid for n, rid in enumerate(ordered, start=1)}
+
+
+def _alias_failure_reason(value: object, aliases: Mapping[str, uuid.UUID]) -> str | None:
+    if isinstance(value, str) and value in aliases:
+        return None
+    if not isinstance(value, str):
+        return "not_a_string"
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return "unknown_alias"
+    return "uuid_instead_of_alias"
+
+
+def resolve_aliases(data: Any, aliases: Mapping[str, uuid.UUID]) -> Any:
+    """Replace requirement aliases with the original UUIDs in schema-known reference fields.
+
+    Exact matches against this request's map only: no case folding, trimming or guessing. Component
+    and decision ids (`related_ids`, diagram ids) are a separate namespace and are never touched.
+    Malformed shapes are left for the schema validation to reject.
+    """
+    if not isinstance(data, dict):
+        return data
+    resolved = copy.deepcopy(data)
+    problems: list[dict[str, str]] = []
+
+    def one(value: object, path: str) -> str | None:
+        reason = _alias_failure_reason(value, aliases)
+        if reason is None:
+            return str(aliases[str(value)])
+        problems.append({"path": path, "reason": reason})
+        return None
+
+    def many(holder: dict[str, Any], key: str, path: str) -> None:
+        values = holder.get(key)
+        if not isinstance(values, list):
+            return
+        holder[key] = [
+            out if (out := one(v, f"{path}.{key}[{i}]")) is not None else v
+            for i, v in enumerate(values)
+        ]
+
+    for section in (*_DECISION_GROUPS, *_REQUIREMENT_SECTIONS):
+        items = resolved.get(section)
+        key = "supporting_requirement_ids" if section in _DECISION_GROUPS else "requirement_ids"
+        if isinstance(items, list):
+            for index, item in enumerate(items):
+                if isinstance(item, dict):
+                    many(item, key, f"{section}[{index}]")
+    matrix = resolved.get("coverage_matrix")
+    if isinstance(matrix, list):
+        for index, entry in enumerate(matrix):
+            if isinstance(entry, dict) and "requirement_id" in entry:
+                out = one(entry["requirement_id"], f"coverage_matrix[{index}].requirement_id")
+                if out is not None:
+                    entry["requirement_id"] = out
+
+    if problems:
+        raise FabricatedReferenceError(
+            "The proposal uses requirement references that are not aliases of this request",
+            category=FailureCategory.REFERENCE,
+            diagnostics={
+                "invalid_references": len(problems),
+                "locations": problems[:MAX_LOGGED_ERRORS],
+                "locations_omitted": max(0, len(problems) - MAX_LOGGED_ERRORS),
+                "aliases_available": len(aliases),
+            },
+        )
+    return resolved
 
 
 def content_to_json(content: ArchitectureContent) -> dict[str, Any]:

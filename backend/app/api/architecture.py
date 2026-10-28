@@ -11,7 +11,6 @@ from app.api.deps import ArchitectureGenerationServiceDep, ArchitectureServiceDe
 from app.domain.architecture import (
     ArchitectureError,
     ContextTooLargeError,
-    FabricatedReferenceError,
     NoConfirmedRequirementsError,
     ProposalStatus,
 )
@@ -117,6 +116,6 @@ def update_proposal(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except (ProposalNotEditableError, StaleProposalError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    except FabricatedReferenceError as exc:
+    except ArchitectureError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return _full(proposal, service.stale_references(project_id, [proposal])[proposal.id])

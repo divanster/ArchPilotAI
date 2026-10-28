@@ -792,6 +792,10 @@ blockquote {
   background: var(--color-ok-bg);
   color: var(--color-ok-text);
 }
+.origin-preferred_by_client {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-hover);
+}
 .origin-recommended_by_ai {
   background: var(--color-neutral-bg);
   color: var(--color-neutral-text);
@@ -835,12 +839,32 @@ blockquote {
   fill: var(--color-text);
   font-size: 12px;
 }
-.diagram-edge line {
+.diagram-edge line,
+.diagram-edge path {
   stroke: var(--color-muted, #64748b);
   stroke-width: 1.5;
+  fill: none;
+}
+.diagram-arrow {
+  fill: var(--color-muted, #64748b);
+}
+.diagram-edge .edge-label-bg {
+  fill: var(--color-surface);
+  stroke: var(--color-border);
+  stroke-width: 0.5;
 }
 .diagram-edge text {
-  paint-order: stroke;
-  stroke: var(--color-surface);
-  stroke-width: 4px;
+  font-size: 11px;
+}
+.coverage-addressed {
+  background: var(--color-ok-bg);
+  color: var(--color-ok-text);
+}
+.coverage-partial {
+  background: var(--color-warn-bg);
+  color: var(--color-warn-text);
+}
+.coverage-unresolved {
+  background: var(--color-bad-bg);
+  color: var(--color-bad-text);
 }

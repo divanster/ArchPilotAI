@@ -13,6 +13,7 @@ from app.domain.architecture import (
     NoConfirmedRequirementsError,
     ProposalStatus,
     ProviderMetadata,
+    build_alias_map,
     content_to_json,
     parse_generated,
     safe_finish_reason,
@@ -71,7 +72,7 @@ class ArchitectureGenerationService:
         finally:
             _generation_lock.release()
 
-    def _build_context(self, project_id: uuid.UUID) -> tuple[dict[str, Any], set[uuid.UUID]]:
+    def _build_context(self, project_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, uuid.UUID]]:
         project = self._projects.get(project_id)
         assert project is not None
         confirmed = self._requirements.list(project_id, "confirmed")
@@ -81,13 +82,17 @@ class ArchitectureGenerationService:
             raise ContextTooLargeError(
                 f"The project has more than {self._max_requirements} confirmed requirements"
             )
+        # The alias map lives only in this request; the model never sees requirement UUIDs.
+        aliases = build_alias_map(r.id for r in confirmed)
+        alias_of = {rid: alias for alias, rid in aliases.items()}
+        confirmed = sorted(confirmed, key=lambda r: alias_of[r.id])
         documents = list(self._documents.list(project_id))
         names = {d.id: d.original_filename for d in documents}
         context: dict[str, Any] = {
             "project": {"name": project.name, "description": project.description},
             "confirmed_requirements": [
                 {
-                    "id": str(r.id),
+                    "id": alias_of[r.id],
                     "type": r.type,
                     "title": r.title,
                     "description": r.description,
@@ -118,10 +123,10 @@ class ArchitectureGenerationService:
                         "excerpt": document.extracted_text[:share],
                     }
                 )
-        return context, {r.id for r in confirmed}
+        return context, aliases
 
     def _generate(self, project_id: uuid.UUID) -> ArchitectureProposal:
-        context, confirmed_ids = self._build_context(project_id)
+        context, aliases = self._build_context(project_id)
         nonce = new_nonce()
         while nonce in json.dumps(context):
             nonce = new_nonce()
@@ -153,8 +158,9 @@ class ArchitectureGenerationService:
                 response.text,
                 finish_reason=metadata.finish_reason,
                 max_chars=self._max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
+                aliases=aliases,
             )
-            verify_references(generated, confirmed_ids)
+            verify_references(generated, set(aliases.values()))
         except ArchitectureError as exc:
             exc.metadata = metadata
             # Only fixed labels, counts, schema paths and provider numbers: never content.

@@ -47,6 +47,9 @@ test("generates architecture from confirmed requirements and persists review", a
   await expect(arch.getByTestId("proposal-status")).toHaveText("draft");
   await expect(arch.getByRole("img", { name: "Component diagram" })).toBeVisible();
   await expect(arch.getByTestId("diagram-node").first()).toBeVisible();
+  await expect(arch.getByTestId("coverage-row")).toHaveCount(1);
+  await expect(arch.getByTestId("coverage-summary")).toContainText("a person must review");
+  await expect(arch.getByText("Coverage not recorded")).toHaveCount(0);
 
   await arch.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(arch.getByTestId("proposal-status")).toHaveText("approved");

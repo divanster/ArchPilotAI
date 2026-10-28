@@ -356,7 +356,7 @@ def test_reference_failure_keeps_metadata_and_logs_counts(
     assert isinstance(err, FabricatedReferenceError)
     assert err.metadata is not None and err.metadata.finish_reason == "stop"
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "category=reference" in logged and "not_confirmed_distinct" in logged
+    assert "category=reference" in logged and "invalid_references" in logged
     assert IDS[0] not in logged and IDS[1] not in logged
 
 
@@ -447,7 +447,7 @@ def test_prompt_states_the_enforced_output_constraints() -> None:
         "at least one objective",
         "one diagram node",
         "at most 8 components",
-        "3 to 5 items",
+        "3 to 4 items",
         "about one sentence per text field",
         "at most 2 entries in each of alternatives_considered",
         "at most 2 requirement ids per item",
@@ -456,7 +456,7 @@ def test_prompt_states_the_enforced_output_constraints() -> None:
         "diagram node ids must be unique",
         "No duplicate edges",
         "no self-loops",
-        "exact UUIDs copied from confirmed_requirements",
+        'the exact aliases (for example "R001")',
     ):
         assert phrase in flat, phrase
 
@@ -500,7 +500,13 @@ def test_prompt_optional_fields_are_the_schema_optional_fields() -> None:
         for field, spec in d.get("properties", {}).items()
         if any(opt.get("type") == "null" for opt in spec.get("anyOf", []))
     }
-    assert nullable == {("Component", "technology"), ("OpenQuestion", "why_it_matters")}
+    assert nullable == {
+        ("Component", "technology"),
+        ("OpenQuestion", "why_it_matters"),
+        ("CoverageEntry", "gap"),
+        ("Decision", "id"),  # optional only so older stored proposals still load
+        ("StackItem", "id"),
+    }
 
 
 def test_architecture_output_budget_default_is_8000_tokens() -> None:

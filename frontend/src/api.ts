@@ -236,6 +236,7 @@ export const updateRequirement = (
 export type ProposalStatus = "draft" | "approved" | "rejected";
 export type DecisionOrigin =
   | "required_by_client"
+  | "preferred_by_client"
   | "recommended_by_ai"
   | "assumed"
   | "requires_clarification";
@@ -252,6 +253,8 @@ export type NodeType =
   | "other";
 
 export interface Decision {
+  /** Absent on proposals stored before coverage tracking. */
+  id?: string | null;
   name: string;
   decision: string;
   rationale: string;
@@ -295,6 +298,16 @@ export interface DiagramEdge {
   relationship: string;
 }
 
+export type CoverageStatus = "addressed" | "partial" | "unresolved";
+
+export interface CoverageEntry {
+  requirement_id: string;
+  related_ids: string[];
+  verification: string;
+  status: CoverageStatus;
+  gap: string | null;
+}
+
 export interface ArchitectureContent {
   solution_overview: string;
   recommended_stack: StackItem[];
@@ -322,6 +335,8 @@ export interface ArchitectureContent {
     requirement_ids: string[];
   }[];
   diagram: { nodes: DiagramNode[]; edges: DiagramEdge[] };
+  /** null or absent: proposal predates the matrix, so coverage was not recorded. */
+  coverage_matrix?: CoverageEntry[] | null;
 }
 
 export interface ProposalSummary {

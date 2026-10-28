@@ -9,6 +9,8 @@ import {
   updateProposal,
   type ArchitectureProposal,
   type Decision,
+  type CoverageEntry,
+  type CoverageStatus,
   type DecisionOrigin,
   type ProposalPatch,
   type ProposalSummary,
@@ -16,12 +18,83 @@ import {
 
 const ORIGIN_LABELS: Record<DecisionOrigin, string> = {
   required_by_client: "Required by client",
+  preferred_by_client: "Client preference",
   recommended_by_ai: "Recommended by AI",
   assumed: "Assumed",
   requires_clarification: "Requires clarification",
 };
 
+const COVERAGE_LABELS: Record<CoverageStatus, string> = {
+  addressed: "Addressed",
+  partial: "Partial",
+  unresolved: "Unresolved",
+};
+
 type Titles = Map<string, string>;
+
+function CoverageMatrix({
+  matrix,
+  titles,
+  elements,
+}: {
+  matrix: CoverageEntry[] | null | undefined;
+  titles: Titles;
+  elements: Map<string, string>;
+}) {
+  if (!matrix) {
+    return (
+      <div className="card">
+        <h3>Requirement coverage</h3>
+        <p className="muted" data-testid="coverage-not-recorded">
+          Coverage not recorded
+        </p>
+      </div>
+    );
+  }
+  const counts = { addressed: 0, partial: 0, unresolved: 0 };
+  for (const e of matrix) counts[e.status] += 1;
+  return (
+    <div className="card">
+      <h3>Requirement coverage</h3>
+      <p className="muted" data-testid="coverage-summary">
+        {counts.addressed} addressed, {counts.partial} partial, {counts.unresolved} unresolved.
+        This matrix is the model's own claim; a person must review it.
+      </p>
+      <div className="diagram-wrap">
+        <table aria-label="Requirement coverage">
+          <thead>
+            <tr>
+              <th>Requirement</th>
+              <th>Components / decisions</th>
+              <th>Proposed verification</th>
+              <th>Status</th>
+              <th>Gap or clarification</th>
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.map((e) => (
+              <tr key={e.requirement_id} data-testid="coverage-row">
+                <td>{titles.get(e.requirement_id) ?? "Unknown requirement"}</td>
+                <td>
+                  {e.related_ids.length === 0
+                    ? "None"
+                    : e.related_ids.map((id) => elements.get(id) ?? id).join(", ")}
+                </td>
+                <td>{e.verification}</td>
+                <td>
+                  <span className={`badge coverage-${e.status}`}>
+                    {COVERAGE_LABELS[e.status]}
+                  </span>
+                </td>
+                <td>{e.gap ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function Refs({ ids, titles }: { ids: string[]; titles: Titles }) {
   if (ids.length === 0) return null;
@@ -113,6 +186,17 @@ function ProposalView({
   const c = proposal.content;
   const draft = proposal.status === "draft";
   const stale = proposal.stale_requirement_ids;
+  const elements = new Map<string, string>();
+  for (const comp of c.components) elements.set(comp.id, comp.name);
+  for (const d of [
+    ...c.recommended_stack,
+    ...c.integrations,
+    ...c.data_architecture,
+    ...c.security_architecture,
+    ...c.non_functional_design,
+  ]) {
+    if (d.id) elements.set(d.id, d.name);
+  }
 
   async function run(patch: ProposalPatch, after?: () => void) {
     setBusy(true);
@@ -233,6 +317,8 @@ function ProposalView({
         <h3>Solution overview</h3>
         <p>{c.solution_overview}</p>
       </div>
+
+      <CoverageMatrix matrix={c.coverage_matrix} titles={titles} elements={elements} />
 
       <div className="card">
         <h3>Component diagram</h3>

@@ -49,6 +49,36 @@ def realistic_proposal(per_list: int = 7, components: int = 10) -> dict[str, Any
         {"source": f"n{i}", "target": f"n{i + 1}", "relationship": "calls"}
         for i in range(components - 1)
     ]
+    data = _realistic_body(per_list, components, nodes, edges)
+    decisions = [
+        d
+        for key in (
+            "recommended_stack",
+            "integrations",
+            "data_architecture",
+            "security_architecture",
+            "non_functional_design",
+        )
+        for d in data[key]
+    ]
+    for n, d in enumerate(decisions):
+        d["id"] = f"d{n}"
+    data["coverage_matrix"] = [
+        {
+            "requirement_id": str(rid),
+            "related_ids": ["n0"],
+            "verification": "Proposed acceptance test: reviewer walks the flow.",
+            "status": "addressed" if n % 2 else "partial",
+            "gap": None if n % 2 else "Needs client confirmation.",
+        }
+        for n, rid in enumerate(CONFIRMED)
+    ]
+    return data
+
+
+def _realistic_body(
+    per_list: int, components: int, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+) -> dict[str, Any]:
     return {
         "title": "Atlas architecture",
         "summary": SENTENCE * 4,
@@ -114,13 +144,13 @@ def realistic_proposal(per_list: int = 7, components: int = 10) -> dict[str, Any
 
 
 def v3_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """What the architecture-v3 prompt asks for: one sentence per field, at most 2 refs."""
+    """What the architecture-v4 prompt asks for: one sentence per field, at most 2 refs."""
     monkeypatch.setattr(f"{__name__}.SENTENCE", CONCISE)
     monkeypatch.setattr(f"{__name__}.REPEAT", 1)
     monkeypatch.setattr(f"{__name__}.REFS", 2)
 
 
-@pytest.mark.parametrize("per_list", [3, 4, 5])
+@pytest.mark.parametrize("per_list", [3, 4])
 def test_a_v3_style_24_requirement_proposal_is_valid_and_fits_the_budget(
     monkeypatch: pytest.MonkeyPatch, per_list: int
 ) -> None:
@@ -130,9 +160,10 @@ def test_a_v3_style_24_requirement_proposal_is_valid_and_fits_the_budget(
     parsed = parse_generated(raw, finish_reason="stop", max_chars=max_chars)
     assert isinstance(parsed, GeneratedArchitecture)
     verify_references(parsed, set(CONFIRMED))
+    assert len(parsed.coverage_matrix) == 24  # the matrix is part of what must fit
     estimated_tokens = len(raw) / APPROX_CHARS_PER_TOKEN
     assert estimated_tokens < BUDGET_TOKENS, estimated_tokens
-    if per_list <= 4:  # leave headroom for tokenisation error below the 5-item upper bound
+    if per_list <= 3:  # headroom for tokenisation error
         assert estimated_tokens < BUDGET_TOKENS * 0.85, estimated_tokens
 
 

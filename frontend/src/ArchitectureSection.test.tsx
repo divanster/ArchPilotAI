@@ -6,7 +6,7 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ArchitectureDiagram from "./ArchitectureDiagram";
+import ArchitectureDiagram, { overlaps } from "./ArchitectureDiagram";
 import ArchitectureSection from "./ArchitectureSection";
 import type { ArchitectureProposal, Decision } from "./api";
 
@@ -241,7 +241,134 @@ describe("ArchitectureSection", () => {
   });
 });
 
+describe("coverage matrix", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => vi.stubGlobal("fetch", fetchMock));
+  afterEach(() => {
+    fetchMock.mockReset();
+    vi.unstubAllGlobals();
+  });
+
+  function serve(p: ArchitectureProposal) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/requirements")) return json(reqs);
+      if (url.endsWith("/architecture")) return json([p]);
+      return json(p);
+    });
+  }
+
+  it("shows 'Coverage not recorded' for a proposal without a matrix, never 'Fully covered'", async () => {
+    const legacy = proposal({ prompt_version: "architecture-v3" });
+    delete legacy.content.coverage_matrix;
+    serve(legacy);
+    render(<ArchitectureSection projectId={PID} />);
+    expect(await screen.findByTestId("coverage-not-recorded")).toHaveTextContent(
+      "Coverage not recorded",
+    );
+    expect(screen.queryByText(/fully covered/i)).toBeNull();
+    expect(screen.queryAllByTestId("coverage-row")).toHaveLength(0);
+    // Review actions still work for such proposals.
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+  });
+
+  it("treats an explicit null matrix the same way", async () => {
+    const legacy = proposal();
+    legacy.content.coverage_matrix = null;
+    serve(legacy);
+    render(<ArchitectureSection projectId={PID} />);
+    expect(await screen.findByText("Coverage not recorded")).toBeInTheDocument();
+  });
+
+  it("lists each requirement with status, verification and gap, and asks for human review", async () => {
+    const p = proposal();
+    p.content.coverage_matrix = [
+      {
+        requirement_id: RID,
+        related_ids: ["web", "d-auth"],
+        verification: "Login test with the client IdP",
+        status: "partial",
+        gap: "IdP not chosen",
+      },
+    ];
+    p.content.security_architecture = [{ ...decision, id: "d-auth" }];
+    serve(p);
+    render(<ArchitectureSection projectId={PID} />);
+    const row = await screen.findByTestId("coverage-row");
+    expect(within(row).getByText("Single sign-on")).toBeInTheDocument();
+    expect(within(row).getByText("Web App, Auth")).toBeInTheDocument();
+    expect(within(row).getByText("Login test with the client IdP")).toBeInTheDocument();
+    expect(within(row).getByText("Partial")).toBeInTheDocument();
+    expect(within(row).getByText("IdP not chosen")).toBeInTheDocument();
+    expect(screen.getByTestId("coverage-summary")).toHaveTextContent(
+      "0 addressed, 1 partial, 0 unresolved",
+    );
+    expect(screen.getByTestId("coverage-summary")).toHaveTextContent(/person must review/);
+  });
+
+  it("labels client preferences distinctly from requirements", async () => {
+    const p = proposal();
+    p.content.data_architecture = [
+      { ...decision, name: "Database", origin: "preferred_by_client" },
+    ];
+    serve(p);
+    render(<ArchitectureSection projectId={PID} />);
+    expect(await screen.findByText("Client preference")).toBeInTheDocument();
+  });
+});
+
 describe("ArchitectureDiagram", () => {
+  it("keeps edge labels apart from each other and from nodes", () => {
+    const nodes = ["hub", "a", "b", "c", "d"].map((id) => ({
+      id,
+      name: id,
+      type: "service" as const,
+    }));
+    const edges = [
+      ...["a", "b", "c", "d"].map((t) => ({
+        source: "hub",
+        target: t,
+        relationship: "reads and writes",
+      })),
+      { source: "a", target: "b", relationship: "notifies" },
+      { source: "b", target: "a", relationship: "acknowledges" },
+    ];
+    const { container } = render(<ArchitectureDiagram nodes={nodes} edges={edges} />);
+    const box = (el: Element) => ({
+      x: Number(el.getAttribute("x")),
+      y: Number(el.getAttribute("y")),
+      w: Number(el.getAttribute("width")),
+      h: Number(el.getAttribute("height")),
+    });
+    const labels = [...container.querySelectorAll(".edge-label-bg")].map(box);
+    const nodeBoxes = [...container.querySelectorAll(".diagram-node rect")].map(box);
+    expect(labels).toHaveLength(edges.length);
+    labels.forEach((l, i) => {
+      nodeBoxes.forEach((n) => expect(overlaps(l, n, 0)).toBe(false));
+      labels.slice(i + 1).forEach((o) => expect(overlaps(l, o, 0)).toBe(false));
+    });
+  });
+
+  it("draws arrowheads at the target and keeps the textual relationship list", () => {
+    const { container } = render(
+      <ArchitectureDiagram
+        nodes={[
+          { id: "web", name: "Web", type: "client" },
+          { id: "api", name: "API", type: "api" },
+        ]}
+        edges={[{ source: "web", target: "api", relationship: "calls" }]}
+      />,
+    );
+    const line = container.querySelector(".diagram-edge line")!;
+    expect(line.getAttribute("marker-end")).toMatch(/^url\(#arrow-/);
+    const markerId = line.getAttribute("marker-end")!.slice(5, -1);
+    expect(container.querySelector(`marker[id="${markerId}"]`)).not.toBeNull();
+    // Source sits above the target, so the arrow must point downwards.
+    expect(Number(line.getAttribute("y2"))).toBeGreaterThan(Number(line.getAttribute("y1")));
+    const list = screen.getByRole("list", { name: "Diagram relationships" });
+    expect(within(list).getByText("Web calls API")).toBeInTheDocument();
+  });
+
   it("renders nodes and edge labels as text, ignoring unknown edge targets", () => {
     const { container } = render(
       <ArchitectureDiagram
