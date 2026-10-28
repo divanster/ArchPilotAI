@@ -89,6 +89,20 @@ class Settings(BaseSettings):
     patch_max_patch_bytes: int = Field(default=400_000, ge=1, le=5_000_000)
     patch_max_context_chars: int = Field(default=60_000, ge=1_000, le=200_000)
 
+    # Agent loop with static feedback (Phase 11B-pre). The loop speaks a JSON protocol; native
+    # tool calling is not used. Static checks run only ruff, mypy and tsc on a temporary copy.
+    agent_max_steps: int = Field(default=20, ge=1, le=50)
+    agent_token_budget: int = Field(default=150_000, ge=1, le=2_000_000)
+    agent_time_limit_seconds: float = Field(default=300.0, gt=0, le=3600)
+    agent_step_max_output_tokens: int = Field(default=4000, ge=1, le=8000)
+    agent_context_chars: int = Field(default=24_000, ge=2_000, le=100_000)
+    agent_context_last_results: int = Field(default=3, ge=1, le=10)
+    agent_check_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    # Parent of the temporary check directories; empty uses the system temporary folder.
+    agent_check_temp_dir: str = ""
+    # Path to the TypeScript compiler; empty auto-detects the frontend's local install or PATH.
+    agent_tsc_path: str = ""
+
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
 

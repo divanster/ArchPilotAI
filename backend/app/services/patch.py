@@ -13,6 +13,7 @@ from app.domain.patch import (
     PATCH_PROMPT_VERSION,
     RESPONSE_CHARS_PER_TOKEN,
     Failure,
+    GeneratedPatch,
     PatchInvalidError,
     PatchLimits,
     content_hash,
@@ -211,14 +212,9 @@ class PatchService:
 
     # ---- generation ------------------------------------------------------------------------
 
-    def generate(
-        self,
-        project_id: uuid.UUID,
-        plan_id: uuid.UUID,
-        task_key: str,
-        *,
-        acknowledge_blocking_questions: bool = False,
-    ) -> PatchDetail:
+    def check_gates(
+        self, project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str, acknowledge: bool
+    ) -> tuple[ImplementationPlan, PlanTask, Sequence[PlanTask]]:
         plan, task, tasks = self._plan_and_task(project_id, plan_id, task_key)
         if plan.status != "approved":
             raise PatchGateError(
@@ -232,66 +228,46 @@ class PatchService:
                 "technology_unconfirmed",
                 f"{task.key} uses an AI-recommended technology; a person must confirm it first",
             )
-        if task.blocking_questions and not acknowledge_blocking_questions:
+        if task.blocking_questions and not acknowledge:
             raise PatchGateError(
                 "blocking_questions",
                 f"{task.key} has {len(task.blocking_questions)} unresolved blocking question(s); "
                 "resolve them or acknowledge them explicitly for this generation",
             )
-        if not _generation_lock.acquire(blocking=False):
-            raise PatchBusyError("A patch generation is already running")
-        try:
-            return self._generate(
-                project_id, plan, task, tasks, acknowledged=acknowledge_blocking_questions
-            )
-        finally:
-            _generation_lock.release()
+        return plan, task, tasks
 
-    def _generate(
+    def dependency_warnings(
         self,
         project_id: uuid.UUID,
         plan: ImplementationPlan,
         task: PlanTask,
         tasks: Sequence[PlanTask],
-        *,
-        acknowledged: bool,
-    ) -> PatchDetail:
+    ) -> list[str]:
         statuses = self._patches.statuses_by_task(project_id, plan.id)
-        warnings = [
+        return [
             f"Dependency {dep.key} has no accepted patch yet; its code is not in the workspace"
             for dep in tasks
             if dep.key in task.depends_on and "accepted" not in statuses.get(dep.id, set())
         ]
+
+    def propose(
+        self,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        generated: GeneratedPatch,
+        *,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        input_tokens: int,
+        output_tokens: int,
+        latency_ms: int,
+        warnings: list[str],
+        acknowledged: bool,
+    ) -> PatchDetail:
+        """Validate a generated change set against the workspace and save it as a proposed patch."""
         workspace = {f.path: f for f in self._patches.workspace(project_id)}
-        context = self._build_context(
-            project_id, plan, task, tasks, workspace, acknowledged, warnings
-        )
-        nonce = uuid.uuid4().hex[:16]
-        prompt = build_prompt(context, nonce)
-        if len(prompt) > self._max_context_chars + 6_000:
-            raise PatchContextTooLargeError("The task context exceeds the size limit")
-        started = time.perf_counter()
-        response = self._provider.generate(
-            LLMRequest(
-                prompt=prompt,
-                system_prompt=SYSTEM_PROMPT,
-                max_output_tokens=self._max_output_tokens,
-                temperature=0,
-            )
-        )
-        finish = safe_finish_reason(response.finish_reason)
-        logger.info(
-            "patch response project=%s task=%s latency_ms=%d finish_reason=%s",
-            project_id,
-            task.key,
-            int((time.perf_counter() - started) * 1000),
-            finish,
-        )
-        generated = parse_patch(
-            response.text,
-            finish_reason=finish,
-            max_chars=self._max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
-        )
         hashes = {path: f.content_hash for path, f in workspace.items()}
         failures = validate_patch(generated.files, hashes, self._limits)
         if failures:
@@ -311,12 +287,12 @@ class PatchService:
             task_key=task.key,
             version=self._patches.next_version(project_id, task.id),
             status="proposed",
-            provider=response.provider,
-            model=response.model,
-            prompt_version=PATCH_PROMPT_VERSION,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            latency_ms=response.latency_ms,
+            provider=provider,
+            model=model,
+            prompt_version=prompt_version,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
             notes=list(generated.notes),
             assumptions=list(generated.assumptions),
             test_suggestions=list(generated.test_suggestions),
@@ -347,6 +323,81 @@ class PatchService:
             len(files),
         )
         return self.detail(project_id, saved.id)
+
+    def generate(
+        self,
+        project_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        task_key: str,
+        *,
+        acknowledge_blocking_questions: bool = False,
+    ) -> PatchDetail:
+        plan, task, tasks = self.check_gates(
+            project_id, plan_id, task_key, acknowledge_blocking_questions
+        )
+        if not _generation_lock.acquire(blocking=False):
+            raise PatchBusyError("A patch generation is already running")
+        try:
+            return self._generate(
+                project_id, plan, task, tasks, acknowledged=acknowledge_blocking_questions
+            )
+        finally:
+            _generation_lock.release()
+
+    def _generate(
+        self,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        tasks: Sequence[PlanTask],
+        *,
+        acknowledged: bool,
+    ) -> PatchDetail:
+        warnings = self.dependency_warnings(project_id, plan, task, tasks)
+        workspace = {f.path: f for f in self._patches.workspace(project_id)}
+        context = self._build_context(
+            project_id, plan, task, tasks, workspace, acknowledged, warnings
+        )
+        nonce = uuid.uuid4().hex[:16]
+        prompt = build_prompt(context, nonce)
+        if len(prompt) > self._max_context_chars + 6_000:
+            raise PatchContextTooLargeError("The task context exceeds the size limit")
+        started = time.perf_counter()
+        response = self._provider.generate(
+            LLMRequest(
+                prompt=prompt,
+                system_prompt=SYSTEM_PROMPT,
+                max_output_tokens=self._max_output_tokens,
+                temperature=0,
+            )
+        )
+        finish = safe_finish_reason(response.finish_reason)
+        logger.info(
+            "patch response project=%s task=%s latency_ms=%d finish_reason=%s",
+            project_id,
+            task.key,
+            int((time.perf_counter() - started) * 1000),
+            finish,
+        )
+        generated = parse_patch(
+            response.text,
+            finish_reason=finish,
+            max_chars=self._max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
+        )
+        return self.propose(
+            project_id,
+            plan,
+            task,
+            generated,
+            provider=response.provider,
+            model=response.model,
+            prompt_version=PATCH_PROMPT_VERSION,
+            input_tokens=response.usage.input_tokens or 0,
+            output_tokens=response.usage.output_tokens or 0,
+            latency_ms=response.latency_ms,
+            warnings=warnings,
+            acknowledged=acknowledged,
+        )
 
     # ---- context ---------------------------------------------------------------------------
 

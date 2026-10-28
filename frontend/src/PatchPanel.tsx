@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import AgentRunPanel from "./AgentRunPanel";
 import {
   ApiError,
   confirmTechnology,
@@ -81,7 +82,10 @@ export default function PatchPanel({
     }, "Patch generation failed");
 
   const open = (id: string) =>
-    run(async () => setDetail(await getPatch(projectId, id)), "Could not load patch");
+    run(
+      async () => setDetail(await getPatch(projectId, id)),
+      "Could not load patch",
+    );
 
   const review = (action: "accept" | "reject") =>
     run(async () => {
@@ -116,11 +120,17 @@ export default function PatchPanel({
           <legend>Confirm technology</legend>
           <label>
             Technology name
-            <input value={techName} onChange={(e) => setTechName(e.target.value)} />
+            <input
+              value={techName}
+              onChange={(e) => setTechName(e.target.value)}
+            />
           </label>
           <label>
             Reason
-            <input value={techReason} onChange={(e) => setTechReason(e.target.value)} />
+            <input
+              value={techReason}
+              onChange={(e) => setTechReason(e.target.value)}
+            />
           </label>
           <button
             type="button"
@@ -134,7 +144,11 @@ export default function PatchPanel({
       )}
       {task.blocking_questions.length > 0 && (
         <label>
-          <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={ack}
+            onChange={(e) => setAck(e.target.checked)}
+          />
           Acknowledge blocking questions for this generation
         </label>
       )}
@@ -143,6 +157,18 @@ export default function PatchPanel({
           {patches.length > 0 ? "Regenerate patch" : "Generate patch"}
         </button>
       </div>
+      <AgentRunPanel
+        projectId={projectId}
+        planId={planId}
+        task={task}
+        acknowledge={ack}
+        disabled={busy}
+        onOpenPatch={(id) => {
+          void open(id);
+          void refresh().catch(() => undefined);
+          onChanged();
+        }}
+      />
       {error && <p role="alert">{error}</p>}
       {patches.length > 0 && (
         <ul aria-label={`Patch versions for ${task.key}`}>
@@ -159,14 +185,16 @@ export default function PatchPanel({
       {detail && (
         <div aria-label={`Patch v${detail.version} of ${task.key}`}>
           <p>
-            Version {detail.version} · <strong>{detail.status}</strong> · {detail.provider}/
-            {detail.model}
+            Version {detail.version} · <strong>{detail.status}</strong> ·{" "}
+            {detail.provider}/{detail.model}
           </p>
           {detail.validation === "stale" && (
             <p role="alert">
               Stale patch: the workspace changed since generation (
-              {detail.stale.map((s) => `${s.code} ${s.path ?? ""}`.trim()).join(", ")}).
-              Regenerate it.
+              {detail.stale
+                .map((s) => `${s.code} ${s.path ?? ""}`.trim())
+                .join(", ")}
+              ). Regenerate it.
             </p>
           )}
           {detail.warnings.length > 0 && (
@@ -212,11 +240,17 @@ export default function PatchPanel({
             <div>
               <label>
                 Reviewer
-                <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} />
+                <input
+                  value={reviewer}
+                  onChange={(e) => setReviewer(e.target.value)}
+                />
               </label>
               <label>
                 Review reason
-                <input value={reason} onChange={(e) => setReason(e.target.value)} />
+                <input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
               </label>
               <div className="btn-row">
                 <button

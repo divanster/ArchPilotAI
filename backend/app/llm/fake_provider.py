@@ -1,5 +1,6 @@
 import time
 
+from app.llm.agent_prompt import fake_agent_answer, is_agent_request
 from app.llm.architecture_prompt import (
     fake_architecture_answer,
     fake_revision_answer,
@@ -24,6 +25,7 @@ class FakeLLMProvider:
         extraction_text: str | None = None,
         architecture_text: str | None = None,
         patch_text: str | None = None,
+        agent_script: list[str] | None = None,
     ) -> None:
         self._responses = dict(responses or {})
         self._model = model
@@ -34,6 +36,8 @@ class FakeLLMProvider:
         self._extraction_text = extraction_text
         # Fixed answer for architecture prompts; None derives one from the supplied context.
         self._architecture_text = architecture_text
+        # One scripted reply per agent request, in order; None derives a default run.
+        self.agent_script = agent_script
         self.requests: list[LLMRequest] = []
 
     @property
@@ -56,6 +60,11 @@ class FakeLLMProvider:
                 if self._extraction_text is not None
                 else fake_extraction_answer(request.prompt)
             )
+        if text is None and is_agent_request(request.system_prompt):
+            if self.agent_script is not None:
+                text = self.agent_script.pop(0) if self.agent_script else "{}"
+            else:
+                text = fake_agent_answer(request.prompt)
         if text is None and is_patch_request(request.system_prompt):
             text = (
                 self._patch_text

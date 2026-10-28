@@ -58,7 +58,11 @@ interface PatchFailure {
 }
 
 function describeDetail(detail: object): string | null {
-  const d = detail as { message?: unknown; failures?: unknown; paths?: unknown };
+  const d = detail as {
+    message?: unknown;
+    failures?: unknown;
+    paths?: unknown;
+  };
   if (typeof d.message !== "string") return null;
   let text = d.message;
   if (Array.isArray(d.failures)) {
@@ -73,10 +77,13 @@ function describeDetail(detail: object): string | null {
   return text;
 }
 
-async function errorInfo(response: Response): Promise<{ message: string; detail: unknown }> {
+async function errorInfo(
+  response: Response,
+): Promise<{ message: string; detail: unknown }> {
   try {
     const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") return { message: body.detail, detail: body.detail };
+    if (typeof body.detail === "string")
+      return { message: body.detail, detail: body.detail };
     if (Array.isArray(body.detail)) {
       return {
         message: body.detail
@@ -482,11 +489,7 @@ export interface PassageSource {
 }
 
 export type RetrievalStatus =
-  | "used"
-  | "no_matches"
-  | "not_indexed"
-  | "no_documents"
-  | "disabled";
+  "used" | "no_matches" | "not_indexed" | "no_documents" | "disabled";
 
 export interface RetrievalInfo {
   status: RetrievalStatus;
@@ -564,7 +567,12 @@ export interface ProposalSummary {
 export interface RevisionOutcome {
   rules: Record<
     string,
-    { before: number; resolved: number; still_present: number; introduced?: number }
+    {
+      before: number;
+      resolved: number;
+      still_present: number;
+      introduced?: number;
+    }
   >;
   resolved: number;
   still_present: number;
@@ -684,7 +692,9 @@ export const getGraph = (projectId: string, id: string) =>
   request<GraphData>(graphPath(projectId, id));
 
 export const rebuildGraph = (projectId: string, id: string) =>
-  request<GraphRebuild>(`${graphPath(projectId, id)}/rebuild`, { method: "POST" });
+  request<GraphRebuild>(`${graphPath(projectId, id)}/rebuild`, {
+    method: "POST",
+  });
 
 export const getGraphImpact = (
   projectId: string,
@@ -922,10 +932,76 @@ export const reviewPatch = (
   );
 
 export const getWorkspace = (projectId: string) =>
-  request<{ files: WorkspaceFileInfo[] }>(`${projectPath(projectId)}/workspace`);
+  request<{ files: WorkspaceFileInfo[] }>(
+    `${projectPath(projectId)}/workspace`,
+  );
 
 export const exportWorkspace = (projectId: string, confirmOverwrite: boolean) =>
   request<ExportResult>(`${projectPath(projectId)}/workspace/export`, {
     method: "POST",
     body: JSON.stringify({ confirm_overwrite: confirmOverwrite }),
+  });
+
+export type AgentRunStatus = "running" | "finished" | "stopped" | "failed";
+
+export interface AgentStepView {
+  step_no: number;
+  action: string;
+  path: string | null;
+  status: "ok" | "error";
+  error_code: string | null;
+  result_summary: string;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+}
+
+export interface AgentRunSummary {
+  id: string;
+  task_key: string;
+  status: AgentRunStatus;
+  stop_reason: string | null;
+  stop_requested: boolean;
+  max_steps: number;
+  steps_taken: number;
+  token_budget: number;
+  input_tokens: number;
+  output_tokens: number;
+  time_limit_seconds: number;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  summary: string | null;
+  patch_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number;
+}
+
+export interface AgentRun extends AgentRunSummary {
+  steps: AgentStepView[];
+}
+
+export const startAgentRun = (
+  projectId: string,
+  planId: string,
+  key: string,
+  acknowledgeBlockingQuestions: boolean,
+) =>
+  request<AgentRun>(`${taskPath(projectId, planId, key)}/agent-runs`, {
+    method: "POST",
+    body: JSON.stringify({
+      acknowledge_blocking_questions: acknowledgeBlockingQuestions,
+    }),
+  });
+
+export const listAgentRuns = (projectId: string, planId: string, key: string) =>
+  request<AgentRunSummary[]>(`${taskPath(projectId, planId, key)}/agent-runs`);
+
+export const getAgentRun = (projectId: string, runId: string) =>
+  request<AgentRun>(`${projectPath(projectId)}/agent-runs/${runId}`);
+
+export const stopAgentRun = (projectId: string, runId: string) =>
+  request<AgentRun>(`${projectPath(projectId)}/agent-runs/${runId}/stop`, {
+    method: "POST",
   });

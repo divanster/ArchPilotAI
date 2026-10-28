@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from typing import Annotated
 
@@ -16,6 +17,8 @@ from app.embeddings.factory import create_embedding_provider
 from app.llm.contracts import LLMProvider, LLMRequest, LLMResponse
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.factory import create_provider
+from app.mcp.tools import ToolContext
+from app.repositories.agent import AgentRepository
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.document import DocumentRepository
@@ -25,6 +28,7 @@ from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services.agent import AgentConfig, AgentService
 from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
@@ -39,6 +43,7 @@ from app.services.project import ProjectService
 from app.services.requirement import RequirementService
 from app.services.requirement_extraction import RequirementExtractionService
 from app.services.retrieval import RetrievalService
+from app.services.static_checks import StaticChecker
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +222,55 @@ def get_patch_service(session: SessionDep, provider: LLMProviderDep) -> PatchSer
 def get_patch_review_service(session: SessionDep) -> PatchService:
     return _patch_service(session, _NoGeneration())
 
+
+def make_agent_service(
+    session: Session,
+    provider: LLMProvider,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    checker: StaticChecker | None = None,
+) -> AgentService:
+    settings = get_settings()
+    return AgentService(
+        provider,
+        _patch_service(session, _NoGeneration()),
+        AgentRepository(session),
+        PatchRepository(session),
+        PlanRepository(session),
+        ToolContext(sessionmaker(bind=session.get_bind(), expire_on_commit=False)),
+        checker
+        or StaticChecker(
+            temp_parent=settings.agent_check_temp_dir,
+            timeout=settings.agent_check_timeout_seconds,
+            tsc_path=settings.agent_tsc_path,
+        ),
+        limits=PatchLimits(
+            settings.patch_max_files,
+            settings.patch_max_file_bytes,
+            settings.patch_max_patch_bytes,
+        ),
+        config=AgentConfig(
+            max_steps=settings.agent_max_steps,
+            token_budget=settings.agent_token_budget,
+            time_limit_seconds=settings.agent_time_limit_seconds,
+            step_max_output_tokens=settings.agent_step_max_output_tokens,
+            context_chars=settings.agent_context_chars,
+            last_results=settings.agent_context_last_results,
+        ),
+        clock=clock,
+    )
+
+
+def get_agent_service(session: SessionDep, provider: LLMProviderDep) -> AgentService:
+    return make_agent_service(session, provider)
+
+
+def get_agent_read_service(session: SessionDep) -> AgentService:
+    return make_agent_service(session, _NoGeneration())
+
+
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
+AgentReadServiceDep = Annotated[AgentService, Depends(get_agent_read_service)]
 
 PatchServiceDep = Annotated[PatchService, Depends(get_patch_service)]
 PatchReviewServiceDep = Annotated[PatchService, Depends(get_patch_review_service)]

@@ -1,3 +1,4 @@
+from app.models.agent import AgentDraftFile, AgentRun, AgentStep
 from app.models.architecture import ArchitectureProposal
 from app.models.chunk_embedding import ChunkEmbedding
 from app.models.document import Document
@@ -9,6 +10,9 @@ from app.models.project import Project
 from app.models.requirement import ExtractionRun, Requirement
 
 __all__ = [
+    "AgentDraftFile",
+    "AgentRun",
+    "AgentStep",
     "CodePatch",
     "PatchFile",
     "TechnologyConfirmation",
