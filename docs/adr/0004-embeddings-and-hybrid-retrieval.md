@@ -35,6 +35,17 @@ Completions), API version, request/response shape, required headers, deployment 
 input/batch limits, token accounting, and one explicitly approved probe request. Discovery listing
 of embedding deployments is not proof of successful embedding inference.
 
+### Phase 7B.2 status
+
+`WorkbenchEmbeddingProvider` exists (`ARCHPILOT_EMBEDDING_PROVIDER=kpmg_workbench`,
+`ARCHPILOT_EMBEDDING_DEPLOYMENT`, `ARCHPILOT_EMBEDDING_DIMENSION` (required, >0),
+`ARCHPILOT_EMBEDDING_BATCH_SIZE`); it reuses the `workbench_*` endpoint, key, headers, proxy and
+timeout. Its route `POST /genai/azure/openai/deployments/{deployment}/embeddings?api-version=...`
+was a hypothesis. One approved live probe (`text-embedding-3-small-1-gs-sdc`, API version
+2024-10-21, zero retries) returned **HTTP 404**, so the route/version/deployment pairing is
+**unconfirmed and unusable**. Verify the embedding route in the Workbench portal before any
+further probe; do not guess alternatives.
+
 ## Limits
 
 Fake vectors capture lexical overlap only. JSON vectors and Python scanning do not scale beyond the

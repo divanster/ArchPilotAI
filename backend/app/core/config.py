@@ -66,7 +66,12 @@ class Settings(BaseSettings):
     retrieval_max_scan_chunks: int = Field(default=20_000, ge=1, le=200_000)
 
     # "fake" is a deterministic lexical test provider; "none" disables vector search.
-    embedding_provider: Literal["none", "fake"] = "none"
+    embedding_provider: Literal["none", "fake", "kpmg_workbench"] = "none"
+    # Workbench embeddings reuse the workbench_* endpoint, key, region, proxy and timeout.
+    embedding_deployment: str = ""
+    # Must match the deployment's real output size; 0 = not configured (provider is refused).
+    embedding_dimension: int = Field(default=0, ge=0, le=16_384)
+    embedding_batch_size: int = Field(default=16, ge=1, le=2048)
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

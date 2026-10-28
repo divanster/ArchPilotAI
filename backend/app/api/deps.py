@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 from functools import lru_cache
 from typing import Annotated
@@ -30,6 +31,8 @@ from app.services.project import ProjectService
 from app.services.requirement import RequirementService
 from app.services.requirement_extraction import RequirementExtractionService
 from app.services.retrieval import RetrievalService
+
+logger = logging.getLogger(__name__)
 
 
 def get_engine() -> Engine:
@@ -185,7 +188,12 @@ RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)
 
 
 def get_embedding_provider() -> EmbeddingProvider | None:
-    return create_embedding_provider(get_settings())
+    try:
+        return create_embedding_provider(get_settings())
+    except LLMConfigurationError:
+        # Misconfiguration disables vector search (reported as unavailable); never a fake.
+        logger.warning("embedding provider is misconfigured; vector search disabled")
+        return None
 
 
 EmbeddingProviderDep = Annotated[EmbeddingProvider | None, Depends(get_embedding_provider)]

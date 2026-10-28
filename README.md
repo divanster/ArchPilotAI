@@ -172,8 +172,10 @@ This is **plumbing, not semantic retrieval**. The only embedding provider is a d
 `FakeEmbeddingProvider` (hashed word buckets = lexical overlap, no meaning), enabled only with
 `ARCHPILOT_EMBEDDING_PROVIDER=fake` (rejected when `ARCHPILOT_ENVIRONMENT=production`). The
 default is `none`: vector/hybrid modes are unavailable and keyword search is unchanged. There is
-no Workbench embedding provider (its API contract is unconfirmed), no pgvector, no outbound call,
-and no link to architecture generation.
+no pgvector and no link to architecture generation. An experimental
+`ARCHPILOT_EMBEDDING_PROVIDER=kpmg_workbench` provider exists (needs `ARCHPILOT_EMBEDDING_DEPLOYMENT`
+and `ARCHPILOT_EMBEDDING_DIMENSION`), but its hypothesised route returned HTTP 404 in the one
+approved probe, so it is unconfirmed (see ADR 0004).
 
 - `POST .../documents/{doc}/embed` (`{"reembed": bool}`), `GET .../embedding-status`,
   `GET /api/projects/{id}/retrieval/capabilities`; `POST .../search` accepts

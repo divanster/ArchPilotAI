@@ -24,12 +24,14 @@ def _require_url(value: str, setting: str, schemes: tuple[str, ...]) -> None:
         )
 
 
-def create_provider(settings: Settings) -> LLMProvider:
-    """Build the configured provider. Never substitutes the fake for a misconfigured Workbench."""
-    if settings.llm_provider == "fake":
-        return FakeLLMProvider()
-
-    missing = [env for env, attr in _REQUIRED.items() if not str(getattr(settings, attr)).strip()]
+def require_workbench_settings(settings: Settings, *, need_deployment: bool = True) -> None:
+    """Shared by chat and embeddings; raises LLMConfigurationError naming only setting names."""
+    required = {
+        env: attr
+        for env, attr in _REQUIRED.items()
+        if need_deployment or attr != "workbench_deployment"
+    }
+    missing = [env for env, attr in required.items() if not str(getattr(settings, attr)).strip()]
     if not settings.workbench_api_key.get_secret_value().strip():
         missing.append("ARCHPILOT_WORKBENCH_API_KEY")
     if missing:
@@ -40,6 +42,14 @@ def create_provider(settings: Settings) -> LLMProvider:
     _require_url(settings.workbench_endpoint, "ARCHPILOT_WORKBENCH_ENDPOINT", ("https",))
     if settings.workbench_proxy.strip():
         _require_url(settings.workbench_proxy, "ARCHPILOT_WORKBENCH_PROXY", ("http", "https"))
+
+
+def create_provider(settings: Settings) -> LLMProvider:
+    """Build the configured provider. Never substitutes the fake for a misconfigured Workbench."""
+    if settings.llm_provider == "fake":
+        return FakeLLMProvider()
+
+    require_workbench_settings(settings)
 
     return WorkbenchProvider(
         WorkbenchConfig(
