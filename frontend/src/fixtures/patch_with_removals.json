@@ -1,0 +1,45 @@
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "task_key": "T-001",
+  "version": 1,
+  "status": "proposed",
+  "provider": "fake",
+  "model": "fake",
+  "prompt_version": "v1",
+  "created_at": "2026-01-01T00:00:00Z",
+  "reviewed_by": null,
+  "review_reason": null,
+  "file_count": 0,
+  "based_on_version": null,
+  "plan_id": "00000000-0000-0000-0000-000000000002",
+  "task_id": "00000000-0000-0000-0000-000000000003",
+  "input_tokens": null,
+  "output_tokens": null,
+  "latency_ms": null,
+  "notes": [],
+  "assumptions": [],
+  "test_suggestions": [],
+  "warnings": [],
+  "blocking_acknowledged": false,
+  "coverage": null,
+  "removed_from_accepted": [
+    {
+      "kind": "class",
+      "name": "Invoice",
+      "file": "src/a.py",
+      "listed": true,
+      "reason": "replaced"
+    },
+    {
+      "kind": "function",
+      "name": "total",
+      "file": "src/a.py",
+      "listed": false,
+      "reason": ""
+    }
+  ],
+  "needs_justification": true,
+  "validation": "passed",
+  "stale": [],
+  "files": []
+}

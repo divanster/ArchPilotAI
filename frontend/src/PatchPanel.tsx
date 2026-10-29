@@ -10,6 +10,7 @@ import {
   type CodePatchDetail,
   type PatchSummary,
   type PlanTask,
+  type RemovalsNotConfirmedDetail,
 } from "./api";
 
 const AI_FLAG_PREFIX = "AI recommendation";
@@ -17,6 +18,9 @@ const AI_FLAG_PREFIX = "AI recommendation";
 function errText(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
+
+const removalKey = (r: { file: string; name: string }) =>
+  `${r.file}\u0000${r.name}`;
 
 export default function PatchPanel({
   projectId,
@@ -41,6 +45,12 @@ export default function PatchPanel({
   const [techDone, setTechDone] = useState(false);
   const [reviewer, setReviewer] = useState("");
   const [reason, setReason] = useState("");
+  const [removalState, setRemovalState] = useState<
+    Record<string, { confirmed: boolean; reason: string }>
+  >({});
+  const [unconfirmed, setUnconfirmed] = useState<
+    { file: string; name: string }[]
+  >([]);
 
   const needsTech = task.flags.some((f) => f.startsWith(AI_FLAG_PREFIX));
 
@@ -57,6 +67,14 @@ export default function PatchPanel({
 
   if (!approved) return null;
 
+  const removals = detail?.needs_justification
+    ? (detail.removed_from_accepted ?? [])
+    : [];
+  const showDetail = (d: CodePatchDetail) => {
+    setDetail(d);
+    setRemovalState({});
+    setUnconfirmed([]);
+  };
   const run = async (fn: () => Promise<void>, fallback: string) => {
     setBusy(true);
     setError(null);
@@ -67,6 +85,10 @@ export default function PatchPanel({
       if (e instanceof ApiError && e.status === 409) {
         const d = e.detail as { code?: string } | null;
         if (d?.code === "technology_unconfirmed") setTechDone(false);
+        const r = e.detail as Partial<RemovalsNotConfirmedDetail> | null;
+        if (r?.code === "removals_not_confirmed") {
+          setUnconfirmed(Array.isArray(r.missing) ? r.missing : []);
+        }
       }
     } finally {
       setBusy(false);
@@ -77,25 +99,37 @@ export default function PatchPanel({
     run(async () => {
       const made = await generatePatch(projectId, planId, task.key, ack);
       setDetail(made);
+      setRemovalState({});
+      setUnconfirmed([]);
       await refresh();
       onChanged();
     }, "Patch generation failed");
 
   const open = (id: string) =>
     run(
-      async () => setDetail(await getPatch(projectId, id)),
+      async () => showDetail(await getPatch(projectId, id)),
       "Could not load patch",
     );
 
   const review = (action: "accept" | "reject") =>
     run(async () => {
       if (!detail) return;
-      const done = await reviewPatch(projectId, detail.id, action, {
+      setUnconfirmed([]);
+      const body: Parameters<typeof reviewPatch>[3] = {
         reviewer: reviewer.trim(),
         reason: reason.trim(),
-      });
+      };
+      if (action === "accept" && removals.length > 0) {
+        body.confirmed_removals = removals.map((r) => ({
+          file: r.file,
+          name: r.name,
+          reason: (removalState[removalKey(r)]?.reason ?? "").trim(),
+        }));
+      }
+      const done = await reviewPatch(projectId, detail.id, action, body);
       setDetail(done);
       setReason("");
+      setRemovalState({});
       await refresh();
       onChanged();
     }, "Review failed");
@@ -111,6 +145,10 @@ export default function PatchPanel({
 
   const canReview = detail?.status === "proposed";
   const canSubmitReview = reviewer.trim() !== "" && reason.trim() !== "";
+  const allRemovalsConfirmed = removals.every((r) => {
+    const s = removalState[removalKey(r)];
+    return !!s?.confirmed && s.reason.trim() !== "";
+  });
 
   return (
     <div data-testid={`patches-${task.key}`}>
@@ -284,6 +322,52 @@ export default function PatchPanel({
               ))}
             </ul>
           )}
+          {removals.length > 0 && (
+            <section
+              aria-label="Removed from accepted file"
+              style={{ border: "1px solid #c0392b", color: "#c0392b", padding: "0.5rem" }}
+            >
+              <strong>Removed from accepted file ({removals.length})</strong>
+              {unconfirmed.length > 0 && (
+                <p role="alert">
+                  Unconfirmed removals:{" "}
+                  {unconfirmed.map((u) => `${u.name} (${u.file})`).join(", ")}
+                </p>
+              )}
+              <ul>
+                {removals.map((r) => {
+                  const key = removalKey(r);
+                  const s = removalState[key] ?? { confirmed: false, reason: "" };
+                  const set = (p: Partial<typeof s>) =>
+                    setRemovalState((m) => ({ ...m, [key]: { ...s, ...p } }));
+                  const label = `${r.kind} ${r.name} in ${r.file}`;
+                  return (
+                    <li key={key}>
+                      {r.kind} <strong>{r.name}</strong> · {r.file}{" "}
+                      <span className={r.listed ? "badge" : "badge badge-warn"}>
+                        {r.listed ? "listed" : "unintended"}
+                      </span>{" "}
+                      <label>
+                        <input
+                          type="checkbox"
+                          aria-label={`Confirm removal of ${label}`}
+                          checked={s.confirmed}
+                          onChange={(e) => set({ confirmed: e.target.checked })}
+                        />
+                        Confirm
+                      </label>{" "}
+                      <input
+                        aria-label={`Removal reason for ${label}`}
+                        placeholder="Reason"
+                        value={s.reason}
+                        onChange={(e) => set({ reason: e.target.value })}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
           {detail.files.map((f) => (
             <details key={f.path} open>
               <summary>
@@ -337,7 +421,7 @@ export default function PatchPanel({
                 <button
                   type="button"
                   className="approve"
-                  disabled={busy || !canSubmitReview}
+                  disabled={busy || !canSubmitReview || !allRemovalsConfirmed}
                   onClick={() => void review("accept")}
                 >
                   Accept patch

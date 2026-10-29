@@ -915,7 +915,29 @@ export interface PatchCoverage {
   };
 }
 
+export interface RemovedFromAccepted {
+  kind: string;
+  name: string;
+  file: string;
+  listed: boolean;
+  reason: string;
+}
+
+export interface RemovalsNotConfirmedDetail {
+  code: "removals_not_confirmed";
+  message: string;
+  missing: { file: string; name: string }[];
+}
+
+export interface ConfirmedRemoval {
+  file: string;
+  name: string;
+  reason: string;
+}
+
 export interface CodePatchDetail extends PatchSummary {
+  removed_from_accepted?: RemovedFromAccepted[];
+  needs_justification?: boolean;
   coverage?: PatchCoverage | null;
   plan_id: string;
   task_id: string;
@@ -1037,7 +1059,11 @@ export const reviewPatch = (
   projectId: string,
   patchId: string,
   action: "accept" | "reject",
-  body: { reviewer: string; reason: string },
+  body: {
+    reviewer: string;
+    reason: string;
+    confirmed_removals?: ConfirmedRemoval[];
+  },
 ) =>
   request<CodePatchDetail>(
     `${projectPath(projectId)}/patches/${patchId}/${action}`,

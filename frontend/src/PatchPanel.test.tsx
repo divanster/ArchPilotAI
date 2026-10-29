@@ -1,7 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PatchPanel from "./PatchPanel";
-import type { CodePatchDetail, PlanTask } from "./api";
+import type { CodePatchDetail, PlanTask, RemovalsNotConfirmedDetail } from "./api";
+import patchFixture from "./fixtures/patch_with_removals.json";
+import conflictFixtureJson from "./fixtures/removals_not_confirmed.json";
+
+const conflictFixture: { detail: RemovalsNotConfirmedDetail } = {
+  detail: conflictFixtureJson.detail as RemovalsNotConfirmedDetail,
+};
 
 const PID = "p";
 
@@ -230,5 +236,114 @@ describe("PatchPanel", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: "v1" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Stale patch");
+  });
+
+  describe("removals from accepted file", () => {
+    const removed = [
+      { kind: "class", name: "Invoice", file: "src/a.py", listed: true },
+      { kind: "function", name: "total", file: "src/a.py", listed: false },
+    ];
+
+    it("shows no removal section for patches without removals", async () => {
+      setup(task(), (url) =>
+        url.endsWith("/patches/pa1") ? json(patch()) : json([{ ...patch(), files: undefined }]),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      await screen.findByRole("button", { name: "Accept patch" });
+      expect(screen.queryByText(/Removed from accepted file/)).toBeNull();
+    });
+
+    it("shows listed vs unintended badges", async () => {
+      setup(task(), (url) => {
+        if (url.endsWith("/patches/pa1"))
+          return json(patch({ removed_from_accepted: removed, needs_justification: true }));
+        return json([{ ...patch(), files: undefined }]);
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      expect(await screen.findByText("listed")).toHaveClass("badge");
+      expect(screen.getByText("unintended")).toHaveClass("badge-warn");
+      expect(screen.queryByText("listed")).not.toHaveClass("badge-warn");
+    });
+
+    it("does not show the section when the patch does not need justification", async () => {
+      setup(task(), (url) =>
+        url.endsWith("/patches/pa1")
+          ? json(patch({ removed_from_accepted: removed, needs_justification: false }))
+          : json([{ ...patch(), files: undefined }]),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      await screen.findByRole("button", { name: "Accept patch" });
+      expect(screen.queryByText(/Removed from accepted file/)).toBeNull();
+    });
+
+    it("matches the backend contract fixtures", async () => {
+      const detail = patchFixture as unknown as CodePatchDetail;
+      expect(Object.keys(detail.removed_from_accepted![0]).sort()).toEqual(
+        ["file", "kind", "listed", "name", "reason"],
+      );
+      expect(detail.needs_justification).toBe(true);
+      expect(Object.keys(conflictFixture.detail).sort()).toEqual(["code", "message", "missing"]);
+      expect(Object.keys(conflictFixture.detail.missing[0]).sort()).toEqual(["file", "name"]);
+      setup(task(), (url) =>
+        url.endsWith(`/patches/${detail.id}`) ? json(detail) : json([{ ...detail, files: undefined }]),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      expect(await screen.findByText("Removed from accepted file (2)")).toBeInTheDocument();
+      expect(screen.getByText("listed")).toBeInTheDocument();
+      expect(screen.getByText("unintended")).toBeInTheDocument();
+    });
+
+    it("gates accept on every row and sends confirmed_removals", async () => {
+      const { fetchMock } = setup(task(), (url) => {
+        if (url.endsWith("/accept")) return json(patch({ status: "accepted" }));
+        if (url.endsWith("/patches/pa1")) return json(patch({ removed_from_accepted: removed, needs_justification: true }));
+        return json([{ ...patch(), files: undefined }]);
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      expect(await screen.findByText("Removed from accepted file (2)")).toBeInTheDocument();
+      expect(screen.getByText("listed")).toBeInTheDocument();
+      expect(screen.getByText("unintended")).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("Reviewer"), { target: { value: "Ann" } });
+      fireEvent.change(screen.getByLabelText("Review reason"), { target: { value: "ok" } });
+      const accept = screen.getByRole("button", { name: "Accept patch" });
+      expect(accept).toBeDisabled();
+      for (const r of removed) {
+        const label = `${r.kind} ${r.name} in ${r.file}`;
+        fireEvent.click(screen.getByLabelText(`Confirm removal of ${label}`));
+        expect(accept).toBeDisabled();
+        fireEvent.change(screen.getByLabelText(`Removal reason for ${label}`), {
+          target: { value: `drop ${r.name}` },
+        });
+      }
+      expect(accept).toBeEnabled();
+      fireEvent.click(accept);
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Accept patch" })).toBeNull());
+      const post = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/accept"));
+      expect(JSON.parse(String(post?.[1]?.body)).confirmed_removals).toEqual([
+        { file: "src/a.py", name: "Invoice", reason: "drop Invoice" },
+        { file: "src/a.py", name: "total", reason: "drop total" },
+      ]);
+    });
+
+    it("lists unconfirmed items on 409 removals_not_confirmed", async () => {
+      setup(task(), (url) => {
+        if (url.endsWith("/accept")) return json(conflictFixture, 409);
+        if (url.endsWith("/patches/pa1")) return json(patch({ removed_from_accepted: removed, needs_justification: true }));
+        return json([{ ...patch(), files: undefined }]);
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "v1" }));
+      await screen.findByText("Removed from accepted file (2)");
+      fireEvent.change(screen.getByLabelText("Reviewer"), { target: { value: "Ann" } });
+      fireEvent.change(screen.getByLabelText("Review reason"), { target: { value: "ok" } });
+      for (const r of removed) {
+        const label = `${r.kind} ${r.name} in ${r.file}`;
+        fireEvent.click(screen.getByLabelText(`Confirm removal of ${label}`));
+        fireEvent.change(screen.getByLabelText(`Removal reason for ${label}`), {
+          target: { value: "x" },
+        });
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Accept patch" }));
+      expect(await screen.findByText(/Unconfirmed removals: total \(src\/a\.py\)/)).toBeInTheDocument();
+    });
   });
 });

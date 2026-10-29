@@ -1,0 +1,12 @@
+{
+  "detail": {
+    "code": "removals_not_confirmed",
+    "message": "Removals not confirmed",
+    "missing": [
+      {
+        "file": "src/a.py",
+        "name": "total"
+      }
+    ]
+  }
+}
