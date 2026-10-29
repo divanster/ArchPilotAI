@@ -1,5 +1,6 @@
 import json
 import logging
+import posixpath
 import re
 import threading
 import time
@@ -19,6 +20,7 @@ from app.domain.coverage import (
 from app.domain.feedback import build_feedback
 from app.domain.frameworks import FrameworkRules
 from app.domain.patch import (
+    ALLOWED_EXTENSIONS,
     PATCH_PROMPT_VERSION,
     RESPONSE_CHARS_PER_TOKEN,
     Failure,
@@ -26,6 +28,7 @@ from app.domain.patch import (
     PatchInvalidError,
     PatchLimits,
     content_hash,
+    convert_creates,
     parse_patch,
     requirement_code,
     stale_failures,
@@ -394,6 +397,20 @@ class PatchService:
                     "notes": [*generated.notes, rules.note()],
                 }
             )
+        converted_files, converted = convert_creates(
+            generated.files, {p: f.content for p, f in workspace.items()}
+        )
+        if converted:
+            generated = generated.model_copy(
+                update={
+                    "files": converted_files,
+                    "notes": [
+                        *generated.notes,
+                        "Changed create to modify for existing accepted files: "
+                        + ", ".join(converted),
+                    ],
+                }
+            )
         failures = validate_patch(generated.files, hashes, self._limits)
         if failures:
             # Only fixed codes and paths are logged, never file content.
@@ -729,6 +746,13 @@ class PatchService:
             for p in self._patches.for_task(project_id, task.id)
             for pf in self._patches.files(project_id, p.id)
         }
+        dep_dirs = {posixpath.dirname(p) for p in already}
+        text_of_task = " ".join([task.title, task.description, *task.acceptance_criteria]).lower()
+        named = {
+            w
+            for w in re.findall(r"[a-z0-9_][a-z0-9_.-]*\.[a-z]{1,4}", text_of_task)
+            if w.rsplit(".", 1)[-1] in ALLOWED_EXTENSIONS
+        }
         tokens = {
             w
             for w in re.findall(r"[a-z0-9]+", task.title.lower())
@@ -737,8 +761,15 @@ class PatchService:
         likely = [
             p
             for p in paths
-            if p not in already and (p in own or any(t in p.lower() for t in tokens))
+            if p not in already
+            and (
+                p in own
+                or posixpath.dirname(p) in dep_dirs
+                or posixpath.basename(p).lower() in named
+                or any(t in p.lower() for t in tokens)
+            )
         ]
+        likely.sort(key=lambda p: (p not in own, p))
         files: list[dict[str, Any]] = []
         cut = False
         for path in likely[:MAX_CONTEXT_FILES]:
@@ -752,7 +783,12 @@ class PatchService:
             budget -= min(len(text), room)
         if len(likely) > MAX_CONTEXT_FILES or cut:
             warnings.append("Not every likely workspace file was sent in full")
-        return {"paths": paths[:MAX_WORKSPACE_PATHS], "paths_total": len(paths), "files": files}
+        return {
+            "label": "existing accepted files",
+            "paths": paths[:MAX_WORKSPACE_PATHS],
+            "paths_total": len(paths),
+            "files": files,
+        }
 
     # ---- reading ---------------------------------------------------------------------------
 

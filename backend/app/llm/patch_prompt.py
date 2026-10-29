@@ -24,8 +24,10 @@ Rules:
 - "path" is relative, uses "/" and has no "..", no drive letter and no leading "/" or ".". Allowed
   extensions: py, ts, tsx, js, json, md, toml, yaml, yml, css, html, sql, txt; the only dotfiles
   allowed are .gitignore and .env.example.
-- "create" needs the full file in "content". "modify" needs the COMPLETE new file in "content" and
-  must name a path that is listed in the workspace. "delete" needs a listed path and no content.
+- "create" needs the full file in "content" and must name a path that is NOT yet in the workspace.
+  The workspace lists "existing accepted files": for any path that exists there, ALWAYS use
+  "modify" with the COMPLETE new content (keep what must stay); never "create". "modify" must name
+  a listed path. "delete" needs a listed path and no content.
 - UTF-8 text only. Python, JSON, TOML and YAML must parse. Never write secrets, tokens, passwords
   or connection strings with credentials. In .env.example every value must be empty.
 - Implement only this task. Follow the architecture items and the technology they name; do not

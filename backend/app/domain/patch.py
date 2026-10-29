@@ -132,13 +132,39 @@ class PatchInvalidError(Exception):
 
     def __init__(self, failures: Sequence[Failure]) -> None:
         self.failures = list(failures)
-        super().__init__(
-            "The proposed patch failed validation: " + ", ".join(sorted({f.code for f in failures}))
+        message = "The proposed patch failed validation: " + ", ".join(
+            sorted({f.code for f in failures})
         )
+        exists = sorted({f.path for f in failures if f.code == "create_exists" and f.path})
+        if exists:
+            message += (
+                ". These paths already exist in the accepted workspace; use modify with the "
+                "full new content instead of create: " + ", ".join(exists[:20])
+            )
+        super().__init__(message)
 
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def convert_creates(
+    files: Sequence[GeneratedFile], accepted: Mapping[str, str]
+) -> tuple[list[GeneratedFile], list[str]]:
+    """Turn "create" of an exact accepted path into "modify" (accepted maps path -> content).
+
+    Only when the previous content hash can be computed from the accepted file; anything else
+    (for example a path differing in case) is left for validation to reject.
+    """
+    out: list[GeneratedFile] = []
+    converted: list[str] = []
+    for f in files:
+        if f.change == "create" and f.path in accepted and content_hash(accepted[f.path]):
+            out.append(f.model_copy(update={"change": "modify"}))
+            converted.append(f.path)
+        else:
+            out.append(f)
+    return out, converted
 
 
 def parse_patch(raw: str, *, finish_reason: str | None, max_chars: int) -> GeneratedPatch:

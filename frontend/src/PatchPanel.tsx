@@ -287,7 +287,8 @@ export default function PatchPanel({
           {detail.files.map((f) => (
             <details key={f.path} open>
               <summary>
-                {f.change} {f.path}
+                {f.change === "create" ? "new" : f.change === "modify" ? "modified" : "deleted"}{" "}
+                ({f.change}) {f.path}
               </summary>
               <pre>{f.diff}</pre>
               {f.diff_truncated && <p className="hint">Diff truncated.</p>}

@@ -415,10 +415,70 @@ def test_delete_removes_the_file_from_the_workspace(client: TestClient, world: W
     assert paths == ["src/b.py"]
 
 
-def test_create_over_an_existing_file_is_rejected(client: TestClient, world: World) -> None:
-    accepted(client, world, [create("src/a.py")])
+def test_create_over_an_existing_file_becomes_modify_with_a_diff(
+    client: TestClient, world: World
+) -> None:
+    accepted(client, world, [create("src/a.py", "x = 1\n")])
     serve([create("src/a.py", "y = 2\n")])
-    assert "create_exists" in generate(client, world).text
+    response = generate(client, world)
+    assert response.status_code == 201, response.text
+    (file,) = response.json()["files"]
+    assert file["change"] == "modify"
+    assert "-x = 1" in file["diff"] and "+y = 2" in file["diff"]
+    assert any("Changed create to modify" in n for n in response.json()["notes"])
+
+
+def test_create_over_an_existing_path_that_cannot_be_matched_is_rejected(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    accepted(client, world, [create("src/a.py")])
+    before = patch_count(engine)
+    serve([create("src/A.py", "y = 2\n")])
+    response = generate(client, world)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "create_exists" in response.text and "use modify" in detail["message"]
+    assert "src/A.py" in detail["message"]
+    assert patch_count(engine) == before
+    assert client.get(api(world[0], "/workspace")).json()["files"][0]["path"] == "src/a.py"
+
+
+def test_new_file_is_labelled_create_with_a_full_diff(client: TestClient, world: World) -> None:
+    serve([create("src/new.py", "z = 3\n")])
+    (file,) = generate(client, world).json()["files"]
+    assert file["change"] == "create" and "+z = 3" in file["diff"]
+
+
+def test_existing_accepted_files_are_sent_to_the_model(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    pid, _plan, tasks = world
+    first, second = list(tasks)[:2]
+    accepted(client, world, [create("src/models.py", "class User:\n    pass\n")])
+    set_task(engine, tasks[second]["id"], description="Add a field to models.py")
+    provider = serve([create("src/other.py")])
+    assert generate(client, world, second).status_code == 201
+    prompt = provider.requests[-1].prompt
+    assert "existing accepted files" in prompt
+    assert "class User:" in prompt and '"src/models.py"' in prompt
+    assert first != second
+
+
+def test_other_projects_files_are_not_sent_to_the_model(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    accepted(client, world, [create("src/secret_a.py", "SENTINEL_A = 1\n")])
+    other_pid, _proposal, _ids = approved_project(client)
+    other_plan = build(client, other_pid)
+    assert client.post(plans_url(other_pid, f"/{other_plan['id']}/approve")).status_code == 200
+    for task in other_plan["tasks"]:
+        set_task(engine, task["id"], flags=[], blocking_questions=[])
+    provider = serve([create("src/b.py")])
+    key = other_plan["tasks"][0]["key"]
+    response = client.post(task_url(other_pid, other_plan["id"], key, "/patches"), json={})
+    assert response.status_code == 201, response.text
+    prompt = provider.requests[-1].prompt
+    assert "SENTINEL_A" not in prompt and "secret_a" not in prompt
 
 
 def test_provider_failure_stores_nothing(client: TestClient, engine: Engine, world: World) -> None:
