@@ -178,6 +178,9 @@ export default function PatchPanel({
                 v{p.version}
               </button>{" "}
               <span className="badge">{p.status}</span> · {p.file_count} file(s)
+              {p.based_on_version != null && (
+                <span className="muted"> · Based on feedback from version {p.based_on_version}</span>
+              )}
             </li>
           ))}
         </ul>
@@ -186,8 +189,36 @@ export default function PatchPanel({
         <div aria-label={`Patch v${detail.version} of ${task.key}`}>
           <p>
             Version {detail.version} · <strong>{detail.status}</strong> ·{" "}
-            {detail.provider}/{detail.model}
+            {detail.provider}/{detail.model} · {detail.files.length} file(s)
           </p>
+          {detail.based_on_version != null && (
+            <p className="hint">
+              Based on feedback from version {detail.based_on_version}
+            </p>
+          )}
+          {detail.coverage && detail.coverage.items.length > 0 && (
+            <div>
+              <strong>
+                Coverage: {detail.coverage.covered} covered ·{" "}
+                {detail.coverage.missing} missing
+              </strong>
+              <ul aria-label="Acceptance coverage">
+                {detail.coverage.items.map((c, i) => (
+                  <li key={i}>
+                    <span
+                      className={
+                        c.status === "missing" ? "badge badge-warn" : "badge"
+                      }
+                    >
+                      {c.status}
+                    </span>{" "}
+                    {c.ref}: {c.text}
+                    {c.missing.length > 0 && <> (missing: {c.missing.join(", ")})</>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {detail.validation === "stale" && (
             <p role="alert">
               Stale patch: the workspace changed since generation (

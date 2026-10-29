@@ -70,6 +70,10 @@ class CodePatch(Base):
     # Visible warnings from generation (dependencies without an accepted patch, cut context, ...).
     warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     blocking_acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The rejected version whose reviewer feedback this patch was generated with, if any.
+    based_on_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Covered / missing per acceptance criterion and linked requirement, at generation time.
+    coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

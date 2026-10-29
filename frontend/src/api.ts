@@ -840,9 +840,27 @@ export interface PatchSummary {
   reviewed_by: string | null;
   review_reason: string | null;
   file_count: number;
+  based_on_version?: number | null;
+}
+
+export interface CoverageItemView {
+  kind: "criterion" | "requirement";
+  ref: string;
+  text: string;
+  status: "covered" | "missing" | "unchecked";
+  covered: string[];
+  missing: string[];
+}
+
+export interface PatchCoverage {
+  items: CoverageItemView[];
+  covered: number;
+  missing: number;
+  unchecked: number;
 }
 
 export interface CodePatchDetail extends PatchSummary {
+  coverage?: PatchCoverage | null;
   plan_id: string;
   task_id: string;
   notes: string[];

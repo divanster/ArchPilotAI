@@ -4,11 +4,14 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.architecture import ArchitectureContent, safe_finish_reason
+from app.domain.coverage import CoverageItem, check_coverage
+from app.domain.feedback import build_feedback
+from app.domain.frameworks import FrameworkRules
 from app.domain.patch import (
     PATCH_PROMPT_VERSION,
     RESPONSE_CHARS_PER_TOKEN,
@@ -251,6 +254,53 @@ class PatchService:
             return {}, list(task.flags)
         return self._decisions.task_context(project_id, plan.proposal_id, task)
 
+    def feedback_context(
+        self, project_id: uuid.UUID, task: PlanTask
+    ) -> tuple[dict[str, Any], int | None]:
+        """The labelled reviewer feedback of the task's latest patch, if it was rejected."""
+        patches = self._patches.for_task(project_id, task.id)
+        latest = patches[0] if patches else None
+        if latest is None or latest.status != "rejected" or not latest.review_reason:
+            return {}, None
+        codes = {
+            code: (r.title, r.description)
+            for r in self._requirements.list(project_id, "confirmed")
+            if (code := requirement_code(r.source_quote))
+        }
+        files = [(f.path, f.change) for f in self._patches.files(project_id, latest.id)]
+        block = build_feedback(
+            version=latest.version,
+            reason=latest.review_reason,
+            files=files,
+            notes=list(latest.notes),
+            requirements=codes,
+        )
+        return block, latest.version
+
+    def frameworks(self, project_id: uuid.UUID, paths: Iterable[str]) -> FrameworkRules:
+        current = self._decisions.current(project_id) if self._decisions else []
+        return FrameworkRules.detect(
+            [d.choice for d in current if d.area == "backend"],
+            [f"{d.choice} {d.reason}" for d in current],
+            paths,
+        )
+
+    def coverage(
+        self, project_id: uuid.UUID, task: PlanTask, files: Mapping[str, str]
+    ) -> dict[str, Any]:
+        """Covered/missing per acceptance criterion and linked requirement (domain.coverage)."""
+        confirmed = {str(r.id): r for r in self._requirements.list(project_id, "confirmed")}
+        items = [
+            CoverageItem("criterion", str(n), text)
+            for n, text in enumerate(task.acceptance_criteria, start=1)
+        ]
+        for rid in task.requirement_ids:
+            req = confirmed.get(str(rid))
+            if req is not None:
+                ref = requirement_code(req.source_quote) or _cut(req.title, 60)
+                items.append(CoverageItem("requirement", ref, f"{req.title}. {req.description}"))
+        return check_coverage(items, files)
+
     def dependency_warnings(
         self,
         project_id: uuid.UUID,
@@ -280,10 +330,20 @@ class PatchService:
         latency_ms: int,
         warnings: list[str],
         acknowledged: bool,
+        based_on_version: int | None = None,
     ) -> PatchDetail:
         """Validate a generated change set against the workspace and save it as a proposed patch."""
         workspace = {f.path: f for f in self._patches.workspace(project_id)}
         hashes = {path: f.content_hash for path, f in workspace.items()}
+        rules = self.frameworks(project_id, [*workspace, *(f.path for f in generated.files)])
+        refused = [f.path for f in generated.files if rules.refuses(f.path)]
+        if refused:
+            generated = generated.model_copy(
+                update={
+                    "files": [f for f in generated.files if f.path not in refused],
+                    "notes": [*generated.notes, rules.note()],
+                }
+            )
         failures = validate_patch(generated.files, hashes, self._limits)
         if failures:
             # Only fixed codes and paths are logged, never file content.
@@ -294,6 +354,12 @@ class PatchService:
                 json.dumps([f.as_json() for f in failures[:50]], sort_keys=True),
             )
             raise PatchInvalidError(failures)
+        merged = {path: f.content for path, f in workspace.items()}
+        for changed in generated.files:
+            if changed.change == "delete":
+                merged.pop(changed.path, None)
+            else:
+                merged[changed.path] = changed.content
         patch = CodePatch(
             id=uuid.uuid4(),
             project_id=project_id,
@@ -313,6 +379,8 @@ class PatchService:
             test_suggestions=list(generated.test_suggestions),
             warnings=warnings,
             blocking_acknowledged=acknowledged and bool(task.blocking_questions),
+            based_on_version=based_on_version,
+            coverage=self.coverage(project_id, task, merged),
         )
         files = [
             PatchFile(
@@ -370,8 +438,9 @@ class PatchService:
     ) -> PatchDetail:
         warnings = self.dependency_warnings(project_id, plan, task, tasks)
         workspace = {f.path: f for f in self._patches.workspace(project_id)}
+        feedback, based_on = self.feedback_context(project_id, task)
         context = self._build_context(
-            project_id, plan, task, tasks, workspace, acknowledged, warnings
+            project_id, plan, task, tasks, workspace, acknowledged, warnings, feedback
         )
         nonce = uuid.uuid4().hex[:16]
         prompt = build_prompt(context, nonce)
@@ -412,6 +481,7 @@ class PatchService:
             latency_ms=response.latency_ms,
             warnings=warnings,
             acknowledged=acknowledged,
+            based_on_version=based_on,
         )
 
     # ---- context ---------------------------------------------------------------------------
@@ -425,6 +495,7 @@ class PatchService:
         workspace: dict[str, WorkspaceFile],
         acknowledged: bool,
         warnings: list[str],
+        feedback: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         confirmed = {str(r.id): r for r in self._requirements.list(project_id, "confirmed")}
         linked = [confirmed[r] for r in task.requirement_ids if r in confirmed]
@@ -449,8 +520,11 @@ class PatchService:
             )
             requirements = requirements[:MAX_REQUIREMENTS]
         decision_block, flags = self.decision_context(project_id, plan, task)
+        rules = self.frameworks(project_id, workspace).context()
         context: dict[str, Any] = {
             **decision_block,
+            **(feedback or {}),
+            **({"framework_rules": rules} if rules else {}),
             "task": {
                 "key": task.key,
                 "title": task.title,
@@ -647,6 +721,11 @@ class PatchService:
     ) -> Sequence[CodePatch]:
         _, task, _ = self._plan_and_task(project_id, plan_id, task_key)
         return self._patches.for_task(project_id, task.id)
+
+    def file_counts(
+        self, project_id: uuid.UUID, patch_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        return self._patches.file_counts(project_id, patch_ids)
 
     def workspace(self, project_id: uuid.UUID) -> Sequence[WorkspaceFile]:
         if self._projects.get(project_id) is None:

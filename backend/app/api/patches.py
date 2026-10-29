@@ -94,6 +94,7 @@ class PatchSummary(BaseModel):
     reviewed_by: str | None
     review_reason: str | None
     file_count: int = 0
+    based_on_version: int | None = None
 
 
 class PatchResponse(PatchSummary):
@@ -107,6 +108,7 @@ class PatchResponse(PatchSummary):
     test_suggestions: list[str]
     warnings: list[str]
     blocking_acknowledged: bool
+    coverage: dict[str, Any] | None = None
     # Generation only stores patches that passed validation; "stale" is checked against the
     # current accepted workspace while the patch is still proposed.
     validation: str
@@ -147,6 +149,7 @@ def _summary(patch: CodePatch, file_count: int = 0) -> PatchSummary:
         reviewed_by=patch.reviewed_by,
         review_reason=patch.review_reason,
         file_count=file_count,
+        based_on_version=patch.based_on_version,
     )
 
 
@@ -164,6 +167,7 @@ def _full(detail: PatchDetail) -> PatchResponse:
         test_suggestions=list(p.test_suggestions),
         warnings=list(p.warnings),
         blocking_acknowledged=p.blocking_acknowledged,
+        coverage=p.coverage,
         validation="stale" if detail.stale else "passed",
         stale=[FailureOut(code=f.code, path=f.path) for f in detail.stale],
         files=[
@@ -281,7 +285,9 @@ def list_patches(
     project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str, service: PatchReviewServiceDep
 ) -> list[PatchSummary]:
     try:
-        return [_summary(p) for p in service.for_task(project_id, plan_id, task_key)]
+        found = list(service.for_task(project_id, plan_id, task_key))
+        counts = service.file_counts(project_id, [p.id for p in found])
+        return [_summary(p, counts.get(p.id, 0)) for p in found]
     except NotFound as exc:
         raise _not_found(exc) from exc
 

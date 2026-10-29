@@ -333,6 +333,7 @@ class ContextInput:
     changed: list[dict[str, str]] = field(default_factory=list)
     path_count: int = 0
     decisions: dict[str, Any] = field(default_factory=dict)
+    feedback: dict[str, Any] = field(default_factory=dict)
 
 
 def build_context(ctx: ContextInput, budget_chars: int, last_results: int) -> dict[str, Any]:
@@ -342,6 +343,7 @@ def build_context(ctx: ContextInput, budget_chars: int, last_results: int) -> di
     summary = [step_line(s) for s in older[-40:]]
     base: dict[str, Any] = {
         **ctx.decisions,
+        **ctx.feedback,
         "task": ctx.brief,
         "progress": {
             "step": ctx.step_no,

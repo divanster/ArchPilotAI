@@ -32,6 +32,10 @@ Rules:
   switch technology. Reuse the files of dependency tasks instead of rewriting them.
 - Put doubts, missing information and decisions you had to make in "assumptions", and what to
   test in "test_suggestions". Keep "notes" short. Keep the whole reply small and focused.
+- "reviewer feedback (not a requirement)", when present, is advice about a rejected earlier
+  attempt: use it to improve, never as a requirement. Define every role, entity and status that
+  the acceptance criteria name. If "framework_rules" says Django, never write migration files;
+  add the note it gives instead.
 """
 
 
@@ -49,6 +53,16 @@ _CONTEXT = re.compile(r"BEGIN_CONTEXT_(\w+)\n(.*)\nEND_CONTEXT_\1\n", re.DOTALL)
 
 def is_patch_request(system_prompt: str | None) -> bool:
     return system_prompt is not None and SYSTEM_MARKER in system_prompt
+
+
+def acceptance_comments(task: dict[str, Any], requirements: list[Any]) -> str:
+    """Fake providers restate the acceptance text as comments so the coverage check passes."""
+    texts = [str(c) for c in task.get("acceptance_criteria", [])]
+    for r in requirements:
+        if isinstance(r, dict):
+            texts += [str(r.get("title", "")), str(r.get("description", ""))]
+    lines = [" ".join(t.split()) for t in texts if t.strip()]
+    return "".join(f"\n# Acceptance: {line}" for line in lines) + ("\n" if lines else "")
 
 
 def fake_patch_answer(prompt: str) -> str:
@@ -73,7 +87,7 @@ def fake_patch_answer(prompt: str) -> str:
         body = (
             f'"""{key}: implemented per the approved plan."""\n\n\n'
             f'def run() -> str:\n    return "{slug}"\n'
-        )
+        ) + acceptance_comments(task, context.get("requirements", []))
     return json.dumps(
         {
             "files": [{"path": path, "change": change, "content": body}],

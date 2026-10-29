@@ -46,6 +46,18 @@ class PatchRepository:
         )
         return self._session.scalars(stmt).all()
 
+    def file_counts(
+        self, project_id: uuid.UUID, patch_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        if not patch_ids:
+            return {}
+        stmt = (
+            select(PatchFile.patch_id, func.count())
+            .where(PatchFile.project_id == project_id, PatchFile.patch_id.in_(patch_ids))
+            .group_by(PatchFile.patch_id)
+        )
+        return {patch_id: count for patch_id, count in self._session.execute(stmt).all()}
+
     def for_task(self, project_id: uuid.UUID, task_id: uuid.UUID) -> Sequence[CodePatch]:
         """Newest version first."""
         stmt = (

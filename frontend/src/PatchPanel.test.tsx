@@ -87,6 +87,35 @@ describe("PatchPanel", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("lists the file count and the feedback origin of each version, and the coverage", async () => {
+    setup(task(), () =>
+      json([patch({ id: "pa2", version: 2, file_count: 3, based_on_version: 1 })]),
+    );
+    expect(await screen.findByText(/3 file\(s\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Based on feedback from version 1/)).toBeInTheDocument();
+  });
+
+  it("shows covered and missing items of the detail", async () => {
+    const coverage = {
+      covered: 1,
+      missing: 1,
+      unchecked: 0,
+      items: [
+        { kind: "criterion", ref: "AC1", text: "Admin approves", status: "covered", covered: ["admin"], missing: [] },
+        { kind: "criterion", ref: "AC2", text: "Customer logs in", status: "missing", covered: [], missing: ["customer"] },
+      ],
+    } as const;
+    setup(task(), (_url, init) =>
+      init?.method === "POST"
+        ? json(patch({ coverage: coverage as never, based_on_version: 1 }), 201)
+        : json([]),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Generate patch" }));
+    expect(await screen.findByText(/missing: customer/)).toBeInTheDocument();
+    expect(screen.getByText(/1 covered/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Based on feedback from version 1/).length).toBeGreaterThan(0);
+  });
+
   it("generates a patch and shows diff, warnings and notes", async () => {
     const { onChanged } = setup(task(), (_url, init) => {
       if (init?.method === "POST") return json(patch(), 201);

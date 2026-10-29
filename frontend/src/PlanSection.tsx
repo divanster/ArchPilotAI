@@ -221,6 +221,7 @@ function TaskCard({
   const editButton = useRef<HTMLButtonElement>(null);
   const reqKey = `${task.id}:req`;
   const acKey = `${task.id}:ac`;
+  const criteria = task.acceptance_criteria.filter((c) => c.trim() !== "");
   return (
     <li className="card" data-testid={`task-${task.key}`}>
       <div className="title-row">
@@ -321,18 +322,18 @@ function TaskCard({
         ) : (
           <ul aria-label={`Requirements for ${task.key}`}>
             {task.requirement_ids.map((id) => (
-              <li key={id}>{titles.get(id) ?? id}</li>
+              <li key={id}>{titles.get(id)?.trim() || id}</li>
             ))}
           </ul>
         )}
       </details>
       <details open={open.has(acKey)} onToggle={(e) => onToggleSection(acKey, e.currentTarget.open)}>
-        <summary>Acceptance criteria ({task.acceptance_criteria.length})</summary>
-        {task.acceptance_criteria.length === 0 ? (
+        <summary>Acceptance criteria ({criteria.length})</summary>
+        {criteria.length === 0 ? (
           <p className="muted">None recorded.</p>
         ) : (
           <ul aria-label={`Acceptance criteria for ${task.key}`}>
-            {task.acceptance_criteria.map((c, i) => (
+            {criteria.map((c, i) => (
               <li key={i}>
                 {c}
                 {c.includes("needs clarification") && (

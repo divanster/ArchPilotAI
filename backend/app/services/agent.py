@@ -29,6 +29,7 @@ from app.domain.agent import (
     write_problem,
 )
 from app.domain.architecture import safe_finish_reason
+from app.domain.coverage import missing_findings, missing_lines
 from app.domain.patch import (
     Failure,
     GeneratedPatch,
@@ -276,6 +277,10 @@ class AgentService:
         )
         brief = self._brief(project_id, task, run.blocking_acknowledged)
         decision_block, brief["flags"] = self._patches.decision_context(project_id, plan, task)
+        feedback, based_on = self._patches.feedback_context(project_id, task)
+        framework_rules = self._patches.frameworks(project_id, draft.live()).context()
+        if framework_rules:
+            brief["framework_rules"] = framework_rules
         steps: list[StepView] = []
         started = self._clock()
         total_latency = 0
@@ -298,6 +303,7 @@ class AgentService:
                 ContextInput(
                     brief=brief,
                     decisions=decision_block,
+                    feedback=feedback,
                     steps=steps,
                     step_no=step_no,
                     max_steps=run.max_steps,
@@ -355,6 +361,7 @@ class AgentService:
                     total_latency,
                     response.provider,
                     response.model,
+                    based_on,
                 )
             except ActionError as exc:
                 error = exc
@@ -423,7 +430,7 @@ class AgentService:
                 if stalled >= CONVERGENCE_LIMIT:
                     self._stop_not_converging(
                         project_id, plan, task, draft, run, warnings, total_latency,
-                        check_totals, last_findings,
+                        check_totals, last_findings, based_on,
                     )  # fmt: skip
                     self._end(
                         run, "stopped", "not_converging", self._clock() - started, run.summary
@@ -501,6 +508,7 @@ class AgentService:
         latency_ms: int,
         provider: str,
         model: str,
+        based_on: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
         a = action.args
         name = action.name
@@ -550,6 +558,15 @@ class AgentService:
             except tools.ToolInputError as exc:
                 raise ActionError("tool_input", str(exc)) from None
             return {"summary": f"{found['total']} impacted node(s)", **found}, False
+        if name in ("edit_file", "write_file", "delete_file"):
+            rules = self._patches.frameworks(project_id, draft.live())
+            if rules.refuses(a.path):
+                raise ActionError(
+                    "django_migration",
+                    f"Refused: Django migrations are not written by hand. {rules.note()}",
+                    path=a.path,
+                    data={"note": rules.note()},
+                )
         if name == "edit_file":
             file = self._existing(draft, a.path)
             count = file.content.count(a.search)
@@ -597,7 +614,7 @@ class AgentService:
             data = report.as_json()
             return {"summary": f"{report.total} finding(s)", **data}, False
         return self._finish(
-            a, project_id, plan, task, draft, run, warnings, latency_ms, provider, model
+            a, project_id, plan, task, draft, run, warnings, latency_ms, provider, model, based_on
         )
 
     def _get_task(
@@ -625,6 +642,7 @@ class AgentService:
         latency_ms: int,
         provider: str,
         model: str,
+        based_on: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
         changes = draft.changes()
         current = self._patch_repo.workspace_hashes(project_id)
@@ -643,10 +661,28 @@ class AgentService:
                 "patch_invalid",
                 data={"failures": [f.as_json() for f in failures[:50]]},
             )
-        notes = ([a.summary] if a.summary else []) + list(a.notes)
+        coverage = self._patches.coverage(
+            project_id, task, {p: f.content for p, f in draft.live().items()}
+        )
+        open_items = missing_lines(coverage)
+        coverage_notes: list[str] = []
+        if open_items:
+            if run.steps_taken + 1 < run.max_steps:
+                raise ActionError(
+                    "acceptance_missing",
+                    f"Finish refused: {len(open_items)} acceptance item(s) name terms the draft "
+                    "does not define. Add them to the code (names, roles, statuses) and finish "
+                    "again.",
+                    data={
+                        "findings": missing_findings(coverage),
+                        "coverage": {k: coverage[k] for k in ("covered", "missing", "unchecked")},
+                    },
+                )
+            coverage_notes = [f"Not covered at the step limit: {line}" for line in open_items]
+        notes = ([a.summary] if a.summary else []) + coverage_notes + list(a.notes)
         version = self._propose_draft(
             project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
-            notes, a.assumptions, a.test_suggestions,
+            notes, a.assumptions, a.test_suggestions, based_on,
         )  # fmt: skip
         run.summary = cut(a.summary, 1000) or None
         return {
@@ -666,6 +702,7 @@ class AgentService:
         latency_ms: int,
         totals: list[int],
         findings: list[dict[str, Any]],
+        based_on: int | None = None,
     ) -> None:
         """Hand the draft over for review with the last findings in the notes (if it is valid)."""
         counts = ", ".join(str(n) for n in totals[-10:])
@@ -680,7 +717,7 @@ class AgentService:
         try:
             self._propose_draft(
                 project_id, plan, task, draft, run, warnings, latency_ms, run.provider, run.model,
-                notes, [], [],
+                notes, [], [], based_on,
             )  # fmt: skip
         except ActionError as exc:
             logger.warning(
@@ -701,6 +738,7 @@ class AgentService:
         notes: list[str],
         assumptions: list[str],
         test_suggestions: list[str],
+        based_on: int | None = None,
     ) -> int:
         changes = draft.changes()
         try:
@@ -722,6 +760,7 @@ class AgentService:
                 latency_ms=latency_ms,
                 warnings=warnings,
                 acknowledged=run.blocking_acknowledged,
+                based_on_version=based_on,
             )
         except PatchInvalidError as exc:
             raise ActionError(

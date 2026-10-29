@@ -123,6 +123,22 @@ describe("PlanSection", () => {
   beforeEach(() => vi.unstubAllGlobals());
   afterEach(() => vi.unstubAllGlobals());
 
+  it("never renders empty rows for blank criteria or untitled requirements", async () => {
+    const p = plan();
+    p.tasks[0].acceptance_criteria = ["", "  ", "Login works"];
+    p.tasks[0].requirement_ids = [RID, "unknown-id"];
+    mockFetch([p]);
+    render(<PlanSection projectId={PID} />);
+    expect(await screen.findByText("T-001 · Implement API")).toBeTruthy();
+    const criteria = screen.getByRole("list", { name: "Acceptance criteria for T-001" });
+    expect(Array.from(criteria.querySelectorAll("li")).map((li) => li.textContent?.trim())).toEqual([
+      "Login works",
+    ]);
+    expect(screen.getByText("Acceptance criteria (1)")).toBeTruthy();
+    const reqs = screen.getByRole("list", { name: "Requirements for T-001" });
+    expect(Array.from(reqs.querySelectorAll("li")).every((li) => li.textContent?.trim())).toBe(true);
+  });
+
   it("renders tasks in order with requirements, criteria, flags and questions", async () => {
     mockFetch([plan()]);
     render(<PlanSection projectId={PID} />);
