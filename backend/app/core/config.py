@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     agent_check_temp_dir: str = ""
     # Path to the TypeScript compiler; empty auto-detects the frontend's local install or PATH.
     agent_tsc_path: str = ""
+    # Execution provider commands (tests). The only provider today is "unavailable"; a container
+    # provider can be added later.
+    agent_execution_provider: str = "unavailable"
+    agent_test_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
+    agent_test_output_cap: int = Field(default=4000, ge=200, le=20_000)
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

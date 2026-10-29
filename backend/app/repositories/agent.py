@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from app.models.agent import AgentDraftFile, AgentRun, AgentStep
+from app.models.agent import AgentDraftFile, AgentJob, AgentRun, AgentStep
 from app.models.patch import WorkspaceFile
 
 
@@ -65,6 +65,17 @@ class AgentRepository:
 
     def add_step(self, step: AgentStep) -> None:
         self._session.add(step)
+
+    def add_jobs(self, jobs: Sequence[AgentJob]) -> None:
+        self._session.add_all(jobs)
+
+    def jobs(self, project_id: uuid.UUID, run_id: uuid.UUID) -> Sequence[AgentJob]:
+        stmt = (
+            select(AgentJob)
+            .where(AgentJob.project_id == project_id, AgentJob.run_id == run_id)
+            .order_by(AgentJob.created_at, AgentJob.id)
+        )
+        return self._session.scalars(stmt).all()
 
     def commit(self) -> None:
         try:

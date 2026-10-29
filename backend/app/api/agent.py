@@ -1,7 +1,7 @@
 import json
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,7 +18,7 @@ from app.api.deps import (
     make_agent_service,
     make_static_checker,
 )
-from app.models.agent import AgentRun, AgentStep
+from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.services.agent import RunNotFoundError, RunNotRunningError, is_active
 from app.services.patch import (
     PatchBusyError,
@@ -75,6 +75,38 @@ class FindingOut(BaseModel):
     line: int
     code: str
     message: str
+    scope: str | None = None  # "in changed files" | "elsewhere"
+
+
+class TestsOut(BaseModel):
+    """A run_tests step as shown in the run panel (read back from its stored result)."""
+
+    __test__ = False
+
+    command_id: str
+    status: str
+    structured: bool = False
+    new: list[dict[str, Any]] = []
+    new_in_changed: int = 0
+    new_elsewhere: int = 0
+    pre_existing: int = 0
+    fixed: int = 0
+    flaky: list[str] = []
+    baseline: bool = False
+    note: str | None = None
+
+
+class JobOut(BaseModel):
+    id: str
+    command_id: str
+    variant: str
+    status: str
+    timeout_seconds: float
+    exit_code: int | None
+    duration_ms: int
+    truncated: bool
+    select_test: str | None
+    flaky: bool | None = None  # set on a re-run job
 
 
 class StepOut(BaseModel):
@@ -91,6 +123,8 @@ class StepOut(BaseModel):
     finding_total: int | None = None  # actionable findings of a run_static_checks step
     findings_not_shown: int = 0  # environment findings counted but not shown
     environment_reasons: dict[str, int] = {}  # why they are environment noise -> count
+    scope_counts: dict[str, int] = {}  # findings "in changed files" / "elsewhere"
+    tests: TestsOut | None = None
 
 
 class RunSummary(BaseModel):
@@ -117,6 +151,7 @@ class RunSummary(BaseModel):
 
 class RunResponse(RunSummary):
     steps: list[StepOut]
+    jobs: list[JobOut] = []
 
 
 def _duration(run: AgentRun) -> int:
@@ -156,10 +191,16 @@ def _findings(step: AgentStep) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(step.result)
-        found = [FindingOut(**{k: f[k] for k in FindingOut.model_fields}) for f in data["findings"]]
+        found = [
+            FindingOut(
+                **{k: f[k] for k in FindingOut.model_fields if k != "scope"}, scope=f.get("scope")
+            )
+            for f in data["findings"]
+        ]
         return {
             "findings": found,
             "finding_total": int(data["total"]),
+            "scope_counts": {str(k): int(v) for k, v in (data.get("scope") or {}).items()},
             "findings_not_shown": int((data.get("not_shown") or {}).get("environment", 0)),
             "environment_reasons": {
                 str(k): int(v)
@@ -170,9 +211,39 @@ def _findings(step: AgentStep) -> dict[str, Any]:
         return {}
 
 
-def _full(run: AgentRun, steps: list[AgentStep]) -> RunResponse:
+def _tests(step: AgentStep) -> TestsOut | None:
+    if step.action != "run_tests" or step.status != "ok":
+        return None
+    try:
+        data = json.loads(step.result)
+        fields = {k: data[k] for k in TestsOut.model_fields if k in data}
+        return TestsOut(**fields)
+    except (ValueError, TypeError):
+        return None
+
+
+def _jobs(jobs: Sequence[AgentJob]) -> list[JobOut]:
+    return [
+        JobOut(
+            id=str((j.summary or {}).get("job", j.id)),
+            command_id=j.command_id,
+            variant=j.variant,
+            status=j.status,
+            timeout_seconds=j.timeout_seconds,
+            exit_code=j.exit_code,
+            duration_ms=j.duration_ms,
+            truncated=j.truncated,
+            select_test=j.select_test,
+            flaky=(j.summary or {}).get("flaky"),
+        )
+        for j in jobs
+    ]
+
+
+def _full(run: AgentRun, steps: list[AgentStep], jobs: Sequence[AgentJob] = ()) -> RunResponse:
     return RunResponse(
         **_summary(run).model_dump(),
+        jobs=_jobs(jobs),
         steps=[
             StepOut(
                 step_no=s.step_no,
@@ -185,6 +256,7 @@ def _full(run: AgentRun, steps: list[AgentStep]) -> RunResponse:
                 output_tokens=s.output_tokens,
                 latency_ms=s.latency_ms,
                 **_findings(s),
+                tests=_tests(s),
             )
             for s in steps
         ],
@@ -242,7 +314,11 @@ def start_run(
             session.close()
 
     _spawn(job)
-    return _full(service.get_run(project_id, run_id), service.steps(project_id, run_id))
+    return _full(
+        service.get_run(project_id, run_id),
+        service.steps(project_id, run_id),
+        service.jobs(project_id, run_id),
+    )
 
 
 @router.get("/plans/{plan_id}/tasks/{task_key}/agent-runs", response_model=list[RunSummary])
@@ -261,7 +337,7 @@ def get_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceD
         run = service.get_run(project_id, run_id)
         if run.status == "running" and not is_active(run.id):
             run = service.mark_interrupted(project_id, run_id)
-        return _full(run, service.steps(project_id, run_id))
+        return _full(run, service.steps(project_id, run_id), service.jobs(project_id, run_id))
     except NotFound as exc:
         raise _not_found(exc) from exc
 
@@ -270,7 +346,7 @@ def get_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceD
 def stop_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceDep) -> RunResponse:
     try:
         run = service.stop(project_id, run_id)
-        return _full(run, service.steps(project_id, run_id))
+        return _full(run, service.steps(project_id, run_id), service.jobs(project_id, run_id))
     except NotFound as exc:
         raise _not_found(exc) from exc
     except RunNotRunningError as exc:

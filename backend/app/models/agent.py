@@ -127,6 +127,45 @@ class AgentStep(Base):
     )
 
 
+class AgentJob(Base):
+    """One execution-provider command of a run: id, timeout, outcome and the full output log.
+
+    `summary` is what was sent to the model (bounded); `output` is the whole log, never sent.
+    """
+
+    __tablename__ = "agent_jobs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "project_id"],
+            ["agent_runs.id", "agent_runs.project_id"],
+            ondelete="CASCADE",
+            name="fk_agent_job_run",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'done', 'timed_out', 'cancelled', 'unavailable')",
+            name="ck_agent_job_status",
+        ),
+        Index("ix_agent_jobs_run", "run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    command_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    variant: Mapped[str] = mapped_column(String(20), nullable=False, default="changed")
+    select_test: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    output: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+
 class AgentDraftFile(Base):
     """One file of a run's draft workspace (a copy of the accepted workspace taken at the start)."""
 

@@ -30,6 +30,14 @@ from app.domain.agent import (
 )
 from app.domain.architecture import safe_finish_reason
 from app.domain.coverage import missing_findings, missing_lines
+from app.domain.execution import (
+    DEFAULT_OUTPUT_CAP,
+    DEFAULT_TIMEOUT,
+    ProviderUnavailableError,
+    UnavailableExecutionProvider,
+    UnknownCommandError,
+    attribute,
+)
 from app.domain.patch import (
     Failure,
     GeneratedPatch,
@@ -43,10 +51,11 @@ from app.domain.patch import (
 from app.llm.agent_prompt import SYSTEM_PROMPT, build_prompt
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.mcp import tools
-from app.models.agent import AgentRun, AgentStep
+from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.plan import ImplementationPlan, PlanTask
 from app.repositories.agent import AgentRepository
 from app.repositories.patch import PatchRepository
+from app.services.execution import TestRunner, cancel_run_jobs, release_run
 from app.services.patch import PatchBusyError, PatchService, TaskNotFoundError
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
@@ -113,8 +122,14 @@ class AgentService:
         limits: PatchLimits,
         config: AgentConfig,
         clock: Callable[[], float] = time.monotonic,
+        tests: TestRunner | None = None,
     ) -> None:
         self._provider = provider
+        self._tests = tests or TestRunner(
+            UnavailableExecutionProvider(),
+            timeout=DEFAULT_TIMEOUT,
+            output_cap=DEFAULT_OUTPUT_CAP,
+        )
         self._patches = patches
         self._agents = agents
         self._patch_repo = patch_repo
@@ -136,6 +151,9 @@ class AgentService:
     def steps(self, project_id: uuid.UUID, run_id: uuid.UUID) -> list[AgentStep]:
         return list(self._agents.steps(project_id, run_id))
 
+    def jobs(self, project_id: uuid.UUID, run_id: uuid.UUID) -> list[AgentJob]:
+        return list(self._agents.jobs(project_id, run_id))
+
     def runs_for_task(
         self, project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str
     ) -> list[AgentRun]:
@@ -147,6 +165,7 @@ class AgentService:
         if run.status != "running":
             raise RunNotRunningError("The run has already ended")
         self._agents.request_stop(project_id, run_id)
+        cancel_run_jobs(run_id)
         return self.get_run(project_id, run_id)
 
     def mark_interrupted(self, project_id: uuid.UUID, run_id: uuid.UUID) -> AgentRun:
@@ -213,6 +232,7 @@ class AgentService:
             except Exception as inner:
                 logger.error("agent run not closed run=%s error=%s", run_id, type(inner).__name__)
         finally:
+            release_run(run_id)
             _active.discard(run_id)
             _agent_lock.release()
 
@@ -281,6 +301,9 @@ class AgentService:
         framework_rules = self._patches.frameworks(project_id, draft.live()).context()
         if framework_rules:
             brief["framework_rules"] = framework_rules
+        tests_ok, _ = self._tests.status()
+        if tests_ok:
+            brief["run_tests"] = "available: pytest, ruff, mypy, tsc, npm test"
         steps: list[StepView] = []
         started = self._clock()
         total_latency = 0
@@ -612,10 +635,74 @@ class AgentService:
                     data={"status": "unavailable", "unavailable": report.unavailable},
                 )
             data = report.as_json()
+            changed = [c.path for c in draft.changes()]
+            tagged, counts = attribute(data.get("findings") or [], changed)
+            data["findings"] = tagged
+            data["scope"] = counts
             return {"summary": f"{report.total} finding(s)", **data}, False
+        if name == "run_tests":
+            return self._run_tests(a.command_id, project_id, draft, run, warnings), False
         return self._finish(
             a, project_id, plan, task, draft, run, warnings, latency_ms, provider, model, based_on
         )
+
+    def _run_tests(
+        self,
+        command_id: str,
+        project_id: uuid.UUID,
+        draft: Draft,
+        run: AgentRun,
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        """Runs through the execution provider only; never locally. Unavailable is a result the
+        model sees, and a note on the patch."""
+        files = {p: f.content for p, f in draft.live().items()}
+        baseline = {f.path: f.content for f in self._patch_repo.workspace(project_id)}
+        try:
+            outcome = self._tests.run(
+                run.id, command_id, files, baseline, [c.path for c in draft.changes()]
+            )
+        except UnknownCommandError:
+            raise ActionError("unknown_command") from None
+        except ProviderUnavailableError:
+            note = "Tests were not run: tests unavailable (no execution provider is configured)."
+            if note not in warnings:
+                warnings.append(note)
+            raise ActionError("tests_unavailable", data={"status": "unavailable"}) from None
+        self._agents.add_jobs(
+            [
+                AgentJob(
+                    id=uuid.uuid4(),
+                    run_id=run.id,
+                    project_id=project_id,
+                    command_id=j.command_id,
+                    variant=j.variant,
+                    select_test=j.select,
+                    status=j.status,
+                    timeout_seconds=j.timeout,
+                    exit_code=j.exit_code,
+                    duration_ms=j.duration_ms,
+                    truncated=j.truncated,
+                    summary={"job": j.id, **j.summary},
+                    output=j.output,
+                )
+                for j in outcome.jobs
+            ]
+        )
+        payload = outcome.payload
+        flaky = payload.get("flaky") or []
+        if flaky:
+            warnings.append(
+                "Flaky tests (failed, then passed on a lone re-run): " + ", ".join(flaky)
+            )
+        parts = [payload["status"]]
+        if payload.get("structured"):
+            parts += [
+                f"{payload['new_in_changed']} new in changed files",
+                f"{payload['new_elsewhere']} new elsewhere",
+                f"{payload['pre_existing']} pre-existing",
+            ]
+        return {"summary": f"{command_id}: " + ", ".join(parts), **payload}
 
     def _get_task(
         self, project_id: uuid.UUID, plan: ImplementationPlan, task: PlanTask, key: str | None

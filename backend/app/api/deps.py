@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
 from app.domain.chunking import ChunkSettings
+from app.domain.execution import ExecutionProvider, UnavailableExecutionProvider
 from app.domain.patch import PatchLimits
 from app.embeddings.contracts import EmbeddingProvider
 from app.embeddings.factory import create_embedding_provider
@@ -37,6 +38,7 @@ from app.services.architecture_lint import lint_config_from_settings
 from app.services.decision import DecisionService
 from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
+from app.services.execution import TestRunner
 from app.services.graph import GraphService
 from app.services.hybrid import HybridRetrievalService
 from app.services.patch import PatchService
@@ -254,6 +256,7 @@ def make_agent_service(
     *,
     clock: Callable[[], float] = time.monotonic,
     checker: StaticChecker | None = None,
+    execution: ExecutionProvider | None = None,
 ) -> AgentService:
     settings = get_settings()
     return AgentService(
@@ -278,6 +281,11 @@ def make_agent_service(
             last_results=settings.agent_context_last_results,
         ),
         clock=clock,
+        tests=TestRunner(
+            execution or UnavailableExecutionProvider(),
+            timeout=settings.agent_test_timeout_seconds,
+            output_cap=settings.agent_test_output_cap,
+        ),
     )
 
 

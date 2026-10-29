@@ -46,11 +46,32 @@ ACTIONS = (
     "write_file",
     "delete_file",
     "run_static_checks",
+    "run_tests",
     "finish",
 )
 
+# What an action touches: "read" (nothing), "draft" (the draft workspace or checks of it),
+# "finish" (turns the draft into a patch). run_tests is a draft action and is offered to the
+# model only when a real execution provider is configured.
+TIERS = {
+    "read_file": "read",
+    "list_files": "read",
+    "search_code": "read",
+    "get_requirements": "read",
+    "get_task": "read",
+    "get_impact": "read",
+    "edit_file": "draft",
+    "write_file": "draft",
+    "delete_file": "draft",
+    "run_static_checks": "draft",
+    "run_tests": "draft",
+    "finish": "finish",
+}
+
 # Fixed error codes; each has a fixed message below.
 MESSAGES = {
+    "tests_unavailable": "tests unavailable",
+    "unknown_command": "Unknown command id. Allowed: pytest, ruff, mypy, tsc, npm test",
     "output_truncated": "The reply was cut off by the output limit; answer with a shorter action",
     "output_too_large": "The reply is larger than the output limit allows",
     "invalid_json": 'The reply is not one JSON object {"action": "...", "args": {...}}',
@@ -137,6 +158,10 @@ class DeleteFileArgs(_Args):
     path: str
 
 
+class RunTestsArgs(_Args):
+    command_id: str = Field(max_length=20)  # an allowlisted id, never a command line
+
+
 class FinishArgs(_Args):
     summary: str = Field(default="", max_length=1000)
     notes: ShortList = Field(default_factory=list)
@@ -155,6 +180,7 @@ ARG_MODELS: dict[str, type[_Args]] = {
     "write_file": WriteFileArgs,
     "delete_file": DeleteFileArgs,
     "run_static_checks": NoArgs,
+    "run_tests": RunTestsArgs,
     "finish": FinishArgs,
 }
 

@@ -279,4 +279,56 @@ describe("AgentRunPanel", () => {
       ),
     ).toBeTruthy();
   });
+
+  it("shows test results, attribution and the jobs of the run", async () => {
+    const withTests = run({
+      status: "finished",
+      steps: [
+        {
+          ...run().steps[0],
+          action: "run_tests",
+          path: null,
+          result_summary: "pytest: failed",
+          tests: {
+            command_id: "pytest",
+            status: "failed",
+            structured: true,
+            new: [{ name: "tests.t::test_x", message: "boom", file: "t.py" }],
+            new_in_changed: 1,
+            new_elsewhere: 2,
+            pre_existing: 3,
+            fixed: 0,
+            flaky: ["tests.t::test_y"],
+            baseline: true,
+            note: null,
+          },
+        },
+      ],
+      jobs: [
+        {
+          id: "j1",
+          command_id: "pytest",
+          variant: "changed",
+          status: "timed_out",
+          timeout_seconds: 120,
+          exit_code: null,
+          duration_ms: 120000,
+          truncated: true,
+          select_test: null,
+          flaky: null,
+        },
+      ],
+    });
+    setup((url) =>
+      url.endsWith("/agent-runs") ? json([withTests]) : json(withTests),
+    );
+    expect(
+      await screen.findByText(/1 new in changed files · 2 new elsewhere/),
+    ).toBeTruthy();
+    expect(screen.getByText(/3 pre-existing/)).toBeTruthy();
+    expect(screen.getByText(/Flaky \(passed on re-run\)/)).toBeTruthy();
+    const jobs = screen.getByLabelText("Jobs");
+    expect(jobs.textContent).toContain("timed_out");
+    expect(jobs.textContent).toContain("output truncated");
+  });
 });

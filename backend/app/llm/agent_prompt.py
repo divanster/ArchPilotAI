@@ -24,6 +24,8 @@ Actions:
 - edit_file {{"path", "search", "replace"}}: "search" must match EXACTLY ONCE in the file
 - write_file {{"path", "content"}}: new files only          - delete_file {{"path"}}
 - run_static_checks {{}}: ruff, mypy, tsc --noEmit and syntax parsing of the draft; no tests run
+- run_tests {{"command_id"}}: only when the message lists "run_tests"; pytest, ruff, mypy, tsc or
+  "npm test". You get new failures in changed files only; elsewhere and pre-existing are counted.
 - finish {{"summary", "notes"?, "assumptions"?, "test_suggestions"?}}: turns the draft into a patch
 
 Rules:

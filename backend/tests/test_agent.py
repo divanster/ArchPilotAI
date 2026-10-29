@@ -75,7 +75,7 @@ def clean_agent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def configure(monkeypatch: pytest.MonkeyPatch, **settings: Any) -> None:
     """Agent settings and test hooks (clock, checker) for the services the API builds."""
-    hooks = {k: settings.pop(k) for k in ("clock", "checker") if k in settings}
+    hooks = {k: settings.pop(k) for k in ("clock", "checker", "execution") if k in settings}
     patched = get_settings().model_copy(update={f"agent_{k}": v for k, v in settings.items()})
     monkeypatch.setattr("app.api.deps.get_settings", lambda: patched)
     real = deps.make_agent_service
@@ -706,7 +706,7 @@ def test_migration_and_models_are_registered(engine: Engine) -> None:
     from sqlalchemy import inspect
 
     tables = set(inspect(engine).get_table_names())
-    assert {"agent_runs", "agent_steps", "agent_draft_files"} <= tables
+    assert {"agent_runs", "agent_steps", "agent_draft_files", "agent_jobs"} <= tables
     with Session(engine) as session:
         assert session.scalars(select(CodePatch)).all() == []
 
@@ -910,6 +910,7 @@ def test_static_check_steps_expose_findings_for_the_run_panel(
         "line": 1,
         "code": "F401",
         "message": "unused 0",
+        "scope": "in changed files",
     }
     assert run["steps"][0]["findings"] == [] and run["steps"][0]["finding_total"] is None
 

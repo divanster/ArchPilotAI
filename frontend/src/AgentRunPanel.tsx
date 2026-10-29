@@ -5,6 +5,7 @@ import {
   listAgentRuns,
   startAgentRun,
   stopAgentRun,
+  type AgentJob,
   type AgentRun,
   type AgentStepView,
   type ChecksStatus,
@@ -15,6 +16,55 @@ const POLL_MS = 1500;
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function TestsView({ step }: { step: AgentStepView }) {
+  const t = step.tests;
+  if (!t) return null;
+  return (
+    <div aria-label={`Tests of step ${step.step_no}`}>
+      <p className="sub">
+        {t.command_id}: {t.status}
+        {t.structured
+          ? ` · ${t.new_in_changed} new in changed files · ${t.new_elsewhere} new elsewhere (counted, not fixed) · ${t.pre_existing} pre-existing · ${t.fixed} fixed`
+          : ` · ${t.note ?? "exit code only"}`}
+      </p>
+      {t.new.length > 0 && (
+        <ul>
+          {t.new.map((n) => (
+            <li key={n.name}>
+              <code>{n.name}</code> {n.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {t.flaky.length > 0 && (
+        <p className="sub">Flaky (passed on re-run): {t.flaky.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
+function JobList({ jobs }: { jobs: AgentJob[] }) {
+  if (jobs.length === 0) return null;
+  return (
+    <div aria-label="Jobs">
+      <h5>Jobs</h5>
+      <ul>
+        {jobs.map((j) => (
+          <li key={j.id}>
+            <code>{j.command_id}</code>{" "}
+            <span className="badge">{j.variant}</span> {j.status} · exit{" "}
+            {j.exit_code ?? "—"} · {seconds(j.duration_ms)} of{" "}
+            {j.timeout_seconds} s limit
+            {j.truncated ? " · output truncated" : ""}
+            {j.flaky === true ? " · flaky" : ""}
+            {j.select_test ? ` · ${j.select_test}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function FindingList({ step }: { step: AgentStepView }) {
@@ -29,6 +79,7 @@ function FindingList({ step }: { step: AgentStepView }) {
                 {f.file}:{f.line}
               </code>{" "}
               <span className="badge">{`${f.tool} ${f.code}`}</span> {f.message}
+              {f.scope ? <span className="sub"> ({f.scope})</span> : null}
             </li>
           ))}
         </ul>
@@ -228,10 +279,12 @@ export default function AgentRunPanel({
                   )}
                   {s.finding_total !== null &&
                     s.finding_total !== undefined && <FindingList step={s} />}
+                  <TestsView step={s} />
                 </li>
               ))}
             </ol>
           )}
+          <JobList jobs={run.jobs ?? []} />
           {run.stop_reason === "checks_unavailable" && (
             <p role="alert">
               The run stopped because a static checker (ruff or mypy) is not

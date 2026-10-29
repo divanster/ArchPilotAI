@@ -1019,6 +1019,35 @@ export interface AgentStepView {
   finding_total: number | null;
   findings_not_shown: number;
   environment_reasons?: Record<string, number>;
+  scope_counts?: Record<string, number>;
+  tests?: AgentTestsView | null;
+}
+
+export interface AgentTestsView {
+  command_id: string;
+  status: string;
+  structured: boolean;
+  new: { name: string; message: string; file: string | null }[];
+  new_in_changed: number;
+  new_elsewhere: number;
+  pre_existing: number;
+  fixed: number;
+  flaky: string[];
+  baseline: boolean;
+  note: string | null;
+}
+
+export interface AgentJob {
+  id: string;
+  command_id: string;
+  variant: "baseline" | "changed" | "rerun";
+  status: string;
+  timeout_seconds: number;
+  exit_code: number | null;
+  duration_ms: number;
+  truncated: boolean;
+  select_test: string | null;
+  flaky: boolean | null;
 }
 
 export interface AgentFinding {
@@ -1027,6 +1056,7 @@ export interface AgentFinding {
   line: number;
   code: string;
   message: string;
+  scope?: string | null;
 }
 
 export interface AgentRunSummary {
@@ -1053,6 +1083,7 @@ export interface AgentRunSummary {
 
 export interface AgentRun extends AgentRunSummary {
   steps: AgentStepView[];
+  jobs?: AgentJob[];
 }
 
 export const startAgentRun = (
