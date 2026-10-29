@@ -1,12 +1,22 @@
 """Reviewer feedback, acceptance-criteria coverage and Django migration rules."""
 
 import json
+import uuid
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
 
-from app.domain.coverage import CoverageItem, check_coverage, extract_terms, missing_lines
+from app.domain.coverage import (
+    CoverageItem,
+    check_coverage,
+    extract_terms,
+    missing_lines,
+    removed_line,
+    removed_symbols,
+    scope_lines,
+)
 from app.domain.feedback import (
     FEEDBACK_LABEL,
     MAX_FEEDBACK_FILES,
@@ -16,6 +26,7 @@ from app.domain.feedback import (
     codes_in,
 )
 from app.domain.frameworks import FrameworkRules, is_migration_path
+from app.models.requirement import Requirement
 from tests.test_agent import clean_agent_state as _clean_agent_state
 from tests.test_agent import (
     context_of,
@@ -257,3 +268,90 @@ def test_list_reports_file_counts(client: TestClient, world: World) -> None:
         task_url(world[0], world[1]["id"], first_task(world)["key"], "/patches")
     ).json()
     assert [p["file_count"] for p in listed] == [2]
+
+
+# ---- honest reporting -------------------------------------------------------------------------
+
+
+def test_three_state_counts_and_unchecked_reasons() -> None:
+    items = [
+        CoverageItem("criterion", "1", CRITERION),
+        CoverageItem("criterion", "2", "A Customer can log in"),
+        CoverageItem("criterion", "3", "it works well"),
+        CoverageItem("criterion", "4", "nothing special here"),
+    ]
+    report = check_coverage(items, {"a.py": GOOD})
+    assert (report["covered"], report["missing"], report["unchecked"]) == (1, 1, 2)
+    unchecked = [i for i in report["items"] if i["status"] == "unchecked"]
+    assert len(unchecked) == 2
+    assert all(i["reason"] == "no key terms extracted" for i in unchecked)
+    assert all(i["prompt"] == "check manually" for i in unchecked)
+    assert all(i["reason"] is None for i in report["items"] if i["status"] != "unchecked")
+    assert not any("it works well" in line for line in missing_lines(report))
+
+
+def test_removed_symbols_are_listed_by_kind() -> None:
+    before = "class Invoice:\n    total: int\n    PAID = 'paid'\n\n\nclass Gone:\n    pass\n"
+    after = "class Invoice:\n    PAID = 'paid'\n    note = ''\n"
+    gone = removed_symbols({"a.py": before}, {"a.py": after})
+    assert gone == [("class", "Gone"), ("field", "Invoice.total")]
+    assert removed_line(1, gone) == "Removed since v1: class Gone; field Invoice.total"
+    assert removed_symbols({"a.py": "class (("}, {}) == []  # unparsable: nothing listed
+
+
+def test_regression_is_reported_in_the_notes_and_never_blocks(
+    client: TestClient, world: World
+) -> None:
+    serve([create("src/a.py", "class Invoice:\n    total: int\n    PAID = 'paid'\n")])
+    first = generate(client, world).json()
+    serve([create("src/b.py", "class Invoice:\n    PAID = 'paid'\n")])
+    response = generate(client, world)
+    assert response.status_code == 201
+    second = response.json()
+    assert "Removed since v1: field Invoice.total" in second["notes"]
+    assert second["coverage"]["removed"] == {"since": 1, "items": ["field Invoice.total"]}
+    assert first["version"] == 1
+
+
+def test_no_regression_note_without_removals(client: TestClient, world: World) -> None:
+    serve([create("src/a.py", "class Invoice:\n    total: int\n")])
+    generate(client, world)
+    serve([create("src/b.py", "class Invoice:\n    total: int\n    tax: int\n")])
+    second = generate(client, world).json()
+    assert "removed" not in second["coverage"]
+    assert not any(n.startswith("Removed since") for n in second["notes"])
+
+
+def test_scope_lines_name_the_other_task() -> None:
+    other = [("FR-002", "Admin approval. An admin approves invoices", ["T-002"])]
+    lines = scope_lines("Database schema with an admin table", other)
+    assert lines == ["Requirement FR-002 (admin) is related to T-002, not in this task's scope"]
+    assert scope_lines("Database schema", other) == []
+
+
+def test_scope_note_in_a_patch(client: TestClient, engine: Engine, world: World) -> None:
+    keys = list(world[2])
+    mine, other = world[2][keys[0]], world[2][keys[1]]
+    with Session(engine) as session:
+        req = session.scalars(
+            select(Requirement).where(Requirement.project_id == uuid.UUID(world[0]))
+        ).first()
+        assert req is not None
+        req.title = "Admin approval"
+        req.description = "An admin approves invoices"
+        req.status = "confirmed"
+        session.commit()
+        rid = str(req.id)
+    set_task(engine, other["id"], requirement_ids=[rid])
+    set_task(
+        engine,
+        mine["id"],
+        requirement_ids=[],
+        acceptance_criteria=[],
+        description="Database schema with an admin table",
+    )
+    serve([create("src/a.py")])
+    patch = generate(client, world, keys[0]).json()
+    line = "not in this task's scope"
+    assert any(line in n and other["key"] in n for n in patch["notes"]), patch["notes"]
+    assert any(line in s for s in patch["coverage"]["scope"])

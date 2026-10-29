@@ -11,9 +11,14 @@ A term is defined when it appears in a file path or file content of the draft, c
 lower case with everything but letters and digits removed (so "Purchase Order", PurchaseOrder and
 purchase_order all match) and with simple plural and "cancelled/canceled" variants.
 An item is covered when all its terms are defined, missing when some are not, and unchecked when
-no term could be extracted (it is not counted as missing).
+no term could be extracted. Unchecked is a third state of its own: never covered, never fine; a
+person checks it manually.
+Regression: classes, fields and enum values of the previous patch version that the new draft no
+longer defines are listed ("removed since vN"); this never blocks finish.
+Scope: requirements linked to other tasks whose key terms the task's own text mentions are listed.
 """
 
+import ast
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +27,10 @@ from typing import Any
 MAX_TERMS = 12
 MAX_TEXT_CHARS = 200
 MAX_MISSING_LINES = 10
+MAX_REMOVED = 20
+MAX_SCOPE_LINES = 10
+UNCHECKED_REASON = "no key terms extracted"
+UNCHECKED_PROMPT = "check manually"
 
 ROLES = frozenset(
     {
@@ -211,12 +220,80 @@ def check_coverage(items: Sequence[CoverageItem], files: Mapping[str, str]) -> d
                 "status": status,
                 "covered": covered,
                 "missing": missing,
+                # An unchecked item says nothing about the draft: a person must look at it.
+                "reason": UNCHECKED_REASON if status == "unchecked" else None,
+                "prompt": UNCHECKED_PROMPT if status == "unchecked" else None,
             }
         )
     count = {
         s: sum(1 for r in rows if r["status"] == s) for s in ("covered", "missing", "unchecked")
     }
     return {"items": rows, **count}
+
+
+def defined_symbols(files: Mapping[str, str]) -> set[tuple[str, str]]:
+    """Classes, class fields and enum values defined in the Python files, as (kind, name).
+
+    Parsed with ast only (never executed). UPPER_CASE members are enum values, others are fields;
+    files that do not parse and non-Python files contribute nothing.
+    """
+    found: set[tuple[str, str]] = set()
+    for path, content in files.items():
+        if not path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            found.add(("class", node.name))
+            for stmt in node.body:
+                names: list[str] = []
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    names = [stmt.target.id]
+                elif isinstance(stmt, ast.Assign):
+                    names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+                for name in names:
+                    if name.startswith("_"):
+                        continue
+                    kind = "enum value" if name.isupper() else "field"
+                    found.add((kind, f"{node.name}.{name}"))
+    return found
+
+
+def removed_symbols(before: Mapping[str, str], after: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Symbols defined in `before` that `after` no longer defines (sorted, capped)."""
+    gone = defined_symbols(before) - defined_symbols(after)
+    order = {"class": 0, "enum value": 1, "field": 2}
+    return sorted(gone, key=lambda s: (order[s[0]], s[1]))
+
+
+def removed_line(version: int, removed: Sequence[tuple[str, str]]) -> str:
+    shown = "; ".join(f"{kind} {name}" for kind, name in removed[:MAX_REMOVED])
+    more = f" (+{len(removed) - MAX_REMOVED} more)" if len(removed) > MAX_REMOVED else ""
+    return f"Removed since v{version}: {shown}{more}"
+
+
+def scope_lines(task_text: str, others: Sequence[tuple[str, str, Sequence[str]]]) -> list[str]:
+    """Requirements of other tasks whose key terms this task's own text mentions.
+
+    `others` holds (requirement ref, requirement text, keys of the other tasks it is linked to).
+    """
+    corpus = normalise(task_text)
+    lines: list[str] = []
+    for ref, text, keys in others:
+        mentioned = [t for t in extract_terms(text) if any(v in corpus for v in _variants(t))]
+        if mentioned:
+            lines.append(
+                _cut(
+                    f"Requirement {ref} ({', '.join(mentioned[:5])}) is related to "
+                    f"{', '.join(keys)}, not in this task's scope",
+                    300,
+                )
+            )
+    return lines[:MAX_SCOPE_LINES]
 
 
 def missing_lines(report: Mapping[str, Any]) -> list[str]:

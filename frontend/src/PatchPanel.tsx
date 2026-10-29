@@ -199,24 +199,48 @@ export default function PatchPanel({
           {detail.coverage && detail.coverage.items.length > 0 && (
             <div>
               <strong>
-                Coverage: {detail.coverage.covered} covered ·{" "}
-                {detail.coverage.missing} missing
+                {detail.coverage.covered} covered · {detail.coverage.missing} missing ·{" "}
+                {detail.coverage.unchecked} unchecked
               </strong>
               <ul aria-label="Acceptance coverage">
                 {detail.coverage.items.map((c, i) => (
                   <li key={i}>
                     <span
                       className={
-                        c.status === "missing" ? "badge badge-warn" : "badge"
+                        c.status === "covered" ? "badge" : "badge badge-warn"
                       }
                     >
                       {c.status}
                     </span>{" "}
                     {c.ref}: {c.text}
                     {c.missing.length > 0 && <> (missing: {c.missing.join(", ")})</>}
+                    {c.status === "unchecked" && (
+                      <>
+                        {" "}
+                        — {c.reason ?? "no key terms extracted"}:{" "}
+                        {c.prompt ?? "check manually"}
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
+              {detail.coverage.removed && (
+                <div>
+                  <strong>Removed since v{detail.coverage.removed.since}</strong>
+                  <ul aria-label="Removed since previous version">
+                    {detail.coverage.removed.items.map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {detail.coverage.scope && detail.coverage.scope.length > 0 && (
+                <ul aria-label="Scope notes">
+                  {detail.coverage.scope.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
           {detail.validation === "stale" && (

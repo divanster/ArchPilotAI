@@ -850,6 +850,8 @@ export interface CoverageItemView {
   status: "covered" | "missing" | "unchecked";
   covered: string[];
   missing: string[];
+  reason?: string | null;
+  prompt?: string | null;
 }
 
 export interface PatchCoverage {
@@ -857,6 +859,8 @@ export interface PatchCoverage {
   covered: number;
   missing: number;
   unchecked: number;
+  removed?: { since: number; items: string[] };
+  scope?: string[];
 }
 
 export interface CodePatchDetail extends PatchSummary {

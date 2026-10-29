@@ -112,8 +112,30 @@ describe("PatchPanel", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "Generate patch" }));
     expect(await screen.findByText(/missing: customer/)).toBeInTheDocument();
-    expect(screen.getByText(/1 covered/)).toBeInTheDocument();
+    expect(screen.getByText("1 covered · 1 missing · 0 unchecked")).toBeInTheDocument();
     expect(screen.getAllByText(/Based on feedback from version 1/).length).toBeGreaterThan(0);
+  });
+
+  it("shows unchecked as its own state with a reason, plus removals and scope", async () => {
+    const coverage = {
+      covered: 3,
+      missing: 0,
+      unchecked: 9,
+      items: [
+        { kind: "criterion", ref: "AC4", text: "It works well", status: "unchecked", covered: [], missing: [], reason: "no key terms extracted", prompt: "check manually" },
+      ],
+      removed: { since: 1, items: ["class Invoice", "field Invoice.total"] },
+      scope: ["Requirement FR-002 (admin) is related to T-002, not in this task's scope"],
+    };
+    setup(task(), (_url, init) =>
+      init?.method === "POST" ? json(patch({ coverage: coverage as never }), 201) : json([]),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Generate patch" }));
+    expect(await screen.findByText("3 covered · 0 missing · 9 unchecked")).toBeInTheDocument();
+    expect(screen.getByText(/no key terms extracted: check manually/)).toBeInTheDocument();
+    expect(screen.getByText("Removed since v1")).toBeInTheDocument();
+    expect(screen.getByText("field Invoice.total")).toBeInTheDocument();
+    expect(screen.getByText(/not in this task's scope/)).toBeInTheDocument();
   });
 
   it("generates a patch and shows diff, warnings and notes", async () => {

@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.architecture import ArchitectureContent, safe_finish_reason
-from app.domain.coverage import CoverageItem, check_coverage
+from app.domain.coverage import (
+    CoverageItem,
+    check_coverage,
+    removed_line,
+    removed_symbols,
+    scope_lines,
+)
 from app.domain.feedback import build_feedback
 from app.domain.frameworks import FrameworkRules
 from app.domain.patch import (
@@ -301,6 +307,49 @@ class PatchService:
                 items.append(CoverageItem("requirement", ref, f"{req.title}. {req.description}"))
         return check_coverage(items, files)
 
+    def regression_and_scope(
+        self,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        merged: Mapping[str, str],
+    ) -> tuple[tuple[int, list[str], str] | None, list[str]]:
+        """ "Removed since vN" against the previous version of this task, and scope notes.
+
+        Neither blocks anything; both end up in the patch notes and the coverage report.
+        """
+        removed: tuple[int, list[str], str] | None = None
+        previous = self._patches.for_task(project_id, task.id)
+        if previous:
+            before = {
+                f.path: f.content
+                for f in self._patches.files(project_id, previous[0].id)
+                if f.change != "delete"
+            }
+            gone = removed_symbols(before, merged)
+            if gone:
+                names = [f"{kind} {name}" for kind, name in gone]
+                removed = (previous[0].version, names, removed_line(previous[0].version, gone))
+        confirmed = {str(r.id): r for r in self._requirements.list(project_id, "confirmed")}
+        linked: dict[str, list[str]] = {}
+        for other in self._plans.tasks(project_id, plan.id):
+            if other.id == task.id:
+                continue
+            for rid in other.requirement_ids:
+                if str(rid) not in {str(x) for x in task.requirement_ids}:
+                    linked.setdefault(str(rid), []).append(other.key)
+        others = [
+            (
+                requirement_code(confirmed[rid].source_quote) or _cut(confirmed[rid].title, 60),
+                f"{confirmed[rid].title}. {confirmed[rid].description}",
+                sorted(keys),
+            )
+            for rid, keys in linked.items()
+            if rid in confirmed
+        ]
+        text = " ".join([task.title, task.description or "", *task.acceptance_criteria])
+        return removed, scope_lines(text, others)
+
     def dependency_warnings(
         self,
         project_id: uuid.UUID,
@@ -360,6 +409,15 @@ class PatchService:
                 merged.pop(changed.path, None)
             else:
                 merged[changed.path] = changed.content
+        report = self.coverage(project_id, task, merged)
+        removed_note, scope = self.regression_and_scope(project_id, plan, task, merged)
+        extra_notes: list[str] = []
+        if removed_note:
+            report["removed"] = {"since": removed_note[0], "items": removed_note[1]}
+            extra_notes.append(removed_note[2])
+        if scope:
+            report["scope"] = scope
+            extra_notes += scope
         patch = CodePatch(
             id=uuid.uuid4(),
             project_id=project_id,
@@ -374,13 +432,13 @@ class PatchService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             latency_ms=latency_ms,
-            notes=list(generated.notes),
+            notes=[*generated.notes, *extra_notes],
             assumptions=list(generated.assumptions),
             test_suggestions=list(generated.test_suggestions),
             warnings=warnings,
             blocking_acknowledged=acknowledged and bool(task.blocking_questions),
             based_on_version=based_on_version,
-            coverage=self.coverage(project_id, task, merged),
+            coverage=report,
         )
         files = [
             PatchFile(
