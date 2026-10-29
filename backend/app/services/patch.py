@@ -34,6 +34,7 @@ from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services.decision import DecisionService
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
 
@@ -147,8 +148,10 @@ class PatchService:
         limits: PatchLimits,
         max_output_tokens: int,
         max_context_chars: int,
+        decisions: DecisionService | None = None,
     ) -> None:
         self._provider = provider
+        self._decisions = decisions
         self._projects = projects
         self._plans = plans
         self._architecture = architecture
@@ -221,12 +224,17 @@ class PatchService:
                 "plan_not_approved",
                 f"The plan is {plan.status}; only an approved plan can have code generated",
             )
-        if AI_RECOMMENDATION_FLAG in task.flags and not self._patches.confirmations(
-            project_id, plan_id, task.key
+        if (
+            AI_RECOMMENDATION_FLAG in task.flags
+            and not self._patches.confirmations(project_id, plan_id, task.key)
+            and not (
+                self._decisions and self._decisions.decision_for_task(project_id, task) is not None
+            )
         ):
             raise PatchGateError(
                 "technology_unconfirmed",
-                f"{task.key} uses an AI-recommended technology; a person must confirm it first",
+                f"{task.key} uses an AI-recommended technology; a person must confirm it first "
+                "(confirm the task or record a technology decision for its area)",
             )
         if task.blocking_questions and not acknowledge:
             raise PatchGateError(
@@ -235,6 +243,13 @@ class PatchService:
                 "resolve them or acknowledge them explicitly for this generation",
             )
         return plan, task, tasks
+
+    def decision_context(
+        self, project_id: uuid.UUID, plan: ImplementationPlan, task: PlanTask
+    ) -> tuple[dict[str, Any], list[str]]:
+        if self._decisions is None:
+            return {}, list(task.flags)
+        return self._decisions.task_context(project_id, plan.proposal_id, task)
 
     def dependency_warnings(
         self,
@@ -433,7 +448,9 @@ class PatchService:
                 f"Only {MAX_REQUIREMENTS} of {len(requirements)} linked requirements were sent"
             )
             requirements = requirements[:MAX_REQUIREMENTS]
+        decision_block, flags = self.decision_context(project_id, plan, task)
         context: dict[str, Any] = {
+            **decision_block,
             "task": {
                 "key": task.key,
                 "title": task.title,
@@ -442,7 +459,7 @@ class PatchService:
                 "acceptance_criteria": [
                     _cut(c, MAX_FIELD_CHARS) for c in task.acceptance_criteria[:20]
                 ],
-                "flags": list(task.flags),
+                "flags": flags,
                 "unresolved_blocking_questions": (
                     [_cut(q, MAX_FIELD_CHARS) for q in task.blocking_questions[:10]]
                     if acknowledged

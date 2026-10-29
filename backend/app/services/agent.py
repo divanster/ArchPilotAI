@@ -275,6 +275,7 @@ class AgentService:
             ]
         )
         brief = self._brief(project_id, task, run.blocking_acknowledged)
+        decision_block, brief["flags"] = self._patches.decision_context(project_id, plan, task)
         steps: list[StepView] = []
         started = self._clock()
         total_latency = 0
@@ -296,6 +297,7 @@ class AgentService:
             context = build_context(
                 ContextInput(
                     brief=brief,
+                    decisions=decision_block,
                     steps=steps,
                     step_no=step_no,
                     max_steps=run.max_steps,
@@ -404,6 +406,9 @@ class AgentService:
                 repeats += 1
             else:
                 previous, repeats = signature, 1
+            if error is not None and error.code == "checks_unavailable":
+                self._end(run, "stopped", "checks_unavailable", self._clock() - started)
+                return
             if repeats >= REPEAT_LIMIT:
                 self._end(run, "stopped", "repeated_error", self._clock() - started)
                 return
@@ -582,6 +587,13 @@ class AgentService:
             return {"summary": "deleted", "path": a.path}, False
         if name == "run_static_checks":
             report = self._checker.run({p: f.content for p, f in draft.live().items()})
+            if report.unavailable:
+                # Never "0 findings" when a checker did not run.
+                raise ActionError(
+                    "checks_unavailable",
+                    f"Static checker unavailable: {', '.join(report.unavailable)}",
+                    data={"status": "unavailable", "unavailable": report.unavailable},
+                )
             data = report.as_json()
             return {"summary": f"{report.total} finding(s)", **data}, False
         return self._finish(

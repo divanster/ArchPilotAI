@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import PatchPanel from "./PatchPanel";
+import DecisionsCard from "./DecisionsCard";
 import ProjectHeader from "./ProjectHeader";
 import { StatusBadge } from "./ui";
 import {
@@ -509,6 +510,7 @@ export default function PlanSection({
         confirmedCount={confirmedCount}
         plans={summaries ?? undefined}
       />
+      <DecisionsCard projectId={projectId} />
       <div className="card">
         <h2>Implementation plan</h2>
         <p className="sub">

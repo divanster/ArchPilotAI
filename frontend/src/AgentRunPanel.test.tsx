@@ -245,4 +245,38 @@ describe("AgentRunPanel", () => {
     expect(screen.getByText(/4 environment finding/)).toBeTruthy();
     expect(screen.getByText(/not_converging/)).toBeTruthy();
   });
+
+  it("shows the checker status before a run and blocks runs when one is missing", async () => {
+    setup((url) => {
+      if (url.endsWith("/checks/status"))
+        return json({
+          ok: false,
+          tools: {
+            ruff: { available: true, version: "ruff 0.17.3" },
+            mypy: { available: false, version: null },
+          },
+        });
+      return json([]);
+    });
+    expect(await screen.findByText(/ruff ruff 0.17.3/)).toBeTruthy();
+    expect(screen.getByText(/mypy UNAVAILABLE/)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Run agent" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("explains a run stopped by unavailable checkers", async () => {
+    setup((url) => {
+      if (url.endsWith("/agent-runs")) return json([run()]);
+      return json(
+        run({ status: "stopped", stop_reason: "checks_unavailable" }),
+      );
+    });
+    expect(
+      await screen.findByText(
+        /static checker \(ruff or mypy\) is not available/,
+      ),
+    ).toBeTruthy();
+  });
 });

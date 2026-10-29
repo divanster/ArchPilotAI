@@ -862,6 +862,45 @@ export interface TechnologyConfirmation {
   created_at: string;
 }
 
+export const DECISION_AREAS = [
+  "backend",
+  "frontend",
+  "database",
+  "hosting",
+  "auth",
+  "testing",
+  "style",
+] as const;
+
+export interface ProjectDecision {
+  id: string;
+  area: string;
+  choice: string;
+  reason: string;
+  decided_by: string;
+  decided_at: string;
+  superseded_by: string | null;
+}
+
+export interface DecisionsOverview {
+  areas: string[];
+  current: ProjectDecision[];
+  history: ProjectDecision[];
+  suggestions: Record<string, { choice: string; layer: string; label: string }>;
+}
+
+export const getDecisions = (projectId: string) =>
+  request<DecisionsOverview>(`${projectPath(projectId)}/decisions`);
+
+export const saveDecision = (
+  projectId: string,
+  body: { area: string; choice: string; reason: string; name: string },
+) =>
+  request<ProjectDecision>(`${projectPath(projectId)}/decisions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
 export interface WorkspaceFileInfo {
   path: string;
   content_hash: string;
@@ -957,6 +996,7 @@ export interface AgentStepView {
   findings: AgentFinding[];
   finding_total: number | null;
   findings_not_shown: number;
+  environment_reasons?: Record<string, number>;
 }
 
 export interface AgentFinding {
@@ -1016,3 +1056,11 @@ export const stopAgentRun = (projectId: string, runId: string) =>
   request<AgentRun>(`${projectPath(projectId)}/agent-runs/${runId}/stop`, {
     method: "POST",
   });
+
+export interface ChecksStatus {
+  ok: boolean;
+  tools: Record<string, { available: boolean; version: string | null }>;
+}
+
+export const getChecksStatus = () =>
+  request<ChecksStatus>("/api/agent/checks/status");

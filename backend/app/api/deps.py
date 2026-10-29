@@ -21,6 +21,7 @@ from app.mcp.tools import ToolContext
 from app.repositories.agent import AgentRepository
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
+from app.repositories.decision import DecisionRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.embedding import EmbeddingRepository
 from app.repositories.graph import GraphRepository
@@ -33,6 +34,7 @@ from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.architecture_lint import lint_config_from_settings
+from app.services.decision import DecisionService
 from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
 from app.services.graph import GraphService
@@ -196,6 +198,19 @@ class _NoGeneration:
         raise RuntimeError("This endpoint does not generate")
 
 
+def _decision_service(session: Session) -> DecisionService:
+    return DecisionService(
+        DecisionRepository(session), ProjectRepository(session), ArchitectureRepository(session)
+    )
+
+
+def get_decision_service(session: SessionDep) -> DecisionService:
+    return _decision_service(session)
+
+
+DecisionServiceDep = Annotated[DecisionService, Depends(get_decision_service)]
+
+
 def _patch_service(session: Session, provider: LLMProvider) -> PatchService:
     settings = get_settings()
     return PatchService(
@@ -212,6 +227,7 @@ def _patch_service(session: Session, provider: LLMProvider) -> PatchService:
         ),
         max_output_tokens=settings.patch_max_output_tokens,
         max_context_chars=settings.patch_max_context_chars,
+        decisions=_decision_service(session),
     )
 
 
@@ -221,6 +237,15 @@ def get_patch_service(session: SessionDep, provider: LLMProviderDep) -> PatchSer
 
 def get_patch_review_service(session: SessionDep) -> PatchService:
     return _patch_service(session, _NoGeneration())
+
+
+def make_static_checker() -> StaticChecker:
+    settings = get_settings()
+    return StaticChecker(
+        temp_parent=settings.agent_check_temp_dir,
+        timeout=settings.agent_check_timeout_seconds,
+        tsc_path=settings.agent_tsc_path,
+    )
 
 
 def make_agent_service(
@@ -238,12 +263,7 @@ def make_agent_service(
         PatchRepository(session),
         PlanRepository(session),
         ToolContext(sessionmaker(bind=session.get_bind(), expire_on_commit=False)),
-        checker
-        or StaticChecker(
-            temp_parent=settings.agent_check_temp_dir,
-            timeout=settings.agent_check_timeout_seconds,
-            tsc_path=settings.agent_tsc_path,
-        ),
+        checker or make_static_checker(),
         limits=PatchLimits(
             settings.patch_max_files,
             settings.patch_max_file_bytes,

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from app.models.patch import CodePatch
 from app.services import agent as agent_service
 from app.services.static_checks import (
     MYPY_CONFIG,
+    SYNTAX_ONLY_NOTE,
     CheckReport,
     CommandResult,
     Finding,
@@ -780,6 +782,52 @@ def test_missing_modules_are_environment_not_code(tmp_path: Path) -> None:
     assert Finding("ruff", "a.py", 1, "F821", "Undefined name").category == "code"
 
 
+def test_sqlalchemy_base_noise_is_environment_with_reasons(tmp_path: Path) -> None:
+    draft = {
+        "app/models/base.py": "from sqlalchemy.orm import declarative_base\n\n"
+        "Base = declarative_base()\n",
+        "app/models/user.py": "from app.models.base import Base\n\n\n"
+        "class User(Base):\n    pass\n\n\ndef make(u: Base) -> None:\n    return None\n",
+    }
+
+    def real_run_mypy(argv: list[str], cwd: Path, env: Any, timeout: float) -> CommandResult:
+        if "mypy" not in argv:
+            return run_command(argv, cwd, env, timeout)
+        work = next(a for a in argv if a.endswith("user.py")).rsplit("app", 1)[0].replace("\\", "/")
+        out = (
+            f'{work}app/models/user.py:4:12: error: Invalid base class "Base"  [misc]\n'
+            f'{work}app/models/user.py:8:12: error: Variable "app.models.base.Base" is not valid '
+            "as a type  [valid-type]\n"
+        )
+        return CommandResult(1, out)
+
+    report = StaticChecker(temp_parent=str(tmp_path), runner=real_run_mypy).run(draft)
+    assert report.total == 0 and report.findings == []
+    assert report.environment == 2
+    reasons = report.as_json()["not_shown"]["reasons"]
+    assert len(reasons) == 1 and all("check environment" in r for r in reasons)
+    # The same messages for a name defined in the draft stay actionable.
+    local = {"m.py": "Base = 1\n\n\nclass User(Base):\n    pass\n"}
+
+    def local_mypy(argv: list[str], cwd: Path, env: Any, timeout: float) -> CommandResult:
+        if "mypy" not in argv:
+            return run_command(argv, cwd, env, timeout)
+        work = next(a for a in argv if a.endswith("m.py")).rsplit("m.py", 1)[0].replace("\\", "/")
+        return CommandResult(1, f'{work}m.py:4:12: error: Invalid base class "Base"  [misc]\n')
+
+    assert StaticChecker(temp_parent=str(tmp_path), runner=local_mypy).run(local).total == 1
+
+
+def test_real_errors_stay_actionable_next_to_environment_noise(tmp_path: Path) -> None:
+    base = "from sqlalchemy.orm import declarative_base\n\nBase = declarative_base()\n"
+    undefined = StaticChecker(temp_parent=str(tmp_path)).run(
+        {"m.py": base + "\n\ndef f() -> int:\n    return nope\n"}
+    )
+    assert ("m.py", "F821") in {(f.file, f.code) for f in undefined.findings}
+    syntax = StaticChecker(temp_parent=str(tmp_path)).run({"m.py": base, "s.py": "def g(:\n"})
+    assert ("s.py", "invalid-syntax") in {(f.file, f.code) for f in syntax.findings}
+
+
 def test_only_actionable_findings_are_returned_with_counts_by_rule(tmp_path: Path) -> None:
     draft = {
         "a.py": "import os\n\n\ndef f() -> int:\n    return missing_name\n",
@@ -794,7 +842,7 @@ def test_only_actionable_findings_are_returned_with_counts_by_rule(tmp_path: Pat
     assert report.by_rule["ruff:F401"] == 1 and report.by_rule["mypy:return-value"] == 1
     assert report.total == len(report.findings)
     broken = StaticChecker(temp_parent=str(tmp_path)).run({"b.py": "def g(:\n"})
-    assert ("b.py", "python_syntax") in {(f.file, f.code) for f in broken.findings}
+    assert ("b.py", "invalid-syntax") in {(f.file, f.code) for f in broken.findings}
 
 
 class ScriptedChecker:
@@ -864,3 +912,88 @@ def test_static_check_steps_expose_findings_for_the_run_panel(
         "message": "unused 0",
     }
     assert run["steps"][0]["findings"] == [] and run["steps"][0]["finding_total"] is None
+
+
+# ---- failing loudly: unavailable checkers, health check, syntax errors first --------------------
+
+
+def hide_tool(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    real = importlib.util.find_spec
+
+    def find_spec(module: str, *args: Any) -> Any:
+        return None if module == name else real(module, *args)
+
+    monkeypatch.setattr("app.services.static_checks.importlib.util.find_spec", find_spec)
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_a_missing_checker_is_unavailable_never_zero_findings(
+    tool: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    hide_tool(monkeypatch, tool)
+    report = StaticChecker(temp_parent=str(tmp_path)).run({"a.py": "x = 1\n"})
+    assert report.tools[tool] == "unavailable" and report.unavailable == [tool]
+    assert report.findings == []  # and the caller must not read that as "clean"
+
+
+def test_a_checker_that_fails_to_start_is_unavailable(tmp_path: Path) -> None:
+    def dead(argv: list[str], cwd: Path, env: Any, timeout: float) -> CommandResult:
+        return CommandResult(None, "")
+
+    report = StaticChecker(temp_parent=str(tmp_path), runner=dead).run({"a.py": "x = 1\n"})
+    assert report.unavailable == ["ruff", "mypy"]
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_run_stops_with_checks_unavailable(
+    tool: str, client: TestClient, monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    hide_tool(monkeypatch, tool)
+    configure(monkeypatch, checker=StaticChecker())
+    run, provider = play(client, world, [write("src/m.py"), action("run_static_checks"), finish()])
+    assert (run["status"], run["stop_reason"]) == ("stopped", "checks_unavailable")
+    assert run["patch_id"] is None and len(provider.requests) == 2
+    step = run["steps"][1]
+    assert step["status"] == "error" and step["error_code"] == "checks_unavailable"
+    assert tool in step["result_summary"]
+    stored = json.loads(client.get(api(world[0], f"/agent-runs/{run['id']}")).text)
+    assert stored["stop_reason"] == "checks_unavailable"
+
+
+def test_checks_status_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    body = client.get("/api/agent/checks/status").json()
+    assert body["ok"] is True
+    for name in ("ruff", "mypy"):
+        assert body["tools"][name]["available"] is True
+        assert re.search(r"\d+\.\d+", body["tools"][name]["version"])
+    hide_tool(monkeypatch, "mypy")
+    body = client.get("/api/agent/checks/status").json()
+    assert body["ok"] is False
+    assert body["tools"]["mypy"] == {"available": False, "version": None}
+    assert body["tools"]["ruff"]["available"] is True
+
+
+def test_syntax_errors_come_first_and_skip_mypy(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def spy(argv: list[str], cwd: Path, env: Any, timeout: float) -> CommandResult:
+        calls.append(argv[argv.index("-m") + 1])
+        return run_command(argv, cwd, env, timeout)
+
+    draft = {
+        "a.py": "import os\n\n\ndef f() -> int:\n    return 'a'\n",
+        "b.py": "def g(:\n",
+    }
+    report = StaticChecker(temp_parent=str(tmp_path), runner=spy).run(draft)
+    assert report.findings and all(f.file == "b.py" for f in report.findings)
+    assert {f.code for f in report.findings} <= {"invalid-syntax", "python_syntax"}
+    assert calls == ["ruff"] and report.tools["mypy"] == "skipped_syntax_errors"
+    assert report.as_json()["notes"] == [SYNTAX_ONLY_NOTE]
+    fixed = StaticChecker(temp_parent=str(tmp_path), runner=spy).run({**draft, "b.py": "g = 1\n"})
+    assert {f.code for f in fixed.findings} == {"F401", "return-value"} and fixed.notes == []
+
+
+def test_a_clean_file_still_returns_zero_findings(tmp_path: Path) -> None:
+    report = StaticChecker(temp_parent=str(tmp_path)).run({"a.py": "x: int = 1\n"})
+    assert report.findings == [] and report.total == 0 and report.unavailable == []
+    assert report.tools["ruff"] == "ok" and report.tools["mypy"] == "ok"

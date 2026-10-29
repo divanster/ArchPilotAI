@@ -16,12 +16,14 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.domain.architecture import ArchitectureContent, ProposalStatus
 from app.domain.chunking import ChunkSettings
+from app.domain.decisions import BLOCK_LABEL
 from app.domain.graph import MAX_IMPACT_DEPTH, ImpactMode
 from app.domain.patch import task_status
 from app.domain.requirement import RequirementStatus
 from app.domain.search import MAX_TOP_K, InvalidQueryError
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
+from app.repositories.decision import DecisionRepository
 from app.repositories.document import DocumentRepository
 from app.repositories.graph import GraphRepository
 from app.repositories.patch import PatchRepository
@@ -347,6 +349,10 @@ def get_plan(
             "version": plan.version,
             "status": plan.status,
             "approval_status": plan.status,
+            "decisions": {
+                "label": BLOCK_LABEL,
+                "items": [d.as_json() for d in DecisionRepository(session).current(pid)],
+            },
             "dependency_count": plan.dependency_count,
             "unmapped_node_count": plan.unmapped_node_count,
             "warnings": list(plan.warnings),

@@ -19,8 +19,9 @@ import sys
 import tempfile
 import tomllib
 import warnings
+from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -68,9 +69,13 @@ _MYPY_ENVIRONMENT_MESSAGE = re.compile(
     r"^(Cannot find implementation or library stub|Skipping analyzing|Library stubs not installed"
     r'|Module "[^"]*" has no attribute|Name "[^"]*" already defined \(possible cyclic)'
 )
+REQUIRED_TOOLS = ("ruff", "mypy")
+SYNTAX_ONLY_NOTE = "Syntax errors found: only those are reported; mypy was skipped for this step."
 CATEGORY_CODE = "code"
 CATEGORY_ENVIRONMENT = "environment"
 _MODULE = re.compile(r"Cannot find module '([^']*)'")
+_QUOTED = re.compile(r'"([^"]+)"|\'([^\']+)\'')
+MAX_ENVIRONMENT_REASONS = 10
 _MYPY_LINE = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)? (?P<sev>error|warning): (?P<msg>.*?)"
     r"(?:  \[(?P<code>[\w-]+)\])?$"
@@ -87,15 +92,23 @@ class Finding:
     line: int
     code: str
     message: str
+    # Why a finding is environment noise; set by the classifier for names from unresolved imports.
+    reason: str = ""
+
+    @property
+    def environment_reason(self) -> str:
+        if self.reason:
+            return self.reason
+        if self.tool == "mypy" and (
+            self.code in MYPY_ENVIRONMENT_CODES or _MYPY_ENVIRONMENT_MESSAGE.match(self.message)
+        ):
+            return "A module is not installed or not in the draft"
+        return ""
 
     @property
     def category(self) -> str:
         """ "environment" for findings caused by what is not installed or not in the draft."""
-        if self.tool == "mypy" and (
-            self.code in MYPY_ENVIRONMENT_CODES or _MYPY_ENVIRONMENT_MESSAGE.match(self.message)
-        ):
-            return CATEGORY_ENVIRONMENT
-        return CATEGORY_CODE
+        return CATEGORY_ENVIRONMENT if self.environment_reason else CATEGORY_CODE
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -126,6 +139,13 @@ class CheckReport:
     tools: dict[str, str]
     by_rule: dict[str, int] = field(default_factory=dict)  # "tool:code" -> count, all findings
     environment: int = 0  # findings caused by missing packages/modules, not by the code
+    environment_reasons: dict[str, int] = field(default_factory=dict)  # reason -> count
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def unavailable(self) -> list[str]:
+        """Required checkers (ruff, mypy) that could not be found or started."""
+        return [name for name in REQUIRED_TOOLS if self.tools.get(name) == "unavailable"]
 
     @property
     def truncated(self) -> bool:
@@ -138,7 +158,8 @@ class CheckReport:
             "truncated": self.truncated,
             "tools": self.tools,
             "by_rule": dict(sorted(self.by_rule.items())),
-            "not_shown": {"environment": self.environment},
+            "not_shown": {"environment": self.environment, "reasons": self.environment_reasons},
+            "notes": self.notes,
         }
 
 
@@ -193,6 +214,150 @@ def _parse_finding(path: str, content: str) -> Finding | None:
     return None
 
 
+def _syntax_findings(found: list[Finding]) -> list[Finding]:
+    """Syntax errors only: ruff's E9/invalid-syntax, plus the parser's for files ruff missed."""
+    ruff = [
+        f
+        for f in found
+        if f.tool == "ruff" and (f.code == "invalid-syntax" or f.code.startswith("E9"))
+    ]
+    covered = {f.file for f in ruff}
+    parsed = [f for f in found if f.code == "python_syntax" and f.file not in covered]
+    return ruff + parsed
+
+
+def _draft_modules(files: Mapping[str, str]) -> set[str]:
+    """Dotted names of the draft's modules and their packages (what mypy can resolve)."""
+    modules: set[str] = set()
+    for path in files:
+        if not path.endswith((".py", ".pyi")):
+            continue
+        parts = path.rsplit(".", 1)[0].split("/")
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        for end in range(1, len(parts) + 1):
+            modules.add(".".join(parts[:end]))
+    return modules
+
+
+def _module_paths(files: Mapping[str, str]) -> dict[str, str]:
+    """Dotted module name -> draft path."""
+    out: dict[str, str] = {}
+    for path in files:
+        if path.endswith(".py"):
+            parts = path[:-3].split("/")
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            out[".".join(parts)] = path
+    return out
+
+
+def _import_bindings(
+    path: str, tree: ast.AST, draft: set[str]
+) -> tuple[dict[str, str], list[tuple[str, str, str]]]:
+    """Names from imports mypy cannot resolve (name -> module) and from draft modules."""
+    package = path.split("/")[:-1]
+    unresolved: dict[str, str] = {}
+    local: list[tuple[str, str, str]] = []  # (local name, draft module, original name)
+
+    def external(module: str) -> bool:
+        return module.split(".")[0] not in sys.stdlib_module_names and module not in draft
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if external(alias.name):
+                    unresolved[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package[: len(package) - (node.level - 1)] if node.level > 1 else package
+                module = ".".join([*base, *([node.module] if node.module else [])])
+            else:
+                module = node.module or ""
+            if not module:
+                continue
+            for alias in node.names:
+                if external(module):
+                    unresolved[alias.asname or alias.name] = module
+                elif module in draft:
+                    local.append((alias.asname or alias.name, module, alias.name))
+    return unresolved, local
+
+
+def _names_in(node: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _taint_maps(files: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    """Per draft file: names that come from an unresolved import, directly, through a
+    variable or subclass, or through another draft module that re-exports such a name."""
+    modules = _module_paths(files)
+    draft = set(_draft_modules(files))
+    trees: dict[str, ast.AST] = {}
+    taint: dict[str, dict[str, str]] = {}
+    locals_: dict[str, list[tuple[str, str, str]]] = {}
+    for path in sorted(files):
+        if not path.endswith(".py"):
+            continue
+        try:
+            trees[path] = ast.parse(files[path])
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+        taint[path], locals_[path] = _import_bindings(path, trees[path], draft)
+    for _ in range(10):  # settles chains: Base = make(); class A(Base); from m import A
+        changed = False
+        for path, tree in trees.items():
+            tainted = taint[path]
+            for name, module, original in locals_[path]:
+                origin = taint.get(modules.get(module, ""), {}).get(original)
+                if origin and name not in tainted:
+                    tainted[name] = origin
+                    changed = True
+            for node in ast.walk(tree):
+                targets: list[str] = []
+                sources: set[str] = set()
+                if isinstance(node, ast.Assign):
+                    targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                    sources = _names_in(node.value)
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    targets = [node.target.id]
+                    sources = _names_in(node.value) if node.value else set()
+                elif isinstance(node, ast.ClassDef):
+                    targets = [node.name]
+                    sources = set().union(*(_names_in(b) for b in node.bases))
+                origin = next((tainted[s] for s in sorted(sources) if s in tainted), None)
+                if origin is not None:
+                    for name in targets:
+                        if name not in tainted:
+                            tainted[name] = origin
+                            changed = True
+        if not changed:
+            break
+    return taint
+
+
+def _classify_mypy(
+    finding: Finding, files: Mapping[str, str], cache: dict[str, dict[str, str]]
+) -> Finding:
+    """A mypy finding that mentions a name from an unresolved import is environment noise."""
+    if finding.environment_reason:
+        return finding
+    if not cache:
+        cache.update(_taint_maps(files))
+    tainted = cache.get(finding.file, {})
+    if not tainted:
+        return finding
+    for quoted in _QUOTED.findall(finding.message):
+        for part in re.split(r"[^A-Za-z0-9_]+", quoted[0] or quoted[1]):
+            if part in tainted:
+                reason = (
+                    f'Mentions "{part}", which comes from "{tainted[part]}" '
+                    "(not installed in the check environment or not in the draft)"
+                )
+                return replace(finding, reason=reason[:200])
+    return finding
+
+
 class StaticChecker:
     def __init__(
         self,
@@ -210,7 +375,9 @@ class StaticChecker:
     # ---- public ----------------------------------------------------------------------------
 
     def run(self, files: Mapping[str, str]) -> CheckReport:
+        taint_cache: dict[str, dict[str, str]] = {}
         found: list[Finding] = []
+        notes: list[str] = []
         tools: dict[str, str] = {}
         for path in sorted(files):
             problem = _parse_finding(path, files[path])
@@ -232,8 +399,14 @@ class StaticChecker:
                 written = self._write(work, files)
                 env = self._env(ctl, work)
                 if python:
-                    found += self._ruff(work, ctl, env, [p for p in python if p in written], tools)
-                    found += self._mypy(work, ctl, env, [p for p in python if p in written], tools)
+                    py = [p for p in python if p in written]
+                    found += self._ruff(work, ctl, env, py, tools)
+                    syntax = _syntax_findings(found)
+                    if syntax:
+                        found, notes = syntax, [SYNTAX_ONLY_NOTE]
+                        tools["mypy"] = "skipped_syntax_errors"
+                    else:
+                        found += self._mypy(work, ctl, env, py, tools)
                 else:
                     tools["ruff"] = tools["mypy"] = "skipped_no_files"
                 if typescript:
@@ -244,18 +417,52 @@ class StaticChecker:
                     tools["tsc"] = "skipped_no_files"
         else:
             tools["ruff"] = tools["mypy"] = tools["tsc"] = "skipped_no_files"
+        found = [_classify_mypy(f, files, taint_cache) if f.tool == "mypy" else f for f in found]
         by_rule: dict[str, int] = {}
         for f in found:
             by_rule[f"{f.tool}:{f.code}"] = by_rule.get(f"{f.tool}:{f.code}", 0) + 1
         actionable = [f for f in found if f.category == CATEGORY_CODE]
         actionable.sort(key=lambda f: (f.file, f.line, f.tool, f.code))
+        reasons = Counter(f.environment_reason for f in found if f.category == CATEGORY_ENVIRONMENT)
         return CheckReport(
             actionable[:MAX_FINDINGS],
             len(actionable),
             tools,
             by_rule,
             len(found) - len(actionable),
+            dict(reasons.most_common(MAX_ENVIRONMENT_REASONS)),
+            notes,
         )
+
+    def status(self) -> dict[str, dict[str, Any]]:
+        """Which checkers can be found and started by this interpreter, with their versions."""
+        out: dict[str, dict[str, Any]] = {}
+        with tempfile.TemporaryDirectory(prefix="archpilot-check-", dir=self._temp_parent) as tmp:
+            ctl = Path(tmp).resolve()
+            (ctl / "home").mkdir()
+            (ctl / "tmp").mkdir()
+            env = self._env(ctl, ctl)
+            for name in REQUIRED_TOOLS:
+                command = (
+                    [sys.executable, "-I", "-m", name, "--version"]
+                    if importlib.util.find_spec(name) is not None
+                    else None
+                )
+                out[name] = self._probe(command, ctl, env)
+            tsc = self._tsc_command()
+            out["tsc"] = self._probe([*tsc, "--version"] if tsc else None, ctl, env)
+        return out
+
+    def _probe(
+        self, command: list[str] | None, ctl: Path, env: Mapping[str, str]
+    ) -> dict[str, Any]:
+        if command is None:
+            return {"available": False, "version": None}
+        result = self._runner(command, ctl, env, min(self._timeout, 20.0))
+        text = result.stdout.strip().splitlines()
+        if result.timed_out or result.returncode != 0 or not text:
+            return {"available": False, "version": None}
+        return {"available": True, "version": text[0][:100]}
 
     # ---- plumbing --------------------------------------------------------------------------
 
@@ -308,7 +515,7 @@ class StaticChecker:
 
     @staticmethod
     def _cap(message: str) -> str:
-        return message if len(message) <= MAX_MESSAGE_CHARS else message[:MAX_MESSAGE_CHARS] + "…"
+        return message if len(message) <= MAX_MESSAGE_CHARS else message[:MAX_MESSAGE_CHARS] + "â€¦"
 
     def _status(
         self, name: str, result: CommandResult, tools: dict[str, str], ok_codes: set[int]

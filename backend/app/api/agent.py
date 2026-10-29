@@ -16,6 +16,7 @@ from app.api.deps import (
     LLMProviderDep,
     SessionDep,
     make_agent_service,
+    make_static_checker,
 )
 from app.models.agent import AgentRun, AgentStep
 from app.services.agent import RunNotFoundError, RunNotRunningError, is_active
@@ -32,6 +33,33 @@ router = APIRouter(
     tags=["agent"],
     dependencies=[Depends(require_non_production)],  # no authentication exists yet
 )
+
+checks_router = APIRouter(
+    prefix="/api/agent",
+    tags=["agent"],
+    dependencies=[Depends(require_non_production)],
+)
+
+
+class ToolStatus(BaseModel):
+    available: bool
+    version: str | None
+
+
+class ChecksStatus(BaseModel):
+    ok: bool  # ruff and mypy are both available: runs can start
+    tools: dict[str, ToolStatus]
+
+
+@checks_router.get("/checks/status", response_model=ChecksStatus)
+def checks_status() -> ChecksStatus:
+    found = make_static_checker().status()
+    required = ("ruff", "mypy")
+    return ChecksStatus(
+        ok=all(found[name]["available"] for name in required),
+        tools={name: ToolStatus(**info) for name, info in found.items()},
+    )
+
 
 NotFound = (ProjectNotFoundError, PlanNotFoundError, TaskNotFoundError, RunNotFoundError)
 
@@ -62,6 +90,7 @@ class StepOut(BaseModel):
     findings: list[FindingOut] = []
     finding_total: int | None = None  # actionable findings of a run_static_checks step
     findings_not_shown: int = 0  # environment findings counted but not shown
+    environment_reasons: dict[str, int] = {}  # why they are environment noise -> count
 
 
 class RunSummary(BaseModel):
@@ -132,6 +161,10 @@ def _findings(step: AgentStep) -> dict[str, Any]:
             "findings": found,
             "finding_total": int(data["total"]),
             "findings_not_shown": int((data.get("not_shown") or {}).get("environment", 0)),
+            "environment_reasons": {
+                str(k): int(v)
+                for k, v in ((data.get("not_shown") or {}).get("reasons") or {}).items()
+            },
         }
     except (ValueError, KeyError, TypeError):
         return {}

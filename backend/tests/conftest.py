@@ -85,7 +85,7 @@ def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
             text(
                 "TRUNCATE TABLE agent_draft_files, agent_steps, agent_runs, "
                 "workspace_files, patch_files, code_patches, "
-                "technology_confirmations, "
+                "technology_confirmations, project_decisions, "
                 "plan_dependency_edits, plan_tasks, implementation_plans, "
                 "graph_edges, graph_nodes, "
                 "chunk_embeddings, document_chunks, "

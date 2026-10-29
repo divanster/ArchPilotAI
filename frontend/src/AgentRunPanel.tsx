@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getAgentRun,
+  getChecksStatus,
   listAgentRuns,
   startAgentRun,
   stopAgentRun,
   type AgentRun,
   type AgentStepView,
+  type ChecksStatus,
   type PlanTask,
 } from "./api";
 
@@ -36,11 +38,26 @@ function FindingList({ step }: { step: AgentStepView }) {
           ? {step.finding_total - found.length} more not shown
         </p>
       )}
+      <p className="sub">
+        {step.finding_total ?? 0} actionable · {step.findings_not_shown}{" "}
+        environment
+      </p>
       {step.findings_not_shown > 0 && (
-        <p className="sub">
-          {step.findings_not_shown} environment finding(s) hidden (missing
-          packages or modules)
-        </p>
+        <>
+          <p className="sub">
+            {step.findings_not_shown} environment finding(s) hidden (missing
+            packages or modules)
+          </p>
+          <ul className="sub">
+            {Object.entries(step.environment_reasons ?? {}).map(
+              ([reason, n]) => (
+                <li key={reason}>
+                  {n} × {reason}
+                </li>
+              ),
+            )}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -64,6 +81,7 @@ export default function AgentRunPanel({
   const [run, setRun] = useState<AgentRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checks, setChecks] = useState<ChecksStatus | null>(null);
   const mounted = useRef(true);
   const runId = run?.id ?? null;
   const running = run?.status === "running";
@@ -73,6 +91,14 @@ export default function AgentRunPanel({
     return () => {
       mounted.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    getChecksStatus()
+      .then((s) => {
+        if (mounted.current && s && s.tools) setChecks(s);
+      })
+      .catch(() => undefined);
   }, []);
 
   // Pick up the latest run of this task (it may still be running after a reload).
@@ -140,10 +166,27 @@ export default function AgentRunPanel({
         The agent edits a private draft and runs static checks only. Nothing is
         executed or written to disk; the result is a patch for you to review.
       </p>
+      {checks && (
+        <p
+          className="sub"
+          role={checks.ok ? undefined : "alert"}
+          aria-label="Static checkers"
+        >
+          Static checkers:{" "}
+          {Object.entries(checks.tools)
+            .map(
+              ([name, t]) =>
+                `${name} ${t.available ? (t.version ?? "available") : "UNAVAILABLE"}`,
+            )
+            .join(" ? ")}
+          {!checks.ok &&
+            " ? ruff and mypy are required; a run would stop immediately."}
+        </p>
+      )}
       <div className="btn-row">
         <button
           type="button"
-          disabled={disabled || busy || running}
+          disabled={disabled || busy || running || checks?.ok === false}
           onClick={() => void start()}
         >
           Run agent
@@ -188,6 +231,12 @@ export default function AgentRunPanel({
                 </li>
               ))}
             </ol>
+          )}
+          {run.stop_reason === "checks_unavailable" && (
+            <p role="alert">
+              The run stopped because a static checker (ruff or mypy) is not
+              available. No patch was produced; nothing was checked.
+            </p>
           )}
           {run.summary && <p>{run.summary}</p>}
           {run.patch_id && (
