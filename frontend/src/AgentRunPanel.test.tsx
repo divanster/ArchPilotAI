@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentRunPanel from "./AgentRunPanel";
 import type { AgentRun, PlanTask } from "./api";
@@ -122,6 +122,32 @@ describe("AgentRunPanel", () => {
     expect(screen.getByText(/4\.0 s/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open patch" }));
     expect(onOpenPatch).toHaveBeenCalledWith("pat1");
+  });
+
+  it("shows the tool name and tier of each step", async () => {
+    const base = run().steps[0];
+    setup((url, init) => {
+      if (init?.method === "POST") return json(run(), 202);
+      if (url.endsWith("/agent-runs")) return json([]);
+      return json(
+        run({
+          steps: [
+            { ...base, step_no: 1, action: "read_file", tier: "read" },
+            { ...base, step_no: 2, action: "write_file", tier: "draft" },
+          ],
+        }),
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Run agent" }));
+    expect(await screen.findByText("running")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    await screen.findByText("read_file");
+    const steps = within(screen.getByRole("list", { name: "Agent steps" }));
+    const items = steps.getAllByRole("listitem");
+    expect(items[0].textContent).toMatch(/read_file\s*read/);
+    expect(items[1].textContent).toMatch(/write_file\s*draft/);
   });
 
   it("stops a running run", async () => {

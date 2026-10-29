@@ -11,7 +11,6 @@ from app.domain.agent import (
     AGENT_PROMPT_VERSION,
     CONVERGENCE_LIMIT,
     MAX_NOTE_FINDINGS,
-    MAX_READ_CHARS,
     MAX_SUMMARY_CHARS,
     REPEAT_LIMIT,
     RESPONSE_CHARS_PER_TOKEN,
@@ -25,7 +24,6 @@ from app.domain.agent import (
     cut,
     dump,
     parse_action,
-    search_draft,
     write_problem,
 )
 from app.domain.architecture import safe_finish_reason
@@ -36,30 +34,30 @@ from app.domain.execution import (
     ProviderUnavailableError,
     UnavailableExecutionProvider,
     UnknownCommandError,
-    attribute,
 )
 from app.domain.patch import (
     Failure,
     GeneratedPatch,
     PatchInvalidError,
     PatchLimits,
-    path_problem,
     requirement_code,
     stale_failures,
     validate_patch,
 )
-from app.llm.agent_prompt import SYSTEM_PROMPT, build_prompt
+from app.llm.agent_prompt import build_prompt, build_system_prompt
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.mcp import tools
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.plan import ImplementationPlan, PlanTask
 from app.repositories.agent import AgentRepository
 from app.repositories.patch import PatchRepository
+from app.services.agent_tools import AgentCall
 from app.services.execution import TestRunner, cancel_run_jobs, release_run
 from app.services.patch import PatchBusyError, PatchService, TaskNotFoundError
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
 from app.services.static_checks import StaticChecker
+from app.tools import Tool, get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +65,6 @@ logger = logging.getLogger(__name__)
 _agent_lock = threading.Lock()
 _active: set[uuid.UUID] = set()
 _MAX_BRIEF_REQUIREMENTS = 20
-_SIZE_ARGS = frozenset({"content", "search", "replace"})
 
 
 class RunNotFoundError(Exception):
@@ -91,21 +88,6 @@ class AgentConfig:
 
 def is_active(run_id: uuid.UUID) -> bool:
     return run_id in _active
-
-
-def _log_args(action: Action) -> dict[str, Any]:
-    """Step arguments for the log: sizes instead of contents, short strings only."""
-    out: dict[str, Any] = {}
-    for key, value in action.args.model_dump().items():
-        if key in _SIZE_ARGS:
-            out[f"{key}_chars"] = len(value)
-        elif isinstance(value, str):
-            out[key] = cut(value, 200)
-        elif isinstance(value, list):
-            out[key] = len(value)
-        else:
-            out[key] = value
-    return out
 
 
 class AgentService:
@@ -304,6 +286,9 @@ class AgentService:
         tests_ok, _ = self._tests.status()
         if tests_ok:
             brief["run_tests"] = "available: pytest, ruff, mypy, tsc, npm test"
+        offered = self.offered_tools()
+        system_prompt = build_system_prompt(offered)
+        tool_models = {t.name: t.args_model for t in self._agent_tools().values()}
         steps: list[StepView] = []
         started = self._clock()
         total_latency = 0
@@ -344,7 +329,7 @@ class AgentService:
                 response = self._provider.generate(
                     LLMRequest(
                         prompt=build_prompt(context, uuid.uuid4().hex[:16]),
-                        system_prompt=SYSTEM_PROMPT,
+                        system_prompt=system_prompt,
                         max_output_tokens=self._config.step_max_output_tokens,
                         temperature=0,
                     )
@@ -368,10 +353,12 @@ class AgentService:
                     response.text,
                     finish_reason=safe_finish_reason(response.finish_reason),
                     max_chars=self._config.step_max_output_tokens * RESPONSE_CHARS_PER_TOKEN,
+                    arg_models=tool_models,
                 )
                 action_name = action.name
                 path = cut(str(getattr(action.args, "path", "") or ""), 300) or None
-                args = _log_args(action)
+                tool = get_registry().get("agent", action.name)
+                args = tool.log_args(action.args) if tool.log_args else {}
                 result, done = self._act(
                     action,
                     project_id,
@@ -475,7 +462,7 @@ class AgentService:
 
     # ---- context ---------------------------------------------------------------------------
 
-    def _requirements(self, project_id: uuid.UUID, task: PlanTask) -> list[dict[str, str]]:
+    def requirements(self, project_id: uuid.UUID, task: PlanTask) -> list[dict[str, str]]:
         found = tools.get_requirements(self._tools, str(project_id), "confirmed")
         ordered = sorted(found["requirements"], key=lambda r: r["requirement_id"])
         out = []
@@ -503,20 +490,34 @@ class AgentService:
             "unresolved_blocking_questions": (
                 [cut(q, 600) for q in task.blocking_questions[:10]] if acknowledged else []
             ),
-            "requirements": self._requirements(project_id, task),
+            "requirements": self.requirements(project_id, task),
         }
 
     # ---- actions ---------------------------------------------------------------------------
 
-    @staticmethod
-    def _existing(draft: Draft, path: str) -> DraftFile:
-        problem = path_problem(path)
-        if problem:
-            raise ActionError(problem, f"Refused: {problem}", path=path)
-        file = draft.get(path)
-        if file is None:
-            raise ActionError("file_not_found", path=path)
-        return file
+    # What the registry's agent tool handlers use of the service.
+    @property
+    def patches(self) -> PatchService:
+        return self._patches
+
+    @property
+    def checker(self) -> StaticChecker:
+        return self._checker
+
+    @property
+    def tool_context(self) -> tools.ToolContext:
+        return self._tools
+
+    def write_problem(self, path: str, content: str) -> str | None:
+        return write_problem(path, content, self._limits)
+
+    def _agent_tools(self) -> dict[str, Tool]:
+        return {t.name: t for t in get_registry().exposed("agent")}
+
+    def offered_tools(self) -> list[Tool]:
+        """The tools listed to the model: run_tests only with a real execution provider."""
+        tests_ok, _ = self._tests.status()
+        return [t for t in self._agent_tools().values() if tests_ok or not t.needs_execution]
 
     def _act(
         self,
@@ -533,120 +534,14 @@ class AgentService:
         model: str,
         based_on: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        a = action.args
-        name = action.name
-        if name == "read_file":
-            file = self._existing(draft, a.path)
-            lines = file.content.splitlines()
-            start = a.start_line or 1
-            end = min(a.end_line or len(lines), len(lines))
-            text = "\n".join(lines[start - 1 : end]) if lines else ""
-            body = cut(text, MAX_READ_CHARS)
-            return {
-                "summary": f"read {max(end - start + 1, 0)} line(s)",
-                "path": a.path,
-                "content": body,
-                "start_line": start,
-                "end_line": end,
-                "total_lines": len(lines),
-                "truncated": len(body) < len(text),
-            }, False
-        if name == "list_files":
-            paths = sorted(p for p in draft.live() if p.startswith(a.prefix))
-            shown = paths[: a.limit]
-            return {
-                "summary": f"{len(shown)} of {len(paths)} file(s)",
-                "files": [
-                    {"path": p, "bytes": len(draft.files[p].content.encode())} for p in shown
-                ],
-                "total": len(paths),
-                "truncated": len(paths) > len(shown),
-            }, False
-        if name == "search_code":
-            matches, total, truncated = search_draft(draft, a.query, a.prefix)
-            return {
-                "summary": f"{total} match(es)",
-                "matches": matches,
-                "total": total,
-                "truncated": truncated,
-            }, False
-        if name == "get_requirements":
-            reqs = self._requirements(project_id, task)
-            return {"summary": f"{len(reqs)} requirement(s)", "requirements": reqs}, False
-        if name == "get_task":
-            return self._get_task(project_id, plan, task, a.key), False
-        if name == "get_impact":
-            try:
-                found = tools.get_impact(self._tools, str(project_id), a.node_id, a.mode)
-            except tools.ToolInputError as exc:
-                raise ActionError("tool_input", str(exc)) from None
-            return {"summary": f"{found['total']} impacted node(s)", **found}, False
-        if name in ("edit_file", "write_file", "delete_file"):
-            rules = self._patches.frameworks(project_id, draft.live())
-            if rules.refuses(a.path):
-                raise ActionError(
-                    "django_migration",
-                    f"Refused: Django migrations are not written by hand. {rules.note()}",
-                    path=a.path,
-                    data={"note": rules.note()},
-                )
-        if name == "edit_file":
-            file = self._existing(draft, a.path)
-            count = file.content.count(a.search)
-            if count == 0:
-                raise ActionError("no_match", path=a.path)
-            if count > 1:
-                raise ActionError("multiple_matches", path=a.path, data={"matches": count})
-            new = file.content.replace(a.search, a.replace, 1)
-            if new == file.content:
-                raise ActionError("unchanged", path=a.path)
-            problem = write_problem(a.path, new, self._limits)
-            if problem:
-                raise ActionError(problem, f"Refused: {problem}", path=a.path)
-            draft.put(a.path, new)
-            return {
-                "summary": "edited 1 occurrence",
-                "path": a.path,
-                "bytes": len(new.encode()),
-            }, False
-        if name == "write_file":
-            problem = write_problem(a.path, a.content, self._limits)
-            if problem:
-                raise ActionError(problem, f"Refused: {problem}", path=a.path)
-            if draft.clash(a.path) is not None:
-                raise ActionError("file_exists", path=a.path)
-            draft.put(a.path, a.content)
-            return {
-                "summary": f"wrote {len(a.content.encode())} byte(s)",
-                "path": a.path,
-                "bytes": len(a.content.encode()),
-            }, False
-        if name == "delete_file":
-            self._existing(draft, a.path)
-            draft.delete(a.path)
-            return {"summary": "deleted", "path": a.path}, False
-        if name == "run_static_checks":
-            report = self._checker.run({p: f.content for p, f in draft.live().items()})
-            if report.unavailable:
-                # Never "0 findings" when a checker did not run.
-                raise ActionError(
-                    "checks_unavailable",
-                    f"Static checker unavailable: {', '.join(report.unavailable)}",
-                    data={"status": "unavailable", "unavailable": report.unavailable},
-                )
-            data = report.as_json()
-            changed = [c.path for c in draft.changes()]
-            tagged, counts = attribute(data.get("findings") or [], changed)
-            data["findings"] = tagged
-            data["scope"] = counts
-            return {"summary": f"{report.total} finding(s)", **data}, False
-        if name == "run_tests":
-            return self._run_tests(a.command_id, project_id, draft, run, warnings), False
-        return self._finish(
-            a, project_id, plan, task, draft, run, warnings, latency_ms, provider, model, based_on
-        )
+        call = AgentCall(
+            self, project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
+            based_on,
+        )  # fmt: skip
+        tool = get_registry().get("agent", action.name)
+        return tool.handler(call, action.args), call.done
 
-    def _run_tests(
+    def run_tests(
         self,
         command_id: str,
         project_id: uuid.UUID,
@@ -704,7 +599,7 @@ class AgentService:
             ]
         return {"summary": f"{command_id}: " + ", ".join(parts), **payload}
 
-    def _get_task(
+    def task_view(
         self, project_id: uuid.UUID, plan: ImplementationPlan, task: PlanTask, key: str | None
     ) -> dict[str, Any]:
         try:
@@ -717,7 +612,7 @@ class AgentService:
             raise ActionError("task_not_found", path=None)
         return {"summary": f"task {wanted}", "task": item, "truncated": found["truncated"]}
 
-    def _finish(
+    def finish_draft(
         self,
         a: Any,
         project_id: uuid.UUID,

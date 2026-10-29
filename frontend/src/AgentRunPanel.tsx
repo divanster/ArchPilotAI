@@ -273,6 +273,11 @@ export default function AgentRunPanel({
                   className={s.status === "error" ? "hint" : undefined}
                 >
                   <code>{s.action}</code>
+                  {s.tier && (
+                    <span className="badge" title="Tool tier">
+                      {s.tier}
+                    </span>
+                  )}
                   {s.path ? ` ${s.path}` : ""} — {s.result_summary}
                   {s.status === "error" && (
                     <span className="badge">{s.error_code}</span>

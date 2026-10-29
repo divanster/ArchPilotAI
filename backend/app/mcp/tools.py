@@ -36,6 +36,7 @@ from app.services.plan import PlanService
 from app.services.project import ProjectNotFoundError, ProjectService
 from app.services.requirement import RequirementService
 from app.services.retrieval import RetrievalService
+from app.tools.registry import ToolInputError as ToolInputError  # re-exported for callers
 
 logger = logging.getLogger("archpilot.mcp")
 
@@ -49,10 +50,6 @@ _REQUIREMENT_CODE = re.compile(r"^([A-Z]{2,4}-\d{3}):")
 MAX_STRING_CHARS = 1000
 MAX_QUOTE_CHARS = 500
 MAX_ARCHITECTURE_CHARS = 60_000
-
-
-class ToolInputError(Exception):
-    """A caller mistake; the message is safe to show to the agent."""
 
 
 class ReadOnlyViolationError(RuntimeError):

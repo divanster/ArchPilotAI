@@ -1008,6 +1008,8 @@ export type AgentRunStatus = "running" | "finished" | "stopped" | "failed";
 export interface AgentStepView {
   step_no: number;
   action: string;
+  tool?: string | null;
+  tier?: "read" | "draft" | "approval" | null;
   path: string | null;
   status: "ok" | "error";
   error_code: string | null;

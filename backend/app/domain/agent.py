@@ -7,7 +7,7 @@ Error messages are fixed strings; file content and rejected arguments are never 
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
@@ -35,39 +35,6 @@ CONVERGENCE_LIMIT = 3  # static checks in a row that do not beat the best findin
 MAX_NOTE_FINDINGS = 10
 RESPONSE_CHARS_PER_TOKEN = 8
 
-ACTIONS = (
-    "read_file",
-    "list_files",
-    "search_code",
-    "get_requirements",
-    "get_task",
-    "get_impact",
-    "edit_file",
-    "write_file",
-    "delete_file",
-    "run_static_checks",
-    "run_tests",
-    "finish",
-)
-
-# What an action touches: "read" (nothing), "draft" (the draft workspace or checks of it),
-# "finish" (turns the draft into a patch). run_tests is a draft action and is offered to the
-# model only when a real execution provider is configured.
-TIERS = {
-    "read_file": "read",
-    "list_files": "read",
-    "search_code": "read",
-    "get_requirements": "read",
-    "get_task": "read",
-    "get_impact": "read",
-    "edit_file": "draft",
-    "write_file": "draft",
-    "delete_file": "draft",
-    "run_static_checks": "draft",
-    "run_tests": "draft",
-    "finish": "finish",
-}
-
 # Fixed error codes; each has a fixed message below.
 MESSAGES = {
     "tests_unavailable": "tests unavailable",
@@ -76,7 +43,7 @@ MESSAGES = {
     "output_too_large": "The reply is larger than the output limit allows",
     "invalid_json": 'The reply is not one JSON object {"action": "...", "args": {...}}',
     "invalid_shape": 'The reply must be a JSON object with "action" (string) and "args" (object)',
-    "unknown_action": "Unknown action. Use one of: " + ", ".join(ACTIONS),
+    "unknown_action": "Unknown action",
     "invalid_args": "The arguments do not match the action's schema",
     "file_not_found": "No such file in the draft workspace",
     "file_exists": "A file with that path already exists; use edit_file to change it",
@@ -191,8 +158,17 @@ class Action:
     args: Any  # the validated _Args model of that action
 
 
-def parse_action(raw: str, *, finish_reason: str | None, max_chars: int) -> Action:
-    """The one action in a model reply, or an ActionError with a fixed message."""
+def parse_action(
+    raw: str,
+    *,
+    finish_reason: str | None,
+    max_chars: int,
+    arg_models: Mapping[str, type[BaseModel]] | None = None,
+) -> Action:
+    """The one action in a model reply, or an ActionError with a fixed message.
+
+    `arg_models` are the argument models of the tools the caller may use (the registry's)."""
+    models = ARG_MODELS if arg_models is None else arg_models
     if finish_reason == "length":
         raise ActionError("output_truncated")
     if len(raw) > max_chars:
@@ -211,9 +187,9 @@ def parse_action(raw: str, *, finish_reason: str | None, max_chars: int) -> Acti
     if not isinstance(args, dict) or set(data) - {"action", "args", "thought"}:
         raise ActionError("invalid_shape")
     name = data["action"]
-    model = ARG_MODELS.get(name)
+    model = models.get(name)
     if model is None:
-        raise ActionError("unknown_action")
+        raise ActionError("unknown_action", f"Unknown action. Use one of: {', '.join(models)}")
     try:
         return Action(name, model.model_validate(args))
     except ValidationError as exc:

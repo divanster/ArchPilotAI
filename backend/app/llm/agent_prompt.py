@@ -2,33 +2,25 @@
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from app.domain.agent import AGENT_PROMPT_VERSION
 from app.llm.patch_prompt import acceptance_comments
+from app.tools.registry import Tool, render_args
 
 SYSTEM_MARKER = f"ARCHPILOT_PROMPT_VERSION={AGENT_PROMPT_VERSION}"
 
-SYSTEM_PROMPT = f"""{SYSTEM_MARKER}
-You are a careful senior engineer implementing ONE task of an approved plan in a DRAFT workspace.
+_INTRO = """You are a careful senior engineer implementing ONE task of an approved plan in a
+DRAFT workspace.
 You work in steps. Each reply is exactly ONE JSON object and nothing else (no fences, no prose):
-{{"action": "<name>", "args": {{...}}}}
+{"action": "<name>", "args": {...}}
 The server runs the action and sends its result back in the next message. Nothing is executed and
 nothing is written to disk: your edits stay in a draft that a person reviews as a patch.
 
-Actions:
-- read_file {{"path", "start_line"?, "end_line"?}}      - list_files {{"prefix"?, "limit"?}}
-- search_code {{"query", "prefix"?}} (literal, case-insensitive)
-- get_requirements {{}} (the confirmed requirements of this task)
-- get_task {{"key"?}} (a task of the plan, default this one)   - get_impact {{"node_id", "mode"?}}
-- edit_file {{"path", "search", "replace"}}: "search" must match EXACTLY ONCE in the file
-- write_file {{"path", "content"}}: new files only          - delete_file {{"path"}}
-- run_static_checks {{}}: ruff, mypy, tsc --noEmit and syntax parsing of the draft; no tests run
-- run_tests {{"command_id"}}: only when the message lists "run_tests"; pytest, ruff, mypy, tsc or
-  "npm test". You get new failures in changed files only; elsewhere and pre-existing are counted.
-- finish {{"summary", "notes"?, "assumptions"?, "test_suggestions"?}}: turns the draft into a patch
+Actions (name, arguments, what it does; "?" marks an optional argument):"""
 
-Rules:
+_RULES = """Rules:
 - Paths are relative, use "/" and have no "..", drive letter or leading "/" or ".". Allowed
   extensions: py, ts, tsx, js, json, md, toml, yaml, yml, css, html, sql, txt; the only dotfiles
   are .gitignore and .env.example. UTF-8 text only. Never write secrets, tokens, passwords or
@@ -43,6 +35,12 @@ Rules:
   attempt, never a requirement. If "framework_rules" says Django, never write migration files;
   mention the makemigrations note in finish notes instead.
 """
+
+
+def build_system_prompt(tools: Sequence[Tool]) -> str:
+    """The system prompt; the action list comes from the tools the run may use."""
+    lines = [f"- {t.name} {render_args(t)}: {' '.join(t.description.split())}" for t in tools]
+    return "\n".join([SYSTEM_MARKER, _INTRO, *lines, "", _RULES])
 
 
 def build_prompt(context: dict[str, Any], nonce: str) -> str:

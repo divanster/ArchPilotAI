@@ -27,6 +27,7 @@ from app.services.patch import (
 )
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
+from app.tools import get_registry
 
 router = APIRouter(
     prefix="/api/projects/{project_id}",
@@ -112,6 +113,8 @@ class JobOut(BaseModel):
 class StepOut(BaseModel):
     step_no: int
     action: str
+    tool: str | None = None  # the registry tool the step called (none for an invalid reply)
+    tier: str | None = None  # read | draft | approval
     path: str | None
     status: str
     error_code: str | None
@@ -240,6 +243,11 @@ def _jobs(jobs: Sequence[AgentJob]) -> list[JobOut]:
     ]
 
 
+def _tier(action: str) -> str | None:
+    found = get_registry().find("agent", action)
+    return found.tier if found else None
+
+
 def _full(run: AgentRun, steps: list[AgentStep], jobs: Sequence[AgentJob] = ()) -> RunResponse:
     return RunResponse(
         **_summary(run).model_dump(),
@@ -248,6 +256,8 @@ def _full(run: AgentRun, steps: list[AgentStep], jobs: Sequence[AgentJob] = ()) 
             StepOut(
                 step_no=s.step_no,
                 action=s.action,
+                tool=s.action if _tier(s.action) else None,
+                tier=_tier(s.action),
                 path=s.path,
                 status=s.status,
                 error_code=s.error_code,
