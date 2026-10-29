@@ -30,6 +30,7 @@ from app.domain.patch import (
     content_hash,
     convert_creates,
     parse_patch,
+    removed_from_accepted,
     requirement_code,
     stale_failures,
     task_status,
@@ -101,6 +102,16 @@ class StalePatchError(Exception):
         super().__init__(
             "The workspace changed since this patch was proposed; regenerate the patch. "
             + ", ".join(sorted({f.code for f in failures}))
+        )
+
+
+class RemovalsNotConfirmedError(Exception):
+    def __init__(self, missing: Sequence[tuple[str, str]]) -> None:
+        self.missing = list(missing)
+        shown = ", ".join(f"{name} ({file})" for file, name in self.missing[:20])
+        super().__init__(
+            "This patch removes content from accepted files and needs justification: confirm "
+            f"each removal with a reason. Unconfirmed: {shown}"
         )
 
 
@@ -428,6 +439,18 @@ class PatchService:
             else:
                 merged[changed.path] = changed.content
         report = self.coverage(project_id, task, merged)
+        listed = {(r.file, r.name): r.reason.strip() for r in generated.removals}
+        removals: list[dict[str, Any]] = []
+        for changed in generated.files:
+            if changed.change == "modify" and changed.path in workspace:
+                for item in removed_from_accepted(
+                    changed.path, workspace[changed.path].content, changed.content
+                ):
+                    reason = listed.get((item["file"], item["name"]))
+                    removals.append({**item, "listed": reason is not None, "reason": reason or ""})
+        if removals:
+            report["removed_from_accepted"] = removals
+            report["needs_justification"] = True
         removed_note, scope = self.regression_and_scope(project_id, plan, task, merged)
         extra_notes: list[str] = []
         if affected is not None:
@@ -849,7 +872,12 @@ class PatchService:
         return patch, self._patches.files(project_id, patch.id)
 
     def accept(
-        self, project_id: uuid.UUID, patch_id: uuid.UUID, reviewer: str, reason: str
+        self,
+        project_id: uuid.UUID,
+        patch_id: uuid.UUID,
+        reviewer: str,
+        reason: str,
+        confirmed_removals: Sequence[tuple[str, str, str]] = (),
     ) -> PatchDetail:
         patch, files = self._review_target(project_id, patch_id, reviewer, reason)
         hashes = self._patches.workspace_hashes(project_id)
@@ -858,6 +886,21 @@ class PatchService:
         )
         if failures:
             raise StalePatchError(failures)
+        removed = (patch.coverage or {}).get("removed_from_accepted", [])
+        if removed:
+            given = {(f, n): r.strip() for f, n, r in confirmed_removals if r.strip()}
+            missing = [
+                (i["file"], i["name"]) for i in removed if (i["file"], i["name"]) not in given
+            ]
+            if missing:
+                raise RemovalsNotConfirmedError(missing)
+            patch.coverage = {
+                **(patch.coverage or {}),
+                "removal_confirmations": [
+                    {"file": i["file"], "name": i["name"], "reason": given[(i["file"], i["name"])]}
+                    for i in removed
+                ],
+            }
         self._patches.accept(patch, files, reviewer.strip(), reason.strip())
         return self.detail(project_id, patch_id)
 

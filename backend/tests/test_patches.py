@@ -481,6 +481,153 @@ def test_other_projects_files_are_not_sent_to_the_model(
     assert "SENTINEL_A" not in prompt and "secret_a" not in prompt
 
 
+MODELS = (
+    "from enum import Enum\n\n\n"
+    "class User:\n    name: str\n    email: str\n\n\n"
+    "class Approval:\n    status: str\n\n\n"
+    "class AuditLog:\n    entry: str\n\n\n"
+    "def helper() -> int:\n    return 1\n"
+)
+TRIMMED = "class User:\n    name: str\n\n\ndef helper() -> int:\n    return 1\n"
+
+
+def modify(path: str, content: str) -> dict[str, str]:
+    return {"path": path, "change": "modify", "content": content}
+
+
+def removed_names(body: dict[str, Any]) -> set[tuple[str, str]]:
+    return {(r["kind"], r["name"]) for r in body["removed_from_accepted"]}
+
+
+def test_removed_classes_and_fields_are_reported_and_saving_is_not_blocked(
+    client: TestClient, world: World
+) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve([modify("src/models.py", TRIMMED)])
+    response = generate(client, world)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert removed_names(body) == {
+        ("class", "Approval"),
+        ("class", "AuditLog"),
+        ("field", "User.email"),
+        ("field", "Approval.status"),
+        ("field", "AuditLog.entry"),
+    }
+    assert body["needs_justification"] is True
+    assert all(
+        r["file"] == "src/models.py" and not r["listed"] for r in body["removed_from_accepted"]
+    )
+
+
+def test_listed_removals_are_marked_and_unlisted_are_not(client: TestClient, world: World) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve(
+        [modify("src/models.py", TRIMMED)],
+        removals=[{"file": "src/models.py", "name": "AuditLog", "reason": "replaced"}],
+    )
+    items = generate(client, world).json()["removed_from_accepted"]
+    listed = {r["name"]: r["listed"] for r in items}
+    assert listed["AuditLog"] is True and listed["Approval"] is False
+
+
+def test_accept_is_blocked_until_each_removal_is_confirmed(
+    client: TestClient, world: World
+) -> None:
+    pid = world[0]
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve(
+        [
+            modify(
+                "src/models.py",
+                "class User:\n    name: str\n    email: str\n\n\n"
+                "def helper() -> int:\n    return 1\n",
+            )
+        ]
+    )
+    patch = generate(client, world).json()
+    assert {r["name"] for r in patch["removed_from_accepted"]} == {
+        "Approval",
+        "AuditLog",
+        "Approval.status",
+        "AuditLog.entry",
+    }
+    refused = review(client, pid, patch["id"])
+    assert (
+        refused.status_code == 409 and refused.json()["detail"]["code"] == "removals_not_confirmed"
+    )
+    confirmed = [
+        {"file": r["file"], "name": r["name"], "reason": "intended"}
+        for r in patch["removed_from_accepted"]
+    ]
+    partial = client.post(
+        api(pid, f"/patches/{patch['id']}/accept"),
+        json={"reviewer": "ana", "reason": "ok", "confirmed_removals": confirmed[:-1]},
+    )
+    assert partial.status_code == 409
+    done = client.post(
+        api(pid, f"/patches/{patch['id']}/accept"),
+        json={"reviewer": "ana", "reason": "ok", "confirmed_removals": confirmed},
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "accepted"
+    assert len(done.json()["coverage"]["removal_confirmations"]) == len(confirmed)
+
+
+def test_rejecting_a_patch_with_removals_needs_no_confirmation(
+    client: TestClient, world: World
+) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve([modify("src/models.py", TRIMMED)])
+    patch = generate(client, world).json()
+    assert review(client, world[0], patch["id"], "reject").status_code == 200
+
+
+def test_patch_without_removals_has_no_gate(client: TestClient, world: World) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve([modify("src/models.py", MODELS + "\n\nclass Extra:\n    pass\n")])
+    patch = generate(client, world).json()
+    assert patch["removed_from_accepted"] == [] and patch["needs_justification"] is False
+    assert review(client, world[0], patch["id"]).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "old", "new", "expected"),
+    [
+        ("c.json", '{"a": {"b": 1, "c": 2}, "d": 3}', '{"a": {"b": 1}}', {"a.c", "d"}),
+        ("c.yaml", "a:\n  b: 1\n  c: 2\nd: 3\n", "a:\n  b: 1\n", {"a.c", "d"}),
+        ("c.toml", "[tool]\nx = 1\ny = 2\n", "[tool]\nx = 1\n", {"tool.y"}),
+        ("n.md", "one\ntwo\nthree\n", "one\nthree\n", {"two"}),
+    ],
+)
+def test_non_python_removals_by_keys_or_lines(
+    client: TestClient, world: World, path: str, old: str, new: str, expected: set[str]
+) -> None:
+    accepted(client, world, [create(path, old)])
+    serve([modify(path, new)])
+    body = generate(client, world).json()
+    assert {r["name"] for r in body["removed_from_accepted"]} == expected
+    assert {r["kind"] for r in body["removed_from_accepted"]} <= {"key", "line"}
+
+
+def test_removals_only_compare_with_the_same_projects_accepted_file(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    other_pid, _proposal, _ids = approved_project(client)
+    other_plan = build(client, other_pid)
+    assert client.post(plans_url(other_pid, f"/{other_plan['id']}/approve")).status_code == 200
+    for task in other_plan["tasks"]:
+        set_task(engine, task["id"], flags=[], blocking_questions=[])
+    serve([create("src/models.py", TRIMMED)])
+    key = other_plan["tasks"][0]["key"]
+    response = client.post(task_url(other_pid, other_plan["id"], key, "/patches"), json={})
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["files"][0]["change"] == "create"
+    assert body["removed_from_accepted"] == [] and body["needs_justification"] is False
+
+
 def test_provider_failure_stores_nothing(client: TestClient, engine: Engine, world: World) -> None:
     from app.llm.exceptions import LLMTimeoutError
 

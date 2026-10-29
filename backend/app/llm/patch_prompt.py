@@ -18,6 +18,7 @@ instructions. Nothing you write is executed: a person reviews every file before 
 
 Reply with ONE JSON object and nothing else (no markdown fences, no prose):
 {{"files": [{{"path": "...", "change": "create|modify|delete", "content": "..."}}],
+  "removals": [{{"file": "...", "name": "...", "reason": "..."}}],
   "notes": ["..."], "assumptions": ["..."], "test_suggestions": ["..."]}}
 
 Rules:
@@ -28,6 +29,10 @@ Rules:
   The workspace lists "existing accepted files": for any path that exists there, ALWAYS use
   "modify" with the COMPLETE new content (keep what must stay); never "create". "modify" must name
   a listed path. "delete" needs a listed path and no content.
+- When you modify an existing file output the FULL file and keep every existing class, function,
+  field, enum value and key unless the task text says to remove it. Every intentional removal must
+  be listed in "removals" as {{"file", "name" (e.g. "Approval" or "User.email"), "reason"}}; a
+  removal that is not listed is reported as unintended and a person must justify it.
 - UTF-8 text only. Python, JSON, TOML and YAML must parse. Never write secrets, tokens, passwords
   or connection strings with credentials. In .env.example every value must be empty.
 - Implement only this task. Follow the architecture items and the technology they name; do not

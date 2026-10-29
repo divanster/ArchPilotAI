@@ -242,8 +242,8 @@ def test_write_and_delete_rules(client: TestClient, world: World) -> None:
         ],
     )
     assert codes(run)[:7] == [
-        "file_exists",
-        "file_exists",
+        "use_edit_file",
+        "use_edit_file",
         "path_traversal",
         "path_absolute",
         "extension_not_allowed",

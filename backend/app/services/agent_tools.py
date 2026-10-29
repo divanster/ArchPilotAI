@@ -150,7 +150,11 @@ def write_file(call: AgentCall, a: Any) -> dict[str, Any]:
     problem = call.svc.write_problem(a.path, a.content)
     if problem:
         raise ActionError(problem, f"Refused: {problem}", path=a.path)
-    if call.draft.clash(a.path) is not None:
+    clash = call.draft.clash(a.path)
+    if clash is not None:
+        existing = call.draft.get(clash)
+        if existing is not None and existing.base_hash is not None:
+            raise ActionError("use_edit_file", f"use edit_file: {a.path}", path=a.path)
         raise ActionError("file_exists", path=a.path)
     call.draft.put(a.path, a.content)
     return {

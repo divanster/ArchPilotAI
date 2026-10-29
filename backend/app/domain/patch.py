@@ -29,6 +29,7 @@ ALLOWED_EXTENSIONS = frozenset(
 ALLOWED_DOTFILES = frozenset({".gitignore", ".env.example"})
 MAX_PATH_CHARS = 300
 MAX_DIFF_LINES = 2000
+MAX_REMOVALS = 100
 
 _RESERVED_NAMES = frozenset(
     {
@@ -102,10 +103,19 @@ class GeneratedFile(BaseModel):
     content: str = ""
 
 
+class GeneratedRemoval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str = Field(max_length=MAX_PATH_CHARS)
+    name: str = Field(max_length=300)
+    reason: str = Field(default="", max_length=1000)
+
+
 class GeneratedPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     files: list[GeneratedFile]
+    removals: Annotated[list[GeneratedRemoval], Field(max_length=100)] = Field(default_factory=list)
     notes: ItemList = Field(default_factory=list)
     assumptions: ItemList = Field(default_factory=list)
     test_suggestions: ItemList = Field(default_factory=list)
@@ -165,6 +175,81 @@ def convert_creates(
         else:
             out.append(f)
     return out, converted
+
+
+def _py_definitions(source: str) -> set[tuple[str, str]]:
+    tree = ast.parse(source)
+    found: set[tuple[str, str]] = set()
+
+    def walk(body: list[ast.stmt], owner: str | None) -> None:
+        for stmt in body:
+            prefix = f"{owner}." if owner else ""
+            if isinstance(stmt, ast.ClassDef):
+                found.add(("class", prefix + stmt.name))
+                walk(stmt.body, prefix + stmt.name)
+            elif isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+                found.add(("function", prefix + stmt.name))
+            elif owner:
+                names: list[str] = []
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    names = [stmt.target.id]
+                elif isinstance(stmt, ast.Assign):
+                    names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+                for name in names:
+                    found.add(("enum value" if name.isupper() else "field", prefix + name))
+
+    walk(tree.body, None)
+    return found
+
+
+def _keys(value: Any, prefix: str = "") -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            name = f"{prefix}.{key}" if prefix else str(key)
+            found.add(("key", name))
+            found |= _keys(child, name)
+    return found
+
+
+def _structured_keys(extension: str, text: str) -> set[tuple[str, str]]:
+    if extension == "json":
+        return _keys(json.loads(text))
+    if extension == "toml":
+        return _keys(tomllib.loads(text))
+    documents = list(yaml.load_all(text, Loader=yaml.SafeLoader))
+    found: set[tuple[str, str]] = set()
+    for document in documents:
+        found |= _keys(document)
+    return found
+
+
+def removed_from_accepted(path: str, old: str, new: str) -> list[dict[str, str]]:
+    """What a modified file no longer defines compared with its accepted version.
+
+    Python by ast, JSON/YAML/TOML by key paths, other text by lines. Nothing is executed. A side
+    that does not parse falls back to the line comparison.
+    """
+    extension = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    gone: list[tuple[str, str]]
+    try:
+        if extension == "py":
+            lost = _py_definitions(old) - _py_definitions(new)
+        elif extension in ("json", "toml", "yaml", "yml"):
+            lost = _structured_keys(extension, old) - _structured_keys(extension, new)
+        else:
+            raise ValueError
+        order = {"class": 0, "function": 1, "enum value": 2, "field": 3, "key": 4}
+        gone = sorted(lost, key=lambda s: (order[s[0]], s[1]))
+    except (SyntaxError, ValueError, RecursionError, yaml.YAMLError):
+        remaining = [line.strip() for line in new.splitlines() if line.strip()]
+        gone = []
+        for line in (ln.strip() for ln in old.splitlines()):
+            if line and line in remaining:
+                remaining.remove(line)
+            elif line:
+                gone.append(("line", line[:200]))
+    return [{"kind": kind, "name": name, "file": path} for kind, name in gone[:MAX_REMOVALS]]
 
 
 def parse_patch(raw: str, *, finish_reason: str | None, max_chars: int) -> GeneratedPatch:

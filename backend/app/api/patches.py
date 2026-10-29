@@ -19,6 +19,7 @@ from app.services.patch import (
     PatchGateError,
     PatchNotFoundError,
     PatchNotProposedError,
+    RemovalsNotConfirmedError,
     ReviewInputError,
     StalePatchError,
     TaskNotFoundError,
@@ -59,9 +60,16 @@ class GenerateIn(BaseModel):
     acknowledge_blocking_questions: bool = False
 
 
+class RemovalConfirmationIn(BaseModel):
+    file: str = Field(min_length=1, max_length=300)
+    name: str = Field(min_length=1, max_length=300)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class ReviewIn(BaseModel):
     reviewer: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=500)
+    confirmed_removals: list[RemovalConfirmationIn] = Field(default_factory=list, max_length=100)
 
 
 class ExportIn(BaseModel):
@@ -109,6 +117,8 @@ class PatchResponse(PatchSummary):
     warnings: list[str]
     blocking_acknowledged: bool
     coverage: dict[str, Any] | None = None
+    removed_from_accepted: list[dict[str, Any]] = Field(default_factory=list)
+    needs_justification: bool = False
     # Generation only stores patches that passed validation; "stale" is checked against the
     # current accepted workspace while the patch is still proposed.
     validation: str
@@ -168,6 +178,9 @@ def _full(detail: PatchDetail) -> PatchResponse:
         warnings=list(p.warnings),
         blocking_acknowledged=p.blocking_acknowledged,
         coverage=p.coverage,
+        removed_from_accepted=list((p.coverage or {}).get("removed_from_accepted", [])),
+        needs_justification=bool((p.coverage or {}).get("needs_justification"))
+        and p.status == "proposed",
         validation="stale" if detail.stale else "passed",
         stale=[FailureOut(code=f.code, path=f.path) for f in detail.stale],
         files=[
@@ -311,11 +324,23 @@ def _review(
 ) -> PatchResponse:
     method = service.accept if accept else service.reject
     try:
-        return _full(method(project_id, patch_id, body.reviewer, body.reason))
+        if accept:
+            confirmed = [(c.file, c.name, c.reason) for c in body.confirmed_removals]
+            result = service.accept(project_id, patch_id, body.reviewer, body.reason, confirmed)
+        else:
+            result = method(project_id, patch_id, body.reviewer, body.reason)
+        return _full(result)
     except NotFound as exc:
         raise _not_found(exc) from exc
     except (PatchNotProposedError, StalePatchError) as exc:
         raise _conflict(exc) from exc
+    except RemovalsNotConfirmedError as exc:
+        detail: dict[str, Any] = {
+            "code": "removals_not_confirmed",
+            "message": str(exc),
+            "missing": [{"file": f, "name": n} for f, n in exc.missing[:100]],
+        }
+        raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
     except ReviewInputError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
