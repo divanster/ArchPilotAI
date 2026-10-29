@@ -16,6 +16,7 @@ from app.api.health import router as health_router
 from app.api.patches import router as patches_router
 from app.api.plans import router as plans_router
 from app.api.projects import router as projects_router
+from app.api.providers import router as providers_router
 from app.api.requirements import router as requirements_router
 from app.api.retrieval import router as retrieval_router
 from app.core.config import get_settings
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type"],
     )
     app.include_router(health_router)
+    app.include_router(providers_router)
     app.include_router(projects_router)
     app.include_router(documents_router)
     app.include_router(retrieval_router)

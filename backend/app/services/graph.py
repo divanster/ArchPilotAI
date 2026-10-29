@@ -48,6 +48,7 @@ class RebuildSummary:
     node_count: int
     edge_count: int
     skipped_requirement_refs: int
+    unmapped_nodes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,12 @@ class GraphService:
             proposal.id, ArchitectureContent.model_validate(proposal.content), confirmed
         )
         self._graph.replace(project_id, proposal_id, spec.nodes, spec.edges)
-        return RebuildSummary(len(spec.nodes), len(spec.edges), spec.skipped_requirement_refs)
+        return RebuildSummary(
+            len(spec.nodes),
+            len(spec.edges),
+            spec.skipped_requirement_refs,
+            tuple(spec.unmapped_nodes),
+        )
 
     def get(self, project_id: uuid.UUID, proposal_id: uuid.UUID) -> GraphSnapshot:
         self._proposal(project_id, proposal_id)

@@ -17,6 +17,7 @@ const WORKSPACE: NavItem[] = [
   { page: "dashboard", label: "Dashboard" },
   { page: "projects", label: "Projects" },
   { page: "playground", label: "AI Playground" },
+  { page: "providers", label: "Providers" },
   { label: "Settings" },
 ];
 
@@ -39,6 +40,7 @@ const PAGE_LABEL: Record<Page, string> = {
   architecture: "Architecture",
   plan: "Plan & build",
   playground: "AI Playground",
+  providers: "Providers",
 };
 
 interface Props {

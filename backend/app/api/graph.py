@@ -54,6 +54,7 @@ class RebuildResponse(BaseModel):
     node_count: int
     edge_count: int
     skipped_requirement_refs: int
+    unmapped_nodes: list[str] = []
 
 
 class ImpactItem(BaseModel):
@@ -115,6 +116,7 @@ def rebuild_graph(
         node_count=summary.node_count,
         edge_count=summary.edge_count,
         skipped_requirement_refs=summary.skipped_requirement_refs,
+        unmapped_nodes=list(summary.unmapped_nodes),
     )
 
 

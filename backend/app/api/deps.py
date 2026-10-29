@@ -257,6 +257,7 @@ def make_agent_service(
     clock: Callable[[], float] = time.monotonic,
     checker: StaticChecker | None = None,
     execution: ExecutionProvider | None = None,
+    embedder: EmbeddingProvider | None = None,
 ) -> AgentService:
     settings = get_settings()
     return AgentService(
@@ -286,6 +287,7 @@ def make_agent_service(
             timeout=settings.agent_test_timeout_seconds,
             output_cap=settings.agent_test_output_cap,
         ),
+        embedder=embedder or get_embedding_provider(),
     )
 
 

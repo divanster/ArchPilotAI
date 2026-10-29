@@ -44,6 +44,7 @@ from app.domain.patch import (
     stale_failures,
     validate_patch,
 )
+from app.embeddings.contracts import EmbeddingProvider
 from app.llm.agent_prompt import build_prompt, build_system_prompt
 from app.llm.contracts import LLMProvider, LLMRequest
 from app.mcp import tools
@@ -65,6 +66,9 @@ logger = logging.getLogger(__name__)
 _agent_lock = threading.Lock()
 _active: set[uuid.UUID] = set()
 _MAX_BRIEF_REQUIREMENTS = 20
+_GRAPH_ROOTS = 11  # the task's item and up to 10 of its requirements
+_GRAPH_HITS_PER_ROOT = 8
+GRAPH_LABEL = "related items (from the graph)"
 
 
 class RunNotFoundError(Exception):
@@ -105,7 +109,9 @@ class AgentService:
         config: AgentConfig,
         clock: Callable[[], float] = time.monotonic,
         tests: TestRunner | None = None,
+        embedder: EmbeddingProvider | None = None,
     ) -> None:
+        self._embedder = embedder
         self._provider = provider
         self._tests = tests or TestRunner(
             UnavailableExecutionProvider(),
@@ -278,6 +284,7 @@ class AgentService:
             ]
         )
         brief = self._brief(project_id, task, run.blocking_acknowledged)
+        brief[GRAPH_LABEL] = self.graph_context(project_id, task)
         decision_block, brief["flags"] = self._patches.decision_context(project_id, plan, task)
         feedback, based_on = self._patches.feedback_context(project_id, task)
         framework_rules = self._patches.frameworks(project_id, draft.live()).context()
@@ -493,6 +500,67 @@ class AgentService:
             "requirements": self.requirements(project_id, task),
         }
 
+    # ---- graph -----------------------------------------------------------------------------
+
+    def _graph(self, project_id: uuid.UUID, task: PlanTask) -> dict[str, Any]:
+        return tools.graph_related(
+            self._tools,
+            str(project_id),
+            task.source_ref,
+            [str(r) for r in task.requirement_ids],
+            per_root=_GRAPH_HITS_PER_ROOT,
+        )
+
+    def graph_context(self, project_id: uuid.UUID, task: PlanTask) -> dict[str, Any]:
+        """The task's neighbours in the graph for the first brief; bounded, labelled as such."""
+        found = self._graph(project_id, task)
+        if not found["available"]:
+            return {"note": f"Graph not available: {found['reason']}", "items": []}
+        items = [
+            {
+                "node_id": r["node_id"],
+                "kind": r["kind"],
+                "label": cut(r["label"], 120),
+                "affected_total": r["total"],
+                "affected": [
+                    {"kind": a["kind"], "label": cut(a["label"], 120), "via": a["via"]}
+                    for a in r["affected"]
+                ],
+            }
+            for r in found["roots"][:_GRAPH_ROOTS]
+        ]
+        return {
+            "note": "Direct impact (get_impact, mode direct) of this task's item and of its "
+            "linked requirements; the node_id can be passed to get_impact.",
+            "items": items,
+        }
+
+    def affected(
+        self, project_id: uuid.UUID, plan: ImplementationPlan, task: PlanTask
+    ) -> dict[str, Any]:
+        """The requirements and tasks the change touches, according to the graph."""
+        found = self._graph(project_id, task)
+        if not found["available"]:
+            return {"requirements": [], "tasks": [], "note": f"Graph: {found['reason']}"}
+        by_ref = {
+            t.source_ref: t for t in self._plans.tasks(project_id, plan.id) if t.key != task.key
+        }
+        requirements: dict[str, str] = {}
+        tasks: dict[str, str] = {}
+        for root in found["roots"]:
+            for node in [root, *root["affected"]]:
+                if node["kind"] == "requirement":
+                    requirements.setdefault(node["source_ref"], node["label"])
+                elif node["source_ref"] in by_ref:
+                    other = by_ref[node["source_ref"]]
+                    tasks.setdefault(other.key, other.title)
+        return {
+            "requirements": [
+                {"id": rid, "title": cut(title, 200)} for rid, title in sorted(requirements.items())
+            ],
+            "tasks": [{"key": k, "title": cut(t, 200)} for k, t in sorted(tasks.items())],
+        }
+
     # ---- actions ---------------------------------------------------------------------------
 
     # What the registry's agent tool handlers use of the service.
@@ -507,6 +575,11 @@ class AgentService:
     @property
     def tool_context(self) -> tools.ToolContext:
         return self._tools
+
+    def search_documents(self, project_id: uuid.UUID, query: str, top_k: int) -> dict[str, Any]:
+        return tools.search_documents_auto(
+            self._tools, str(project_id), query, top_k, self._embedder
+        )
 
     def write_problem(self, path: str, content: str) -> str | None:
         return write_problem(path, content, self._limits)
@@ -743,6 +816,7 @@ class AgentService:
                 warnings=warnings,
                 acknowledged=run.blocking_acknowledged,
                 based_on_version=based_on,
+                affected=self.affected(project_id, plan, task),
             )
         except PatchInvalidError as exc:
             raise ActionError(

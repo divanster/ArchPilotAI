@@ -380,6 +380,7 @@ class PatchService:
         warnings: list[str],
         acknowledged: bool,
         based_on_version: int | None = None,
+        affected: dict[str, Any] | None = None,
     ) -> PatchDetail:
         """Validate a generated change set against the workspace and save it as a proposed patch."""
         workspace = {f.path: f for f in self._patches.workspace(project_id)}
@@ -412,6 +413,8 @@ class PatchService:
         report = self.coverage(project_id, task, merged)
         removed_note, scope = self.regression_and_scope(project_id, plan, task, merged)
         extra_notes: list[str] = []
+        if affected is not None:
+            report["affected"] = affected
         if removed_note:
             report["removed"] = {"since": removed_note[0], "items": removed_note[1]}
             extra_notes.append(removed_note[2])

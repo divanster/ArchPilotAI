@@ -116,6 +116,17 @@ def get_impact(call: AgentCall, a: Any) -> dict[str, Any]:
     return {"summary": f"{found['total']} impacted node(s)", **found}
 
 
+def search_documents(call: AgentCall, a: Any) -> dict[str, Any]:
+    try:
+        found = call.svc.search_documents(call.project_id, a.query, a.top_k)
+    except tools.ToolInputError as exc:
+        raise ActionError("tool_input", str(exc)) from None
+    summary = f"{len(found['hits'])} hit(s), {found['mode']}"
+    if found["mode"] == "bm25" and found["note"]:
+        summary += " (fallback)"
+    return {"summary": summary, **found}
+
+
 def edit_file(call: AgentCall, a: Any) -> dict[str, Any]:
     _refuse_migration(call, a.path)
     file = _existing(call.draft, a.path)
@@ -238,6 +249,13 @@ AGENT_TOOLS: list[Tool] = [
         "read",
         get_impact,
         "What depends on a graph node of the approved architecture; mode: direct or transitive.",
+    ),
+    _tool(
+        "search_documents",
+        "read",
+        search_documents,
+        "Search this project's documents; hybrid when embeddings are available, else BM25 "
+        "(the result says which).",
     ),
     _tool(
         "edit_file",

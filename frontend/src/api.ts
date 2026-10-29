@@ -17,6 +17,53 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return (await response.json()) as HealthResponse;
 }
 
+export type ProviderStatus = "configured" | "not configured" | "disabled";
+
+export interface ProviderInfo {
+  kind: "chat" | "embeddings";
+  provider: string;
+  status: ProviderStatus;
+  model?: string | null;
+  dimension?: number | null;
+  detail?: string | null;
+}
+
+export interface ConnectionTestResult {
+  kind: "chat" | "embeddings";
+  ok: boolean;
+  message: string;
+  latency_ms?: number | null;
+}
+
+export async function listProviders(): Promise<ProviderInfo[]> {
+  const response = await fetch(`${API_URL}/api/settings/providers`);
+  if (!response.ok)
+    throw new Error(`Could not load providers: ${response.status}`);
+  return ((await response.json()) as { providers: ProviderInfo[] }).providers;
+}
+
+export async function testProvider(
+  kind: ProviderInfo["kind"],
+): Promise<ConnectionTestResult> {
+  const response = await fetch(
+    `${API_URL}/api/settings/providers/${kind}/test`,
+    {
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    throw new Error(
+      typeof body.detail === "string"
+        ? body.detail
+        : `Test failed: ${response.status}`,
+    );
+  }
+  return (await response.json()) as ConnectionTestResult;
+}
+
 export type ProjectStatus = "draft" | "active" | "archived";
 
 export const PROJECT_STATUSES: ProjectStatus[] = [
@@ -861,6 +908,11 @@ export interface PatchCoverage {
   unchecked: number;
   removed?: { since: number; items: string[] };
   scope?: string[];
+  affected?: {
+    requirements: { id: string; title: string }[];
+    tasks: { key: string; title: string }[];
+    note?: string;
+  };
 }
 
 export interface CodePatchDetail extends PatchSummary {

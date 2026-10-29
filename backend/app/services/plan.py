@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.domain.architecture import ArchitectureContent, ProposalStatus
+from app.domain.graph import EdgeKind, NodeKind
 from app.domain.plan import SOURCE_MANUAL, build_plan, find_path
 from app.models.plan import ImplementationPlan, PlanDependencyEdit, PlanTask
 from app.repositories.architecture import ArchitectureRepository
@@ -13,6 +14,10 @@ from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.project import ProjectNotFoundError
+
+
+def _component_index(source_ref: str) -> int:
+    return int(source_ref.removeprefix("components[").removesuffix("]"))
 
 
 class PlanNotFoundError(Exception):
@@ -92,7 +97,15 @@ class PlanService:
             raise GraphNotBuiltError
         built_at = self._graph.built_at(project_id, proposal.id)
         confirmed = [r.id for r in self._requirements.list(project_id, "confirmed")]
-        spec = build_plan(ArchitectureContent.model_validate(proposal.content), confirmed)
+        by_id = {n.id: n.source_ref for n in nodes if n.kind == NodeKind.COMPONENT.value}
+        component_dependencies: set[tuple[int, int]] = set()
+        for edge in self._graph.edges(project_id, proposal.id):
+            src, tgt = by_id.get(edge.source_id), by_id.get(edge.target_id)
+            if edge.kind == EdgeKind.DEPENDS_ON.value and src and tgt:
+                component_dependencies.add((_component_index(src), _component_index(tgt)))
+        spec = build_plan(
+            ArchitectureContent.model_validate(proposal.content), confirmed, component_dependencies
+        )
         plan = self._plans.create(
             project_id, proposal.id, spec, built_at if isinstance(built_at, datetime) else None
         )

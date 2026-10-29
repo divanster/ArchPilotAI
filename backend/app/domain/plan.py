@@ -18,7 +18,6 @@ precedes the component it exercises. Such dependencies are labelled "nfr rule", 
 
 import heapq
 import uuid
-from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field
 
@@ -30,6 +29,7 @@ from app.domain.architecture import (
     DecisionOrigin,
     NodeType,
 )
+from app.domain.graph import map_diagram_nodes
 from app.domain.semantic_lint import meta_question_matcher
 
 AI_RECOMMENDATION_FLAG = "AI recommendation: confirm technology before implementing"
@@ -229,8 +229,14 @@ def _find_cycle(drafts: list[_Draft], deps: dict[int, set[int]], stuck: set[int]
     return []  # unreachable: leftover tasks always contain a cycle
 
 
-def build_plan(content: ArchitectureContent, confirmed: Collection[uuid.UUID]) -> PlanSpec:
-    """`confirmed` are the currently confirmed requirement ids; others are never linked."""
+def build_plan(
+    content: ArchitectureContent,
+    confirmed: Collection[uuid.UUID],
+    component_dependencies: Collection[tuple[int, int]] | None = None,
+) -> PlanSpec:
+    """`confirmed` are the currently confirmed requirement ids; others are never linked.
+
+    `component_dependencies` are (component index, component index) pairs read from the graph."""
     drafts = _drafts(content)
     confirmed_set = set(confirmed)
 
@@ -241,12 +247,12 @@ def build_plan(content: ArchitectureContent, confirmed: Collection[uuid.UUID]) -
         for related in entry.related_ids:
             linked.setdefault(related, set()).add(entry.requirement_id)
 
-    # Diagram node id -> component task, by exact name only; ambiguous names map to nothing.
-    names = Counter(d.name for d in drafts if d.component_ref)
-    by_name = {d.name: i for i, d in enumerate(drafts) if d.component_ref and names[d.name] == 1}
-    mapped = {n.id: by_name[n.name] for n in content.diagram.nodes if n.name in by_name}
+    # Diagram node id -> component task, by exact name only (shared with the graph builder).
+    mapping = map_diagram_nodes(content)
+    comp_draft = {i: i for i, d in enumerate(drafts) if d.component_ref}
+    mapped = {nid: comp_draft[ci] for nid, ci in mapping.components.items() if ci in comp_draft}
     diagram_names = {n.id: n.name for n in content.diagram.nodes}
-    unmapped_nodes = [n.name for n in content.diagram.nodes if n.id not in mapped]
+    unmapped_nodes = mapping.unmapped
 
     deps: dict[int, set[int]] = {i: set() for i in range(len(drafts))}
     notes: dict[int, list[str]] = {i: [] for i in range(len(drafts))}
@@ -255,18 +261,26 @@ def build_plan(content: ArchitectureContent, confirmed: Collection[uuid.UUID]) -
         if text not in notes[i]:
             notes[i].append(text)
 
+    # Component dependencies come from the graph (depends_on edges); without them the same
+    # mapping is applied to the diagram, which gives the identical result.
+    if component_dependencies is None:
+        component_dependencies = {
+            (mapping.components[e.source], mapping.components[e.target])
+            for e in content.diagram.edges
+            if e.source in mapping.components and e.target in mapping.components
+        }
+    for src_i, tgt_i in component_dependencies:
+        if src_i != tgt_i:
+            deps[src_i].add(tgt_i)
     for edge in content.diagram.edges:
         src, tgt = mapped.get(edge.source), mapped.get(edge.target)
-        if src is not None and tgt is not None:
-            if src != tgt:
-                deps[src].add(tgt)
-        elif src is not None:
+        if src is not None and tgt is None:
             note(
                 src,
                 f"{UNMAPPED_PREFIX}: depends on '{diagram_names[edge.target]}', a diagram node "
                 "with no component of that exact name",
             )
-        elif tgt is not None:
+        elif tgt is not None and src is None:
             note(
                 tgt,
                 f"{UNMAPPED_PREFIX}: '{diagram_names[edge.source]}' depends on this, but it is a "

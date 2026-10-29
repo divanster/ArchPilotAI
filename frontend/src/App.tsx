@@ -1,15 +1,25 @@
 import { useEffect, useState } from "react";
-import { fetchHealth, listProjects, type HealthResponse, type Project } from "./api";
+import {
+  fetchHealth,
+  listProjects,
+  type HealthResponse,
+  type Project,
+} from "./api";
 import AIPlayground from "./AIPlayground";
 import AppShell, { type BackendState } from "./AppShell";
 import Dashboard from "./Dashboard";
 import DocumentsSection from "./DocumentsSection";
 import ProjectScopedPage from "./ProjectScopedPage";
 import ProjectsPage from "./ProjectsPage";
+import ProvidersPage from "./ProvidersPage";
 import ArchitectureSection from "./ArchitectureSection";
 import PlanSection from "./PlanSection";
 import RequirementsSection from "./RequirementsSection";
-import { PROJECT_PAGES, getActiveProject, setActiveProject } from "./activeProject";
+import {
+  PROJECT_PAGES,
+  getActiveProject,
+  setActiveProject,
+} from "./activeProject";
 import { navigate, useRoute } from "./routes";
 
 /** Project list for the shell's name and switcher; only fetched once a project is in play. */
@@ -45,11 +55,14 @@ export default function App() {
   }, [scoped, routeId, route.page]);
 
   const scopedId = scoped ? (routeId ?? activeId ?? undefined) : undefined;
-  const projectId = scoped ? scopedId : route.page === "projects" ? routeId : undefined;
+  const projectId = scoped
+    ? scopedId
+    : route.page === "projects"
+      ? routeId
+      : undefined;
   const navProjectId = projectId ?? activeId ?? undefined;
   const projects = useProjects(!!navProjectId);
-  const projectName =
-    projects.find((p) => p.id === projectId)?.name ?? null;
+  const projectName = projects.find((p) => p.id === projectId)?.name ?? null;
 
   useEffect(() => {
     let active = true;
@@ -117,7 +130,11 @@ export default function App() {
           projectId={scopedId}
         >
           {(id) => (
-            <DocumentsSection key={id} projectId={id} openDocumentId={route.sub} />
+            <DocumentsSection
+              key={id}
+              projectId={id}
+              openDocumentId={route.sub}
+            />
           )}
         </ProjectScopedPage>
       )}
@@ -168,6 +185,7 @@ export default function App() {
         </ProjectScopedPage>
       )}
       {route.page === "playground" && <AIPlayground />}
+      {route.page === "providers" && <ProvidersPage />}
     </AppShell>
   );
 }

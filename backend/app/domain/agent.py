@@ -110,6 +110,11 @@ class GetImpactArgs(_Args):
     mode: str = Field(default="direct", max_length=20)
 
 
+class SearchDocumentsArgs(_Args):
+    query: str = Field(min_length=1, max_length=500)
+    top_k: int = Field(default=5, ge=1, le=10)
+
+
 class EditFileArgs(_Args):
     path: str
     search: str = Field(min_length=1)
@@ -143,6 +148,7 @@ ARG_MODELS: dict[str, type[_Args]] = {
     "get_requirements": NoArgs,
     "get_task": GetTaskArgs,
     "get_impact": GetImpactArgs,
+    "search_documents": SearchDocumentsArgs,
     "edit_file": EditFileArgs,
     "write_file": WriteFileArgs,
     "delete_file": DeleteFileArgs,

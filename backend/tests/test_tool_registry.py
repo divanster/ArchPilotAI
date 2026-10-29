@@ -39,6 +39,7 @@ AGENT_NAMES = {
     "get_requirements",
     "get_task",
     "get_impact",
+    "search_documents",
     "edit_file",
     "write_file",
     "delete_file",

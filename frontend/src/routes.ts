@@ -7,7 +7,8 @@ export type Page =
   | "requirements"
   | "architecture"
   | "plan"
-  | "playground";
+  | "playground"
+  | "providers";
 
 export interface Route {
   page: Page;
@@ -25,6 +26,7 @@ const PAGES: Page[] = [
   "architecture",
   "plan",
   "playground",
+  "providers",
 ];
 
 export function parseHash(hash: string): Route {

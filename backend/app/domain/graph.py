@@ -7,7 +7,7 @@ uuid5 values of the proposal id and the stored reference, so rebuilding gives id
 Edge direction is "source depends on target". Kinds:
   covered_by       requirement  -> component | decision   coverage_matrix[i].related_ids
   justified_by     decision | component -> requirement    *requirement_ids fields
-  depends_on       component    -> component              diagram.edges[i]
+  depends_on       component    -> component              diagram.edges[i] (nodes mapped by name)
   affects          risk         -> requirement            risks[i].requirement_ids
   supported_by     assumption   -> requirement            assumptions[i].requirement_ids
                    any cited item -> passage              <path>.source_passage_ids
@@ -16,7 +16,7 @@ Alternatives and implementation phases are not graph nodes.
 """
 
 import uuid
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -87,6 +87,25 @@ class GraphSpec:
     edges: list[EdgeSpec]
     # References to requirements that are not (or no longer) confirmed, left out of the graph.
     skipped_requirement_refs: int
+    # Names of diagram nodes with no component of exactly that name; they add no edges.
+    unmapped_nodes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DiagramMapping:
+    components: dict[str, int]  # diagram node id -> index into content.components
+    unmapped: list[str]  # names of the diagram nodes that map to no component
+
+
+def map_diagram_nodes(content: ArchitectureContent) -> DiagramMapping:
+    """Diagram node ids (n-*) and component ids (c-*) are different namespaces, so a node is
+    mapped to a component by exact name only. A name shared by several components is ambiguous
+    and maps to nothing. Nothing is guessed."""
+    names = Counter(c.name for c in content.components)
+    by_name = {c.name: i for i, c in enumerate(content.components) if names[c.name] == 1}
+    mapped = {n.id: by_name[n.name] for n in content.diagram.nodes if n.name in by_name}
+    unmapped = [n.name for n in content.diagram.nodes if n.id not in mapped]
+    return DiagramMapping(mapped, unmapped)
 
 
 def _label(text: str) -> str:
@@ -203,11 +222,13 @@ def build_graph(
                     f"coverage_matrix[{i}].related_ids",
                 )
 
+    mapping = map_diagram_nodes(content)
     for i, edge in enumerate(content.diagram.edges):
-        if edge.source in components and edge.target in components:
+        src, tgt = mapping.components.get(edge.source), mapping.components.get(edge.target)
+        if src is not None and tgt is not None and src != tgt:
             add_edge(
-                components[edge.source],
-                components[edge.target],
+                node_id(proposal_id, NodeKind.COMPONENT, f"components[{src}]"),
+                node_id(proposal_id, NodeKind.COMPONENT, f"components[{tgt}]"),
                 EdgeKind.DEPENDS_ON,
                 f"diagram.edges[{i}]",
             )
@@ -231,6 +252,7 @@ def build_graph(
             edges.values(), key=lambda e: (e.kind.value, str(e.source_id), str(e.target_id))
         ),
         skipped_requirement_refs=skipped,
+        unmapped_nodes=mapping.unmapped,
     )
 
 

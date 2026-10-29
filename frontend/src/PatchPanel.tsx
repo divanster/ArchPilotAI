@@ -179,7 +179,10 @@ export default function PatchPanel({
               </button>{" "}
               <span className="badge">{p.status}</span> · {p.file_count} file(s)
               {p.based_on_version != null && (
-                <span className="muted"> · Based on feedback from version {p.based_on_version}</span>
+                <span className="muted">
+                  {" "}
+                  · Based on feedback from version {p.based_on_version}
+                </span>
               )}
             </li>
           ))}
@@ -199,8 +202,8 @@ export default function PatchPanel({
           {detail.coverage && detail.coverage.items.length > 0 && (
             <div>
               <strong>
-                {detail.coverage.covered} covered · {detail.coverage.missing} missing ·{" "}
-                {detail.coverage.unchecked} unchecked
+                {detail.coverage.covered} covered · {detail.coverage.missing}{" "}
+                missing · {detail.coverage.unchecked} unchecked
               </strong>
               <ul aria-label="Acceptance coverage">
                 {detail.coverage.items.map((c, i) => (
@@ -213,7 +216,9 @@ export default function PatchPanel({
                       {c.status}
                     </span>{" "}
                     {c.ref}: {c.text}
-                    {c.missing.length > 0 && <> (missing: {c.missing.join(", ")})</>}
+                    {c.missing.length > 0 && (
+                      <> (missing: {c.missing.join(", ")})</>
+                    )}
                     {c.status === "unchecked" && (
                       <>
                         {" "}
@@ -226,7 +231,9 @@ export default function PatchPanel({
               </ul>
               {detail.coverage.removed && (
                 <div>
-                  <strong>Removed since v{detail.coverage.removed.since}</strong>
+                  <strong>
+                    Removed since v{detail.coverage.removed.since}
+                  </strong>
                   <ul aria-label="Removed since previous version">
                     {detail.coverage.removed.items.map((r, i) => (
                       <li key={i}>{r}</li>
@@ -241,6 +248,24 @@ export default function PatchPanel({
                   ))}
                 </ul>
               )}
+            </div>
+          )}
+          {detail.coverage?.affected && (
+            <div>
+              <strong>Affected requirements and tasks</strong>
+              {detail.coverage.affected.note && (
+                <p>{detail.coverage.affected.note}</p>
+              )}
+              <ul aria-label="Affected requirements and tasks">
+                {detail.coverage.affected.requirements.map((r) => (
+                  <li key={`r-${r.id}`}>Requirement: {r.title}</li>
+                ))}
+                {detail.coverage.affected.tasks.map((t) => (
+                  <li key={`t-${t.key}`}>
+                    Task {t.key}: {t.title}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {detail.validation === "stale" && (

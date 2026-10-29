@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "kpmg_workbench"
 EMBEDDER_VERSION = "workbench-v1"
-# HYPOTHESIS, not confirmed by Workbench documentation: the chat route's pattern with
-# "embeddings" in place of "chat/completions".
+# Verified by a real probe: deployment text-embedding-3-large-1-std-sdc (model
+# text-embedding-3-large, dimension 3072) answers on the chat route's pattern with
+# "embeddings" in place of "chat/completions". The dimension is read from settings
+# (ARCHPILOT_EMBEDDING_DIMENSION) and every response is validated against it.
 EMBEDDINGS_PATH = "/genai/azure/openai/deployments/{deployment}/embeddings"
 MAX_BATCH_SIZE = 2048
 
@@ -45,7 +47,7 @@ class EmbeddingRouteError(EmbeddingProviderError):
 class WorkbenchEmbeddingProvider:
     """Workbench embeddings over httpx, reusing the chat provider's headers, proxy and timeout.
 
-    The route is an unconfirmed hypothesis (see ``EMBEDDINGS_PATH``). TLS verification is on.
+    The route follows the chat route's pattern (see ``EMBEDDINGS_PATH``). TLS verification is on.
     Inputs, vectors, headers and upstream bodies are never logged or surfaced.
     """
 

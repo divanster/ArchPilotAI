@@ -21,17 +21,21 @@ from app.domain.graph import MAX_IMPACT_DEPTH, ImpactMode
 from app.domain.patch import task_status
 from app.domain.requirement import RequirementStatus
 from app.domain.search import MAX_TOP_K, InvalidQueryError
+from app.embeddings.contracts import EmbeddingProvider
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.decision import DecisionRepository
 from app.repositories.document import DocumentRepository
+from app.repositories.embedding import EmbeddingRepository
 from app.repositories.graph import GraphRepository
 from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
 from app.services.architecture import ArchitectureService
+from app.services.embedding import space_of
 from app.services.graph import GraphNodeNotFoundError, GraphService
+from app.services.hybrid import HybridRetrievalService
 from app.services.plan import PlanService
 from app.services.project import ProjectNotFoundError, ProjectService
 from app.services.requirement import RequirementService
@@ -563,6 +567,50 @@ def get_orphans(ctx: ToolContext, project_id: str) -> dict[str, Any]:
         }
 
 
+def graph_related(
+    ctx: ToolContext,
+    project_id: str,
+    source_ref: str,
+    requirement_ids: list[str],
+    *,
+    per_root: int = 8,
+) -> dict[str, Any]:
+    """Direct impact of the item a task is about and of its linked requirements (agent context).
+
+    Run-scoped: the project, the item and the requirements come from the run, never from the
+    model. Bounded by `per_root` hits per root."""
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        try:
+            proposal_id = _approved_graph(session, pid)
+        except ToolInputError as exc:
+            return {"available": False, "reason": str(exc), "roots": []}
+        service = _graph_service(session)
+        nodes = service.get(pid, proposal_id).nodes
+        wanted = set(requirement_ids)
+        roots = [
+            n
+            for n in sorted(nodes, key=lambda n: (n.kind, n.source_ref))
+            if (n.source_ref == source_ref and n.kind in ("component", "decision"))
+            or (n.kind == "requirement" and n.source_ref in wanted)
+        ]
+        found = []
+        for root in roots:
+            view = service.impact(pid, proposal_id, root.id, mode=ImpactMode.DIRECT)
+            hits = [h for h in view.result.hits if h.node_id in view.nodes]
+            found.append(
+                {
+                    **_node(root),
+                    "affected": [
+                        {**_node(view.nodes[h.node_id]), "via": h.via_kind.value}
+                        for h in hits[:per_root]
+                    ],
+                    "total": len(hits),
+                }
+            )
+        return {"available": True, "reason": None, "roots": found}
+
+
 def search_documents(
     ctx: ToolContext, project_id: str, query: str, top_k: int = 5
 ) -> dict[str, Any]:
@@ -603,6 +651,95 @@ def search_documents(
         "scanned_chunks": outcome.scanned_chunks,
         "unindexed_documents": outcome.unindexed_documents,
         "truncated": outcome.scan_limited or cut_text,
+    }
+
+
+def _hit_json(h: Any) -> tuple[dict[str, Any], bool]:
+    text, cut = _truncate(h.text, MAX_STRING_CHARS)
+    return {
+        "document_id": str(h.document_id),
+        "filename": h.filename,
+        "chunk_index": h.chunk_index,
+        "source_start": h.source_start,
+        "source_end": h.source_end,
+        "score": h.score,
+        "matched_terms": list(h.matched_terms),
+        "text": text,
+    }, cut
+
+
+def search_documents_auto(
+    ctx: ToolContext,
+    project_id: str,
+    query: str,
+    top_k: int,
+    embedder: EmbeddingProvider | None,
+) -> dict[str, Any]:
+    """Mode auto: hybrid only with a real embedding provider and an embedded project, else BM25.
+
+    The fallback is never silent: `note` says which mode ran and why. A test (fake) provider is
+    never used for real searches."""
+    settings = get_settings()
+    top_k = max(1, min(top_k, MAX_TOP_K))
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        retrieval = RetrievalService(
+            ChunkRepository(session),
+            DocumentRepository(session),
+            ProjectRepository(session),
+            ChunkSettings(settings.retrieval_chunk_size, settings.retrieval_chunk_overlap),
+            settings.retrieval_max_scan_chunks,
+        )
+        embeddings = EmbeddingRepository(session)
+        reason: str | None = None
+        if embedder is None:
+            reason = "no embedding provider is configured"
+        elif embedder.is_test_provider:
+            reason = "the embedding provider is a test provider"
+        elif not embeddings.scan(pid, None, space_of(embedder), 1):
+            reason = "this project has no embeddings yet"
+        try:
+            if reason is None:
+                outcome = HybridRetrievalService(
+                    retrieval, embeddings, embedder, settings.retrieval_max_scan_chunks
+                ).search(pid, query, mode="hybrid", top_k=top_k)
+                ranked = outcome.hits
+                mode = "hybrid" if outcome.effective_mode == "hybrid" else "bm25"
+                notes = list(outcome.warnings)
+                if mode == "bm25":
+                    notes.insert(0, "Hybrid search was unavailable; BM25 results only.")
+                scanned, unindexed, limited = (
+                    outcome.scanned_chunks,
+                    outcome.unindexed_documents,
+                    outcome.scan_limited,
+                )
+                hits_in = [(r.hit, r.score) for r in ranked]
+            else:
+                plain = retrieval.search(pid, query, top_k=top_k)
+                mode, notes = "bm25", [f"BM25 results only: {reason}."]
+                scanned, unindexed, limited = (
+                    plain.scanned_chunks,
+                    plain.unindexed_documents,
+                    plain.scan_limited,
+                )
+                hits_in = [(h, h.score) for h in plain.hits]
+        except InvalidQueryError as exc:
+            raise ToolInputError(str(exc)) from None
+    cut_text = False
+    hits = []
+    for hit, score in hits_in:
+        item, cut = _hit_json(hit)
+        item["score"] = score
+        cut_text = cut_text or cut
+        hits.append(item)
+    return {
+        "project_id": str(pid),
+        "mode": mode,
+        "note": " ".join(notes) if notes else None,
+        "hits": hits,
+        "scanned_chunks": scanned,
+        "unindexed_documents": unindexed,
+        "truncated": limited or cut_text,
     }
 
 
