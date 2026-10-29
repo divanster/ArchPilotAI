@@ -14,6 +14,12 @@ from sqlalchemy import Engine, create_engine, func, inspect, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
+from app.api.patches import (
+    PatchResponse,
+    RemovalItemOut,
+    RemovalMissingOut,
+    RemovalsNotConfirmedBody,
+)
 from app.core.config import Settings, get_settings
 from app.domain.plan import AI_RECOMMENDATION_FLAG
 from app.llm.fake_provider import FakeLLMProvider
@@ -23,6 +29,7 @@ from app.models.patch import CodePatch, PatchFile, WorkspaceFile
 from app.models.plan import PlanTask
 from app.services.workspace_export import MANIFEST_NAME, REPO_ROOT
 from tests.conftest import alembic_config
+from tests.contract_fixtures import FIXTURE_DIR, FIXTURES, render
 from tests.test_plans import approved_project, build, plans_url
 from tests.test_requirements_api import use
 
@@ -946,3 +953,36 @@ def test_models_declare_composite_foreign_keys() -> None:
             if fk.referred_table.name == target
         ]
         assert {"project_id"} <= pairs[0], model
+
+
+def test_removal_contract_key_sets_are_locked() -> None:
+    assert set(RemovalItemOut.model_fields) == {"kind", "name", "file", "listed", "reason"}
+    assert set(RemovalMissingOut.model_fields) == {"file", "name"}
+    assert set(RemovalsNotConfirmedBody.model_fields) == {"code", "message", "missing"}
+    assert {"removed_from_accepted", "needs_justification"} <= set(PatchResponse.model_fields)
+
+
+@pytest.mark.parametrize("name", sorted(FIXTURES))
+def test_frontend_fixtures_match_the_models(name: str) -> None:
+    expected = render(FIXTURES[name]())
+    assert (FIXTURE_DIR / name).read_text(encoding="utf-8") == expected, (
+        "regenerate with: python -m tests.contract_fixtures"
+    )
+
+
+def test_real_responses_have_the_contract_keys(client: TestClient, world: World) -> None:
+    accepted(client, world, [create("src/models.py", MODELS)])
+    serve(
+        [modify("src/models.py", TRIMMED)],
+        removals=[{"file": "src/models.py", "name": "AuditLog", "reason": "replaced"}],
+    )
+    patch = generate(client, world).json()
+    assert patch["removed_from_accepted"]
+    for item in patch["removed_from_accepted"]:
+        assert set(item) == set(RemovalItemOut.model_fields)
+    refused = review(client, world[0], patch["id"])
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert set(detail) == set(RemovalsNotConfirmedBody.model_fields)
+    assert detail["code"] == "removals_not_confirmed"
+    assert all(set(m) == set(RemovalMissingOut.model_fields) for m in detail["missing"])

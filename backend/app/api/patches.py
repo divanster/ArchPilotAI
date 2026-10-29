@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
@@ -72,6 +72,25 @@ class ReviewIn(BaseModel):
     confirmed_removals: list[RemovalConfirmationIn] = Field(default_factory=list, max_length=100)
 
 
+class RemovalItemOut(BaseModel):
+    kind: str
+    name: str
+    file: str
+    listed: bool
+    reason: str
+
+
+class RemovalMissingOut(BaseModel):
+    file: str
+    name: str
+
+
+class RemovalsNotConfirmedBody(BaseModel):
+    code: Literal["removals_not_confirmed"] = "removals_not_confirmed"
+    message: str
+    missing: list[RemovalMissingOut]
+
+
 class ExportIn(BaseModel):
     confirm_overwrite: bool = False
 
@@ -117,7 +136,7 @@ class PatchResponse(PatchSummary):
     warnings: list[str]
     blocking_acknowledged: bool
     coverage: dict[str, Any] | None = None
-    removed_from_accepted: list[dict[str, Any]] = Field(default_factory=list)
+    removed_from_accepted: list[RemovalItemOut] = Field(default_factory=list)
     needs_justification: bool = False
     # Generation only stores patches that passed validation; "stale" is checked against the
     # current accepted workspace while the patch is still proposed.
@@ -178,7 +197,10 @@ def _full(detail: PatchDetail) -> PatchResponse:
         warnings=list(p.warnings),
         blocking_acknowledged=p.blocking_acknowledged,
         coverage=p.coverage,
-        removed_from_accepted=list((p.coverage or {}).get("removed_from_accepted", [])),
+        removed_from_accepted=[
+            RemovalItemOut.model_validate(i)
+            for i in (p.coverage or {}).get("removed_from_accepted", [])
+        ],
         needs_justification=bool((p.coverage or {}).get("needs_justification"))
         and p.status == "proposed",
         validation="stale" if detail.stale else "passed",
@@ -335,12 +357,11 @@ def _review(
     except (PatchNotProposedError, StalePatchError) as exc:
         raise _conflict(exc) from exc
     except RemovalsNotConfirmedError as exc:
-        detail: dict[str, Any] = {
-            "code": "removals_not_confirmed",
-            "message": str(exc),
-            "missing": [{"file": f, "name": n} for f, n in exc.missing[:100]],
-        }
-        raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
+        conflict = RemovalsNotConfirmedBody(
+            message=str(exc),
+            missing=[RemovalMissingOut(file=f, name=n) for f, n in exc.missing[:100]],
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, conflict.model_dump()) from exc
     except ReviewInputError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
