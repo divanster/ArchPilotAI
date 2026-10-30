@@ -1257,3 +1257,137 @@ export interface ChecksStatus {
 
 export const getChecksStatus = () =>
   request<ChecksStatus>("/api/agent/checks/status");
+
+// ---- external Git repository (Phase 13A) ---------------------------------------------------
+
+export type GitProvider =
+  | "github"
+  | "github_enterprise"
+  | "azure_devops"
+  | "gitlab"
+  | "generic";
+export type GitAuthMethod = "credential_manager" | "ssh" | "pat";
+
+export const GIT_PROVIDERS: { value: GitProvider; label: string }[] = [
+  { value: "github", label: "GitHub" },
+  { value: "github_enterprise", label: "GitHub Enterprise" },
+  { value: "azure_devops", label: "Azure DevOps" },
+  { value: "gitlab", label: "GitLab" },
+  { value: "generic", label: "Generic Git" },
+];
+
+export const GIT_AUTH_METHODS: { value: GitAuthMethod; label: string }[] = [
+  { value: "credential_manager", label: "Git credential manager" },
+  { value: "ssh", label: "SSH key" },
+  { value: "pat", label: "Personal access token" },
+];
+
+export interface GitSettingsInput {
+  provider: GitProvider;
+  remote_url: string;
+  clone_folder: string | null;
+  base_branch: string;
+  branch_prefix: string;
+  author_name: string;
+  author_email: string;
+  auth_method: GitAuthMethod;
+}
+
+export interface GitSettings extends GitSettingsInput {
+  clone_folder: string;
+  pat: { saved: boolean; provider: string | null; last4: string | null };
+  cloned: boolean;
+  updated_at: string;
+}
+
+export interface GitConnectionResult {
+  reachable: boolean;
+  api_checked: boolean;
+  api_ok: boolean | null;
+  message: string;
+}
+
+export interface GitCommitResult {
+  branch: string;
+  commit: string;
+  created_branch: boolean;
+  files: string[];
+}
+
+export interface GitPullRequestResult {
+  mode: "created" | "compare_link";
+  url: string | null;
+  branch: string;
+  base: string;
+  title: string;
+  message: string;
+}
+
+const gitPath = (projectId: string) => `${projectPath(projectId)}/git`;
+
+/** The saved settings, or null when the project has none yet. */
+export async function getGitSettings(
+  projectId: string,
+): Promise<GitSettings | null> {
+  try {
+    return await request<GitSettings>(gitPath(projectId));
+  } catch (e) {
+    const code = (e as ApiError).detail as { code?: string } | null;
+    if (e instanceof ApiError && e.status === 404 && code?.code === "not_configured")
+      return null;
+    throw e;
+  }
+}
+
+export const saveGitSettings = (projectId: string, input: GitSettingsInput) =>
+  request<GitSettings>(gitPath(projectId), {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+
+// The token is only ever sent here; no response carries it back.
+export const saveGitToken = (projectId: string, token: string) =>
+  request<GitSettings>(`${gitPath(projectId)}/pat`, {
+    method: "PUT",
+    body: JSON.stringify({ token }),
+  });
+
+export const removeGitToken = (projectId: string) =>
+  request<GitSettings>(`${gitPath(projectId)}/pat`, { method: "DELETE" });
+
+export const testGitConnection = (projectId: string) =>
+  request<GitConnectionResult>(`${gitPath(projectId)}/test`, {
+    method: "POST",
+  });
+
+export const cloneGitRepository = (projectId: string) =>
+  request<{ folder: string }>(`${gitPath(projectId)}/clone`, {
+    method: "POST",
+  });
+
+export const attachGitRepository = (projectId: string) =>
+  request<{ folder: string }>(`${gitPath(projectId)}/attach`, {
+    method: "POST",
+  });
+
+export const commitPatchToBranch = (projectId: string, patchId: string) =>
+  request<GitCommitResult>(
+    `${gitPath(projectId)}/patches/${patchId}/commit`,
+    { method: "POST" },
+  );
+
+export const pushGitBranch = (
+  projectId: string,
+  branch: string,
+  approvedBy: string,
+) =>
+  request<{ branch: string; pushed: boolean }>(`${gitPath(projectId)}/push`, {
+    method: "POST",
+    body: JSON.stringify({ branch, approved_by: approvedBy, confirm: true }),
+  });
+
+export const createPullRequest = (projectId: string, patchId: string) =>
+  request<GitPullRequestResult>(
+    `${gitPath(projectId)}/patches/${patchId}/pull-request`,
+    { method: "POST" },
+  );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import AgentRunPanel from "./AgentRunPanel";
+import GitPatchActions from "./GitPatchActions";
 import {
   ApiError,
   confirmTechnology,
@@ -325,7 +326,11 @@ export default function PatchPanel({
           {removals.length > 0 && (
             <section
               aria-label="Removed from accepted file"
-              style={{ border: "1px solid #c0392b", color: "#c0392b", padding: "0.5rem" }}
+              style={{
+                border: "1px solid #c0392b",
+                color: "#c0392b",
+                padding: "0.5rem",
+              }}
             >
               <strong>Removed from accepted file ({removals.length})</strong>
               {unconfirmed.length > 0 && (
@@ -337,7 +342,10 @@ export default function PatchPanel({
               <ul>
                 {removals.map((r) => {
                   const key = removalKey(r);
-                  const s = removalState[key] ?? { confirmed: false, reason: "" };
+                  const s = removalState[key] ?? {
+                    confirmed: false,
+                    reason: "",
+                  };
                   const set = (p: Partial<typeof s>) =>
                     setRemovalState((m) => ({ ...m, [key]: { ...s, ...p } }));
                   const label = `${r.kind} ${r.name} in ${r.file}`;
@@ -371,7 +379,11 @@ export default function PatchPanel({
           {detail.files.map((f) => (
             <details key={f.path} open>
               <summary>
-                {f.change === "create" ? "new" : f.change === "modify" ? "modified" : "deleted"}{" "}
+                {f.change === "create"
+                  ? "new"
+                  : f.change === "modify"
+                    ? "modified"
+                    : "deleted"}{" "}
                 ({f.change}) {f.path}
               </summary>
               <pre>{f.diff}</pre>
@@ -400,6 +412,14 @@ export default function PatchPanel({
             <p>
               Reviewed by {detail.reviewed_by}: {detail.review_reason}
             </p>
+          )}
+          {detail.status === "accepted" && (
+            <GitPatchActions
+              key={detail.id}
+              projectId={projectId}
+              patchId={detail.id}
+              reviewer={detail.reviewed_by ?? null}
+            />
           )}
           {canReview && (
             <div>

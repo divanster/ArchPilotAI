@@ -7,6 +7,7 @@ export type Page =
   | "requirements"
   | "architecture"
   | "plan"
+  | "repository"
   | "playground"
   | "providers";
 
@@ -25,6 +26,7 @@ const PAGES: Page[] = [
   "requirements",
   "architecture",
   "plan",
+  "repository",
   "playground",
   "providers",
 ];

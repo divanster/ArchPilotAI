@@ -5,10 +5,10 @@ const SECTION_KEY = "archpilot.lastSection.";
 
 export type ProjectPage = Extract<
   Page,
-  "documents" | "requirements" | "architecture" | "plan"
+  "documents" | "requirements" | "architecture" | "plan" | "repository"
 >;
 
-export const PROJECT_PAGES: ProjectPage[] = ["documents", "requirements", "architecture", "plan"];
+export const PROJECT_PAGES: ProjectPage[] = ["documents", "requirements", "architecture", "plan", "repository"];
 
 function read(key: string): string | null {
   try {

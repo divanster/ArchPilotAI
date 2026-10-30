@@ -14,6 +14,7 @@ import ProjectsPage from "./ProjectsPage";
 import ProvidersPage from "./ProvidersPage";
 import ArchitectureSection from "./ArchitectureSection";
 import PlanSection from "./PlanSection";
+import RepositoryPage from "./RepositoryPage";
 import RequirementsSection from "./RequirementsSection";
 import {
   PROJECT_PAGES,
@@ -182,6 +183,16 @@ export default function App() {
               projectDescription={project?.description}
             />
           )}
+        </ProjectScopedPage>
+      )}
+      {route.page === "repository" && (
+        <ProjectScopedPage
+          page="repository"
+          title="Repository"
+          subtitle="Connect an external Git repository to commit accepted patches to a branch."
+          projectId={scopedId}
+        >
+          {(id) => <RepositoryPage key={id} projectId={id} />}
         </ProjectScopedPage>
       )}
       {route.page === "playground" && <AIPlayground />}
