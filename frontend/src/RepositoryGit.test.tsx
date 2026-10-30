@@ -164,6 +164,51 @@ describe("git repository UI", () => {
     expect(calls(fetchMock)[1].url).toContain("/git/test");
   });
 
+  it("shows the CI workflow template on request and copies it", async () => {
+    fetchMock.mockResolvedValueOnce(json(withPat()));
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    render(<RepositoryPage projectId="p1" />);
+    const show = await screen.findByRole("button", {
+      name: "Show CI workflow template",
+    });
+    expect(calls(fetchMock)).toHaveLength(1); // nothing fetched until asked
+    const content = "name: ArchPilot tests\non:\n  workflow_dispatch:\n";
+    fetchMock.mockResolvedValueOnce(
+      json({
+        path: ".github/workflows/archpilot-tests.yml",
+        workflow_file: "archpilot-tests.yml",
+        artifact: "archpilot-junit",
+        content,
+      }),
+    );
+    fireEvent.click(show);
+    const pre = await screen.findByLabelText("Workflow file");
+    expect(pre.textContent).toBe(content);
+    expect(
+      screen.getByText(".github/workflows/archpilot-tests.yml"),
+    ).toBeInTheDocument();
+    expect(calls(fetchMock)[1]).toMatchObject({ method: "GET" });
+    expect(calls(fetchMock)[1].url).toContain(
+      "/api/agent/ci/workflow-template",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy workflow" }));
+    expect(
+      await screen.findByText("Copied to the clipboard"),
+    ).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(content);
+    expect(calls(fetchMock)).toHaveLength(2); // copying never writes anywhere
+  });
+
+  it("offers the CI workflow only for GitHub repositories", async () => {
+    fetchMock.mockResolvedValueOnce(json(settings({ provider: "gitlab" })));
+    render(<RepositoryPage projectId="p1" />);
+    await screen.findByLabelText("Remote URL");
+    expect(
+      screen.queryByRole("button", { name: "Show CI workflow template" }),
+    ).not.toBeInTheDocument();
+  });
+
   async function committed(settingsBody: unknown) {
     fetchMock.mockResolvedValueOnce(json(settingsBody));
     render(<GitPatchActions projectId="p1" patchId="pa1" reviewer="Rita" />);

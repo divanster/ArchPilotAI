@@ -116,11 +116,20 @@ class Settings(BaseSettings):
     agent_check_temp_dir: str = ""
     # Path to the TypeScript compiler; empty auto-detects the frontend's local install or PATH.
     agent_tsc_path: str = ""
-    # Execution provider commands (tests). The only provider today is "unavailable"; a container
-    # provider can be added later.
-    agent_execution_provider: str = "unavailable"
+    # Execution provider for tests: "unavailable" (default) or "github_actions" (Phase 13B: the
+    # draft is pushed to a <prefix>ci/<run-id> branch after the user approves, a workflow in the
+    # target repository runs the command and its JUnit artifact is read back).
+    agent_execution_provider: Literal["unavailable", "github_actions"] = "unavailable"
     agent_test_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
     agent_test_output_cap: int = Field(default=4000, ge=200, le=20_000)
+    # GitHub Actions provider: workflow file name in the target repository, the wait for one CI
+    # job (push, workflow, artifact), the wait for the user's approval, the status poll interval.
+    agent_ci_workflow: str = Field(
+        default="archpilot-tests.yml", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\.ya?ml$"
+    )
+    agent_ci_timeout_seconds: float = Field(default=900.0, gt=0, le=7200)
+    agent_ci_approval_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    agent_ci_poll_seconds: float = Field(default=10.0, ge=1, le=120)
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

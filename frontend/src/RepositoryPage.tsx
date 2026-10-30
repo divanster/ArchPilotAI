@@ -4,11 +4,13 @@ import {
   GIT_PROVIDERS,
   attachGitRepository,
   cloneGitRepository,
+  getCiWorkflowTemplate,
   getGitSettings,
   removeGitToken,
   saveGitSettings,
   saveGitToken,
   testGitConnection,
+  type CIWorkflowTemplate,
   type GitAuthMethod,
   type GitConnectionResult,
   type GitProvider,
@@ -362,8 +364,81 @@ export default function RepositoryPage({ projectId }: { projectId: string }) {
         </section>
       )}
 
+      {settings &&
+        (settings.provider === "github" ||
+          settings.provider === "github_enterprise") && <CIWorkflowCard />}
+
       {notice && <p role="status">{notice}</p>}
       {error && <p role="alert">{error}</p>}
     </div>
+  );
+}
+
+/** The workflow the user adds to the target repository by hand; ArchPilotAI never pushes it. */
+function CIWorkflowCard() {
+  const [template, setTemplate] = useState<CIWorkflowTemplate | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const show = async () => {
+    setLoading(true);
+    setFailed(null);
+    try {
+      setTemplate(await getCiWorkflowTemplate());
+    } catch (e) {
+      setFailed(errText(e, "Could not load the template"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!template) return;
+    try {
+      await navigator.clipboard.writeText(template.content);
+      setCopied("Copied to the clipboard");
+    } catch {
+      setCopied("Copy failed: select the text and copy it by hand");
+    }
+  };
+
+  return (
+    <section className="card" aria-label="CI workflow template">
+      <h2>CI workflow (GitHub Actions)</h2>
+      <p className="sub">
+        To let the agent run tests in GitHub Actions, add this file to your
+        repository yourself
+        {template ? (
+          <>
+            {" "}
+            as <code>{template.path}</code>
+          </>
+        ) : null}
+        . ArchPilotAI never writes it to the remote. Each CI run asks for your
+        approval before a draft is pushed to a <code>ci/</code> branch.
+      </p>
+      {failed && <p role="alert">{failed}</p>}
+      {!template && (
+        <div className="row">
+          <button type="button" disabled={loading} onClick={() => void show()}>
+            Show CI workflow template
+          </button>
+        </div>
+      )}
+      {template && (
+        <>
+          <div className="row">
+            <button type="button" onClick={() => void copy()}>
+              Copy workflow
+            </button>
+          </div>
+          {copied && <p role="status">{copied}</p>}
+          <pre aria-label="Workflow file" tabIndex={0}>
+            {template.content}
+          </pre>
+        </>
+      )}
+    </section>
   );
 }

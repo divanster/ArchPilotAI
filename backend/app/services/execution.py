@@ -29,6 +29,8 @@ from app.domain.execution import (
 
 MAX_NEW_FAILURES = 20  # failures listed to the model; the rest are counted
 MAX_RERUNS = 10  # failed tests re-run alone, per command
+# CI facts the model may see (no person's name, no token: there is none in the meta at all).
+CI_PAYLOAD_KEYS = ("provider", "status", "conclusion", "workflow_url", "branch", "error")
 
 # ---- open jobs of running runs ---------------------------------------------------------------
 # `stop` arrives on another thread and session, so open jobs are found here, by run id.
@@ -98,6 +100,20 @@ class TestRunner:
     def provider_name(self) -> str:
         return self._provider.name
 
+    def bind(self, project_id: uuid.UUID, run_id: uuid.UUID) -> None:
+        """Lets a provider that works per run (the CI provider) know which run it serves."""
+        binder = getattr(self._provider, "bind", None)
+        if callable(binder):
+            self._provider = binder(project_id, run_id)
+
+    def release(self, run_id: uuid.UUID) -> None:
+        releaser = getattr(self._provider, "release", None)
+        if callable(releaser):
+            releaser(run_id)
+
+    def _supports(self, capability: str) -> bool:
+        return bool(getattr(self._provider, capability, True))
+
     def _job(
         self,
         run_id: uuid.UUID,
@@ -131,6 +147,8 @@ class TestRunner:
         record.duration_ms = int((result.duration or time.monotonic() - started) * 1000)
         record.truncated = result.truncated
         record.output = result.log  # the full output stays here, in the run log
+        if result.meta:
+            record.summary.update(result.meta)
         return result
 
     @staticmethod
@@ -157,7 +175,7 @@ class TestRunner:
         if not ok:
             raise ProviderUnavailableError(reason)
         jobs: list[JobRecord] = []
-        has_baseline = bool(baseline_files)
+        has_baseline = bool(baseline_files) and self._supports("supports_baseline")
         before: ExecutionResult | None = None
         if has_baseline:
             before = self._job(run_id, command_id, baseline_files or {}, "baseline", jobs)
@@ -170,6 +188,9 @@ class TestRunner:
             "stdout_tail": after.stdout_tail,
             "stderr_tail": after.stderr_tail,
         }
+        ci = (after.meta or {}).get("ci")
+        if isinstance(ci, Mapping):
+            payload["ci"] = {k: ci.get(k) for k in CI_PAYLOAD_KEYS if k in ci}
         if after.cancelled or after.timed_out:
             payload["status"] = "cancelled" if after.cancelled else "timed_out"
             return TestOutcome(payload, jobs)
@@ -219,6 +240,8 @@ class TestRunner:
     ) -> list[CaseResult]:
         """Each failed test is run alone once. A pass marks it flaky (recorded on its job)."""
         flaky: list[CaseResult] = []
+        if not self._supports("supports_rerun"):
+            return flaky
         failed = [c for c in [*comparison.new, *comparison.pre_existing] if c.outcome in FAILING]
         for case in failed[:MAX_RERUNS]:
             result = self._job(run_id, command_id, files, "rerun", jobs, select=case.name)
@@ -228,7 +251,7 @@ class TestRunner:
                 if again is None
                 else any(c.name == case.name and c.outcome == "passed" for c in again)
             )
-            jobs[-1].summary = {"test": case.name, "flaky": passed}
+            jobs[-1].summary.update({"test": case.name, "flaky": passed})
             if passed and not (result.cancelled or result.timed_out):
                 flaky.append(case)
         return flaky

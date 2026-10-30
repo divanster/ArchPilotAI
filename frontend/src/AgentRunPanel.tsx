@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  answerCiPush,
   getAgentDeployments,
   getAgentHooks,
   getAgentRun,
@@ -14,6 +15,7 @@ import {
   type AgentRun,
   type AgentStepView,
   type ChecksStatus,
+  type CILive,
   type PlanTask,
 } from "./api";
 
@@ -50,6 +52,142 @@ function TestsView({ step }: { step: AgentStepView }) {
       {t.flaky.length > 0 && (
         <p className="sub">Flaky (passed on re-run): {t.flaky.join(", ")}</p>
       )}
+      {t.ci?.workflow_url && (
+        <p className="sub">
+          GitHub Actions: {t.ci.conclusion ?? t.ci.status ?? "—"} ·{" "}
+          <WorkflowLink url={t.ci.workflow_url} />
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Only an https link is rendered; anything else is shown as text. */
+function WorkflowLink({ url }: { url: string }) {
+  if (!url.startsWith("https://")) return <code>{url}</code>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer">
+      workflow run
+    </a>
+  );
+}
+
+function CIJobInfo({ job }: { job: AgentJob }) {
+  const ci = job.ci;
+  if (!ci) return null;
+  return (
+    <span className="sub" aria-label={`CI of job ${job.id}`}>
+      {" "}
+      · CI {ci.status ?? "—"}
+      {ci.conclusion ? ` (${ci.conclusion})` : ""}
+      {ci.branch ? (
+        <>
+          {" "}
+          on <code>{ci.branch}</code>
+        </>
+      ) : null}
+      {ci.kept ? " · branch kept" : ""}
+      {ci.branch_deleted ? " · branch deleted" : ""}
+      {ci.approved_by ? ` · approved by ${ci.approved_by}` : ""}
+      {ci.report === false ? " · no JUnit report" : ""}
+      {ci.error ? ` · ${ci.error}` : ""}
+      {ci.workflow_url ? (
+        <>
+          {" "}
+          · <WorkflowLink url={ci.workflow_url} />
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+function CIApproval({
+  ci,
+  onAnswer,
+}: {
+  ci: CILive;
+  onAnswer: (approve: boolean, by: string, keep: boolean) => Promise<void>;
+}) {
+  const [by, setBy] = useState("");
+  const [keep, setKeep] = useState(false);
+  const [sending, setSending] = useState(false);
+  const answer = async (approve: boolean) => {
+    setSending(true);
+    try {
+      await onAnswer(approve, by.trim(), keep);
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div role="group" aria-label="CI push approval">
+      <p>
+        The agent wants to run <code>{ci.command_id ?? "tests"}</code> in GitHub
+        Actions. This pushes the draft to the branch{" "}
+        <code>{ci.branch ?? "<prefix>ci/<run-id>"}</code> (never the base
+        branch) and starts the workflow. You are asked once for this run.
+      </p>
+      <label>
+        Your name{" "}
+        <input
+          value={by}
+          maxLength={100}
+          onChange={(e) => setBy(e.target.value)}
+        />
+      </label>{" "}
+      <label>
+        <input
+          type="checkbox"
+          checked={keep}
+          onChange={(e) => setKeep(e.target.checked)}
+        />{" "}
+        Keep the CI branches after the run
+      </label>
+      <div className="btn-row">
+        <button
+          type="button"
+          disabled={sending || by.trim() === ""}
+          onClick={() => void answer(true)}
+        >
+          Approve CI push
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={sending || by.trim() === ""}
+          onClick={() => void answer(false)}
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CIStatus({
+  ci,
+  onAnswer,
+}: {
+  ci: CILive;
+  onAnswer: (approve: boolean, by: string, keep: boolean) => Promise<void>;
+}) {
+  return (
+    <div aria-label="CI status">
+      <h5>GitHub Actions</h5>
+      <p className="sub">
+        {ci.phase.replace(/_/g, " ")} · push {ci.approval}
+        {ci.approved_by ? ` by ${ci.approved_by}` : ""}
+        {ci.keep_branches ? " · branches kept" : ""}
+        {ci.conclusion ? ` · ${ci.conclusion}` : ""}
+        {ci.workflow_url ? (
+          <>
+            {" "}
+            · <WorkflowLink url={ci.workflow_url} />
+          </>
+        ) : null}
+      </p>
+      {ci.message && <p className="hint">{ci.message}</p>}
+      {ci.approval === "pending" && <CIApproval ci={ci} onAnswer={onAnswer} />}
     </div>
   );
 }
@@ -69,6 +207,7 @@ function JobList({ jobs }: { jobs: AgentJob[] }) {
             {j.truncated ? " · output truncated" : ""}
             {j.flaky === true ? " · flaky" : ""}
             {j.select_test ? ` · ${j.select_test}` : ""}
+            <CIJobInfo job={j} />
           </li>
         ))}
       </ul>
@@ -331,6 +470,21 @@ export default function AgentRunPanel({
     }
   };
 
+  const answerCi = async (approve: boolean, by: string, keep: boolean) => {
+    if (!run) return;
+    setError(null);
+    try {
+      const ci = await answerCiPush(projectId, run.id, {
+        approve,
+        approved_by: by,
+        keep_branches: keep,
+      });
+      if (mounted.current) setRun((cur) => (cur ? { ...cur, ci } : cur));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not answer the CI push");
+    }
+  };
+
   return (
     <div data-testid={`agent-${task.key}`}>
       <h4>Agent run</h4>
@@ -428,6 +582,7 @@ export default function AgentRunPanel({
                 .join(", ") || "none"}
             </p>
           )}
+          {running && run.ci && <CIStatus ci={run.ci} onAnswer={answerCi} />}
           {run.steps.length > 0 && (
             <ol aria-label="Agent steps">
               {run.steps.map((s) => (

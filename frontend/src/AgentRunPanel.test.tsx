@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentRunPanel from "./AgentRunPanel";
-import type { AgentHook, AgentRun, PlanTask } from "./api";
+import type { AgentHook, AgentJob, AgentRun, CILive, PlanTask } from "./api";
 
 const TASK = {
   key: "T-001",
@@ -515,5 +515,161 @@ describe("AgentRunPanel", () => {
       "25000 reasoning, length",
     );
     expect(screen.getByText(/reasoning budget exhausted/)).toBeTruthy();
+  });
+
+  const CI_LIVE: CILive = {
+    provider: "github_actions",
+    approval: "pending",
+    approved_by: null,
+    keep_branches: false,
+    phase: "awaiting_approval",
+    command_id: "pytest",
+    branch: "agent/ci/r1",
+    workflow_run_id: null,
+    workflow_url: null,
+    conclusion: null,
+    message: null,
+  };
+
+  it("asks once for the CI push and sends the user's answer", async () => {
+    let live = CI_LIVE;
+    const { fetchMock } = setup((url) => {
+      if (url.endsWith("/ci/approval")) {
+        live = {
+          ...CI_LIVE,
+          approval: "approved",
+          approved_by: "Ivan",
+          keep_branches: true,
+          phase: "pushing",
+        };
+        return json(live);
+      }
+      if (url.endsWith("/agent-runs")) return json([run({ ci: live })]);
+      return json(run({ ci: live }));
+    });
+    const group = await screen.findByRole("group", {
+      name: "CI push approval",
+    });
+    expect(group.textContent).toContain("agent/ci/r1");
+    const approve = within(group).getByRole("button", {
+      name: "Approve CI push",
+    });
+    expect(approve).toHaveProperty("disabled", true); // a name is required
+    fireEvent.change(within(group).getByLabelText(/Your name/), {
+      target: { value: "Ivan" },
+    });
+    fireEvent.click(within(group).getByLabelText(/Keep the CI branches/));
+    fireEvent.click(approve);
+    expect(await screen.findByText(/push approved by Ivan/)).toBeTruthy();
+    expect(
+      screen.queryByRole("group", { name: "CI push approval" }),
+    ).toBeNull();
+    const sent = fetchMock.mock.calls.find(([u]) =>
+      String(u).endsWith("/agent-runs/r1/ci/approval"),
+    );
+    expect(sent?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({
+      approve: true,
+      approved_by: "Ivan",
+      keep_branches: true,
+    });
+  });
+
+  it("denies the CI push", async () => {
+    let live = CI_LIVE;
+    const { fetchMock } = setup((url) => {
+      if (url.endsWith("/ci/approval")) {
+        live = { ...CI_LIVE, approval: "denied", phase: "denied" };
+        return json(live);
+      }
+      if (url.endsWith("/agent-runs")) return json([run({ ci: live })]);
+      return json(run({ ci: live }));
+    });
+    const group = await screen.findByRole("group", {
+      name: "CI push approval",
+    });
+    fireEvent.change(within(group).getByLabelText(/Your name/), {
+      target: { value: "Ivan" },
+    });
+    fireEvent.click(within(group).getByRole("button", { name: "Deny" }));
+    expect(await screen.findByText(/push denied/)).toBeTruthy();
+    const sent = fetchMock.mock.calls.find(([u]) =>
+      String(u).endsWith("/ci/approval"),
+    );
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({
+      approve: false,
+      keep_branches: false,
+    });
+  });
+
+  it("shows the CI status, the workflow link and each CI job", async () => {
+    const url = "https://github.com/acme/app/actions/runs/42";
+    const job: AgentJob = {
+      id: "j1",
+      command_id: "pytest",
+      variant: "changed",
+      status: "failed",
+      timeout_seconds: 900,
+      exit_code: 1,
+      duration_ms: 60000,
+      truncated: false,
+      select_test: null,
+      flaky: null,
+      ci: {
+        provider: "github_actions",
+        status: "completed",
+        branch: "agent/ci/r1",
+        commit: "abc",
+        workflow_run_id: 42,
+        workflow_url: url,
+        conclusion: "failure",
+        report: true,
+        approved_by: "Ivan",
+        kept: false,
+        branch_deleted: true,
+        error: null,
+      },
+    };
+    const live: CILive = {
+      ...CI_LIVE,
+      approval: "approved",
+      approved_by: "Ivan",
+      phase: "in_progress",
+      workflow_run_id: 42,
+      workflow_url: url,
+    };
+    setup((u) => {
+      if (u.endsWith("/agent-runs")) return json([run({ ci: live })]);
+      return json(run({ ci: live, jobs: [job] }));
+    });
+    const status = await screen.findByLabelText("CI status");
+    expect(status.textContent).toContain("in progress");
+    expect(
+      within(status).getByRole("link", { name: "workflow run" }),
+    ).toHaveProperty("href", url);
+    expect(
+      screen.queryByRole("group", { name: "CI push approval" }),
+    ).toBeNull();
+    const info = screen.getByLabelText("CI of job j1");
+    expect(info.textContent).toContain("CI completed (failure)");
+    expect(info.textContent).toContain("agent/ci/r1");
+    expect(info.textContent).toContain("branch deleted");
+    expect(info.textContent).toContain("approved by Ivan");
+  });
+
+  it("never renders a non-https workflow link", async () => {
+    const live: CILive = {
+      ...CI_LIVE,
+      approval: "approved",
+      phase: "queued",
+      workflow_url: "javascript:alert(1)",
+    };
+    setup((u) =>
+      u.endsWith("/agent-runs")
+        ? json([run({ ci: live })])
+        : json(run({ ci: live })),
+    );
+    const status = await screen.findByLabelText("CI status");
+    expect(within(status).queryByRole("link")).toBeNull();
   });
 });

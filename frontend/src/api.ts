@@ -1155,6 +1155,52 @@ export interface AgentTestsView {
   flaky: string[];
   baseline: boolean;
   note: string | null;
+  ci?: {
+    provider?: string;
+    status?: string | null;
+    conclusion?: string | null;
+    workflow_url?: string | null;
+    branch?: string | null;
+    error?: string | null;
+  } | null;
+}
+
+/** What a GitHub Actions job did (stored with the job). Never holds a token. */
+export interface CIJob {
+  provider: string;
+  status: string | null;
+  branch: string | null;
+  commit: string | null;
+  workflow_run_id: number | null;
+  workflow_url: string | null;
+  conclusion: string | null;
+  report: boolean | null;
+  approved_by: string | null;
+  kept: boolean | null;
+  branch_deleted: boolean | null;
+  error: string | null;
+}
+
+/** The live CI state of a running run: the push approval, the phase and the workflow link. */
+export interface CILive {
+  provider: string;
+  approval: "none" | "pending" | "approved" | "denied";
+  approved_by: string | null;
+  keep_branches: boolean;
+  phase: string;
+  command_id: string | null;
+  branch: string | null;
+  workflow_run_id: number | null;
+  workflow_url: string | null;
+  conclusion: string | null;
+  message: string | null;
+}
+
+export interface CIWorkflowTemplate {
+  path: string;
+  workflow_file: string;
+  artifact: string;
+  content: string;
 }
 
 export interface AgentJob {
@@ -1168,6 +1214,7 @@ export interface AgentJob {
   truncated: boolean;
   select_test: string | null;
   flaky: boolean | null;
+  ci?: CIJob | null;
 }
 
 export interface AgentFinding {
@@ -1207,6 +1254,7 @@ export interface AgentRun extends AgentRunSummary {
   jobs?: AgentJob[];
   hooks?: AgentHook[];
   usage?: AgentUsage;
+  ci?: CILive | null;
 }
 
 export const getAgentDeployments = () =>
@@ -1238,6 +1286,20 @@ export const stopAgentRun = (projectId: string, runId: string) =>
     method: "POST",
   });
 
+/** The user's answer to a run's CI push; asked once per run. */
+export const answerCiPush = (
+  projectId: string,
+  runId: string,
+  body: { approve: boolean; approved_by: string; keep_branches: boolean },
+) =>
+  request<CILive>(`${projectPath(projectId)}/agent-runs/${runId}/ci/approval`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const getCiWorkflowTemplate = () =>
+  request<CIWorkflowTemplate>("/api/agent/ci/workflow-template");
+
 export const getAgentHooks = (projectId: string) =>
   request<AgentHook[]>(`${projectPath(projectId)}/agent-hooks`);
 
@@ -1261,11 +1323,7 @@ export const getChecksStatus = () =>
 // ---- external Git repository (Phase 13A) ---------------------------------------------------
 
 export type GitProvider =
-  | "github"
-  | "github_enterprise"
-  | "azure_devops"
-  | "gitlab"
-  | "generic";
+  "github" | "github_enterprise" | "azure_devops" | "gitlab" | "generic";
 export type GitAuthMethod = "credential_manager" | "ssh" | "pat";
 
 export const GIT_PROVIDERS: { value: GitProvider; label: string }[] = [
@@ -1333,7 +1391,11 @@ export async function getGitSettings(
     return await request<GitSettings>(gitPath(projectId));
   } catch (e) {
     const code = (e as ApiError).detail as { code?: string } | null;
-    if (e instanceof ApiError && e.status === 404 && code?.code === "not_configured")
+    if (
+      e instanceof ApiError &&
+      e.status === 404 &&
+      code?.code === "not_configured"
+    )
       return null;
     throw e;
   }
@@ -1371,10 +1433,9 @@ export const attachGitRepository = (projectId: string) =>
   });
 
 export const commitPatchToBranch = (projectId: string, patchId: string) =>
-  request<GitCommitResult>(
-    `${gitPath(projectId)}/patches/${patchId}/commit`,
-    { method: "POST" },
-  );
+  request<GitCommitResult>(`${gitPath(projectId)}/patches/${patchId}/commit`, {
+    method: "POST",
+  });
 
 export const pushGitBranch = (
   projectId: string,

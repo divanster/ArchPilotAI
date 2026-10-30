@@ -77,6 +77,8 @@ class ExecutionResult:
     cancelled: bool = False
     report: str | None = None  # JUnit XML text, when the command produces one
     log: str = ""  # the full output; kept in the run log, never sent to the model
+    # Provider facts kept with the job (for example the CI branch and workflow run); no secret.
+    meta: Mapping[str, Any] | None = None
 
 
 def make_result(
@@ -89,18 +91,23 @@ def make_result(
     timed_out: bool = False,
     cancelled: bool = False,
     report: str | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> ExecutionResult:
     out, cut_out = tail(stdout, output_cap)
     err, cut_err = tail(stderr, output_cap)
     log = (stdout + ("\n" if stdout and stderr else "") + stderr)[:MAX_LOG_CHARS]
     return ExecutionResult(
-        exit_code, out, err, duration, cut_out or cut_err, timed_out, cancelled, report, log
+        exit_code, out, err, duration, cut_out or cut_err, timed_out, cancelled, report, log, meta
     )
 
 
 class ExecutionProvider(Protocol):
     """Runs one allowlisted command on a copy of `files`. Implementations must not run it
-    anywhere but their own isolated environment."""
+    anywhere but their own isolated environment.
+
+    Optional, read with getattr by the test runner: `supports_baseline` / `supports_rerun`
+    (default True; False skips the baseline job / the lone re-runs), `bind(project_id, run_id)`
+    (returns the provider to use for that run) and `release(run_id)` (the run has ended)."""
 
     name: str
 

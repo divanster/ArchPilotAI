@@ -36,6 +36,8 @@ from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.architecture_lint import lint_config_from_settings
+from app.services.ci_execution import CIExecutionProvider, settings_targets
+from app.services.credential_store import KeyringCredentialStore
 from app.services.decision import DecisionService
 from app.services.document import DocumentService
 from app.services.embedding import EmbeddingService
@@ -269,6 +271,21 @@ def make_static_checker() -> StaticChecker:
     )
 
 
+def make_execution_provider(session: Session) -> ExecutionProvider:
+    """The configured execution provider. "github_actions" is bound to a run when it starts."""
+    settings = get_settings()
+    if settings.agent_execution_provider != "github_actions":
+        return UnavailableExecutionProvider()
+    patches = PatchRepository(session)
+    return CIExecutionProvider(
+        settings_targets(session, KeyringCredentialStore()),
+        lambda project_id: {f.path: f.content for f in patches.workspace(project_id)},
+        workflow_file=settings.agent_ci_workflow,
+        poll_interval=settings.agent_ci_poll_seconds,
+        approval_timeout=settings.agent_ci_approval_timeout_seconds,
+    )
+
+
 def make_agent_service(
     session: Session,
     provider: LLMProvider,
@@ -279,6 +296,12 @@ def make_agent_service(
     embedder: EmbeddingProvider | None = None,
 ) -> AgentService:
     settings = get_settings()
+    execution = execution or make_execution_provider(session)
+    test_timeout = (
+        settings.agent_ci_timeout_seconds
+        if execution.name == "github_actions"
+        else settings.agent_test_timeout_seconds
+    )
     return AgentService(
         provider,
         _patch_service(session, _NoGeneration()),
@@ -302,8 +325,8 @@ def make_agent_service(
         ),
         clock=clock,
         tests=TestRunner(
-            execution or UnavailableExecutionProvider(),
-            timeout=settings.agent_test_timeout_seconds,
+            execution,
+            timeout=test_timeout,
             output_cap=settings.agent_test_output_cap,
         ),
         embedder=embedder or get_embedding_provider(),

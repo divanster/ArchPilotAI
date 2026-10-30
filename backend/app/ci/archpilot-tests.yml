@@ -1,0 +1,103 @@
+# ArchPilotAI test workflow (template).
+#
+# Add this file to YOUR target repository as .github/workflows/archpilot-tests.yml and commit it
+# to the default branch yourself: ArchPilotAI never writes workflow files to a remote.
+#
+# ArchPilotAI pushes the agent's draft to a dedicated branch <prefix>ci/<run-id> (after you approve
+# it in the run panel), dispatches this workflow on that branch, polls it, then downloads the
+# "archpilot-junit" artifact and reads its JUnit XML. The branch is deleted afterwards unless you
+# chose to keep it.
+#
+# The token ArchPilotAI uses needs: contents (read and write, for the CI branch) and actions
+# (read and write, to dispatch, poll and cancel runs and to download artifacts).
+#
+# Adjust the "Install dependencies" step to your project. Inputs are passed to the shell through
+# environment variables only, never interpolated into the script.
+
+name: ArchPilot tests
+run-name: "ArchPilot ${{ inputs.command }} (${{ inputs.archpilot_run }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Allowlisted command id"
+        required: true
+        type: choice
+        options:
+          - pytest
+          - ruff
+          - mypy
+          - tsc
+          - npm test
+      archpilot_run:
+        description: "ArchPilotAI run id"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: archpilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        if: ${{ inputs.command == 'pytest' || inputs.command == 'ruff' || inputs.command == 'mypy' }}
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        if: ${{ inputs.command == 'tsc' || inputs.command == 'npm test' }}
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.command }}
+        run: |
+          case "$COMMAND" in
+            pytest|ruff|mypy)
+              python -m pip install --upgrade pip
+              if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+              if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
+              python -m pip install pytest ruff mypy
+              ;;
+            tsc|"npm test")
+              if [ -f package-lock.json ]; then npm ci; else npm install; fi
+              ;;
+          esac
+
+      - name: Run the command
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.command }}
+        run: |
+          case "$COMMAND" in
+            pytest) python -m pytest --junitxml=junit.xml ;;
+            ruff) ruff check . ;;
+            mypy) mypy . ;;
+            tsc) npx --no-install tsc --noEmit ;;
+            "npm test") npm test -- --reporter=junit --outputFile=junit.xml ;;
+            *) echo "Unknown command id" >&2; exit 2 ;;
+          esac
+
+      - name: Upload JUnit report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: archpilot-junit
+          path: junit.xml
+          if-no-files-found: ignore
+          retention-days: 3

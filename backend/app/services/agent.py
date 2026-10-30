@@ -223,6 +223,7 @@ class AgentService:
     def execute(self, project_id: uuid.UUID, run_id: uuid.UUID) -> None:
         """Run the loop of a started run to its end. Never raises; the lock is always released."""
         try:
+            self._tests.bind(project_id, run_id)
             self._loop(project_id, run_id)
         except Exception as exc:
             # The type only: messages of failed steps may carry draft content.
@@ -236,6 +237,7 @@ class AgentService:
                 logger.error("agent run not closed run=%s error=%s", run_id, type(inner).__name__)
         finally:
             release_run(run_id)
+            self._tests.release(run_id)
             _active.discard(run_id)
             _agent_lock.release()
 
@@ -758,6 +760,9 @@ class AgentService:
         model sees, and a note on the patch."""
         files = {p: f.content for p, f in draft.live().items()}
         baseline = {f.path: f.content for f in self._patch_repo.workspace(project_id)}
+        # A job can wait minutes (CI approval, a workflow run): hold no write transaction meanwhile,
+        # or a stop request could not be saved on SQLite.
+        self._agents.commit()
         try:
             outcome = self._tests.run(
                 run.id, command_id, files, baseline, [c.path for c in draft.changes()]

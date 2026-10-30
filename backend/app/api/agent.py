@@ -20,6 +20,7 @@ from app.api.deps import (
     make_static_checker,
     provider_for_deployment,
 )
+from app.core.config import get_settings
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.project import Project
 from app.services.agent import (
@@ -28,6 +29,13 @@ from app.services.agent import (
     RunNotFoundError,
     RunNotRunningError,
     is_active,
+)
+from app.services.ci_execution import (
+    ARTIFACT_NAME,
+    CIApprovalError,
+    ci_state,
+    decide,
+    workflow_template,
 )
 from app.services.patch import (
     PatchBusyError,
@@ -135,6 +143,53 @@ class TestsOut(BaseModel):
     flaky: list[str] = []
     baseline: bool = False
     note: str | None = None
+    ci: dict[str, Any] | None = None  # CI provider: status, conclusion, workflow_url, branch
+
+
+class CIJobOut(BaseModel):
+    """What a CI job did, from its stored summary. Never holds a token."""
+
+    provider: str = "github_actions"
+    status: str | None = None
+    branch: str | None = None
+    commit: str | None = None
+    workflow_run_id: int | None = None
+    workflow_url: str | None = None
+    conclusion: str | None = None
+    report: bool | None = None
+    approved_by: str | None = None
+    kept: bool | None = None
+    branch_deleted: bool | None = None
+    error: str | None = None
+
+
+class CILiveOut(BaseModel):
+    """The live CI state of a running run (approval, phase, workflow link)."""
+
+    provider: str
+    approval: str  # none | pending | approved | denied
+    approved_by: str | None
+    keep_branches: bool
+    phase: str
+    command_id: str | None
+    branch: str | None
+    workflow_run_id: int | None
+    workflow_url: str | None
+    conclusion: str | None
+    message: str | None
+
+
+class CIApprovalIn(BaseModel):
+    approve: bool
+    approved_by: str = Field(min_length=1, max_length=100)
+    keep_branches: bool = False
+
+
+class WorkflowTemplateOut(BaseModel):
+    path: str
+    workflow_file: str
+    artifact: str
+    content: str
 
 
 class JobOut(BaseModel):
@@ -148,6 +203,7 @@ class JobOut(BaseModel):
     truncated: bool
     select_test: str | None
     flaky: bool | None = None  # set on a re-run job
+    ci: CIJobOut | None = None  # set on a CI (GitHub Actions) job
 
 
 class HookDecisionOut(BaseModel):
@@ -221,6 +277,7 @@ class RunResponse(RunSummary):
     jobs: list[JobOut] = []
     hooks: list[HookOut] = []  # the hooks active when the run started
     usage: RunUsage = RunUsage()  # totals of the model calls of the run
+    ci: CILiveOut | None = None  # live CI state while the run is active
 
 
 def _duration(run: AgentRun) -> int:
@@ -292,6 +349,16 @@ def _tests(step: AgentStep) -> TestsOut | None:
         return None
 
 
+def _ci_job(summary: dict[str, Any] | None) -> CIJobOut | None:
+    found = (summary or {}).get("ci")
+    if not isinstance(found, dict):
+        return None
+    try:
+        return CIJobOut(**{k: found[k] for k in CIJobOut.model_fields if k in found})
+    except (ValueError, TypeError):
+        return None
+
+
 def _jobs(jobs: Sequence[AgentJob]) -> list[JobOut]:
     return [
         JobOut(
@@ -305,6 +372,7 @@ def _jobs(jobs: Sequence[AgentJob]) -> list[JobOut]:
             truncated=j.truncated,
             select_test=j.select_test,
             flaky=(j.summary or {}).get("flaky"),
+            ci=_ci_job(j.summary),
         )
         for j in jobs
     ]
@@ -354,10 +422,12 @@ def _full(
     hooks: Sequence[dict[str, Any]] = (),
 ) -> RunResponse:
     calls = [c for s in steps if (c := _call(s)) is not None]
+    live = ci_state(run.project_id, run.id) if run.status == "running" else None
     return RunResponse(
         **_summary(run).model_dump(),
         jobs=_jobs(jobs),
         usage=_usage(calls),
+        ci=CILiveOut(**live) if live else None,
         hooks=[HookOut(**h) for h in (run.hooks if run.hooks is not None else hooks)],
         steps=[
             StepOut(
@@ -489,6 +559,43 @@ def stop_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadService
         raise _not_found(exc) from exc
     except RunNotRunningError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+@router.post("/agent-runs/{run_id}/ci/approval", response_model=CILiveOut)
+def approve_ci_push(
+    project_id: uuid.UUID, run_id: uuid.UUID, body: CIApprovalIn, service: AgentReadServiceDep
+) -> CILiveOut:
+    """The user's answer to a run's CI push (once per run). Only a person calls this: it is not
+    a tool, and the agent has no way to reach it."""
+    try:
+        run = service.get_run(project_id, run_id)
+    except NotFound as exc:
+        raise _not_found(exc) from exc
+    if run.status != "running":
+        raise HTTPException(status.HTTP_409_CONFLICT, "The run has already ended")
+    try:
+        state = decide(
+            project_id,
+            run_id,
+            approve=body.approve,
+            approved_by=body.approved_by.strip() or "user",
+            keep_branches=body.keep_branches,
+        )
+    except CIApprovalError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return CILiveOut(**state)
+
+
+@checks_router.get("/ci/workflow-template", response_model=WorkflowTemplateOut)
+def ci_workflow_template() -> WorkflowTemplateOut:
+    """The workflow the user may add to the target repository; ArchPilotAI never pushes it."""
+    workflow = get_settings().agent_ci_workflow
+    return WorkflowTemplateOut(
+        path=f".github/workflows/{workflow}",
+        workflow_file=workflow,
+        artifact=ARTIFACT_NAME,
+        content=workflow_template(),
+    )
 
 
 @router.get("/agent-hooks", response_model=list[HookOut])
