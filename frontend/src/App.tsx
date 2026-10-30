@@ -127,7 +127,7 @@ export default function App() {
         <ProjectScopedPage
           page="documents"
           title="Documents"
-          subtitle="Upload .txt or .md files and preview their text."
+          subtitle="Upload .txt, .md, .pdf or .docx files and preview their text."
           projectId={scopedId}
         >
           {(id) => (

@@ -2,32 +2,48 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-ALLOWED_EXTENSIONS: dict[str, str] = {".txt": "text/plain", ".md": "text/markdown"}
-ACCEPTED_CLIENT_TYPES = {
-    "",
-    "application/octet-stream",
-    "text/plain",
-    "text/markdown",
-    "text/x-markdown",
+from app.domain.document_errors import (
+    DocumentError,
+    DocumentTooLargeError,
+    InvalidDocumentError,
+    UnsupportedDocumentTypeError,
+)
+from app.domain.document_extraction import (
+    ExtractionLimits,
+    extract_docx_text,
+    extract_pdf_text,
+)
+
+__all__ = [
+    "DocumentError",
+    "DocumentTooLargeError",
+    "ExtractionLimits",
+    "InvalidDocumentError",
+    "ParsedDocument",
+    "UnsupportedDocumentTypeError",
+    "parse_upload",
+    "sanitize_filename",
+]
+
+PDF_MEDIA_TYPE = "application/pdf"
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ALLOWED_EXTENSIONS: dict[str, str] = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".pdf": PDF_MEDIA_TYPE,
+    ".docx": DOCX_MEDIA_TYPE,
+}
+_GENERIC_CLIENT_TYPES = frozenset({"", "application/octet-stream"})
+_TEXT_CLIENT_TYPES = _GENERIC_CLIENT_TYPES | {"text/plain", "text/markdown", "text/x-markdown"}
+# Client-declared types accepted per extension; the extension decides how content is parsed.
+ACCEPTED_CLIENT_TYPES: dict[str, frozenset[str]] = {
+    ".txt": _TEXT_CLIENT_TYPES,
+    ".md": _TEXT_CLIENT_TYPES,
+    ".pdf": _GENERIC_CLIENT_TYPES | {PDF_MEDIA_TYPE, "application/x-pdf"},
+    ".docx": _GENERIC_CLIENT_TYPES | {DOCX_MEDIA_TYPE},
 }
 MAX_FILENAME_LENGTH = 255
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-
-
-class DocumentError(Exception):
-    """Base class for document validation errors."""
-
-
-class UnsupportedDocumentTypeError(DocumentError):
-    pass
-
-
-class DocumentTooLargeError(DocumentError):
-    pass
-
-
-class InvalidDocumentError(DocumentError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -48,22 +64,7 @@ def sanitize_filename(raw: str | None) -> str:
     return name
 
 
-def parse_upload(
-    filename: str | None, content_type: str | None, data: bytes, max_bytes: int
-) -> ParsedDocument:
-    name = sanitize_filename(filename)
-    lowered = name.lower()
-    extension = next((ext for ext in ALLOWED_EXTENSIONS if lowered.endswith(ext)), None)
-    if extension is None or len(name) == len(extension):
-        raise UnsupportedDocumentTypeError("Only .txt and .md files are supported")
-
-    client_type = (content_type or "").split(";")[0].strip().lower()
-    if client_type not in ACCEPTED_CLIENT_TYPES:
-        raise UnsupportedDocumentTypeError(f"Unsupported content type: {client_type}")
-
-    if len(data) > max_bytes:
-        raise DocumentTooLargeError(f"File exceeds the {max_bytes} byte limit")
-
+def _decode_text(data: bytes) -> str:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -71,6 +72,36 @@ def parse_upload(
     text = text.removeprefix("\ufeff")
     if "\x00" in text:
         raise InvalidDocumentError("File contains NUL characters")
+    return text
+
+
+def parse_upload(
+    filename: str | None,
+    content_type: str | None,
+    data: bytes,
+    max_bytes: int,
+    limits: ExtractionLimits | None = None,
+) -> ParsedDocument:
+    name = sanitize_filename(filename)
+    lowered = name.lower()
+    extension = next((ext for ext in ALLOWED_EXTENSIONS if lowered.endswith(ext)), None)
+    if extension is None or len(name) == len(extension):
+        raise UnsupportedDocumentTypeError("Only .txt, .md, .pdf and .docx files are supported")
+
+    client_type = (content_type or "").split(";")[0].strip().lower()
+    if client_type not in ACCEPTED_CLIENT_TYPES[extension]:
+        raise UnsupportedDocumentTypeError(f"Unsupported content type: {client_type}")
+
+    if len(data) > max_bytes:
+        raise DocumentTooLargeError(f"File exceeds the {max_bytes} byte limit")
+
+    limits = limits or ExtractionLimits()
+    if extension == ".pdf":
+        text = extract_pdf_text(data, limits)
+    elif extension == ".docx":
+        text = extract_docx_text(data, limits)
+    else:
+        text = _decode_text(data)
     if not text.strip():
         raise InvalidDocumentError("File is empty or whitespace only")
 

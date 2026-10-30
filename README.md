@@ -4,8 +4,9 @@ ArchPilotAI converts project ideas and requirements documents (later: existing r
 meetings and communications) into traceable requirements, architecture proposals and
 client-ready solution documents.
 
-Status: **early prototype** – health endpoint, project workspace and `.txt`/`.md` document
-upload per project (text stored in PostgreSQL, see ADR 0002). No RAG, agents, cloud or
+Status: **early prototype** – health endpoint, project workspace and `.txt`/`.md`/`.pdf`/`.docx`
+document upload per project (PDF/DOCX text is extracted on upload; text stored in PostgreSQL,
+see ADR 0002). No RAG, agents, cloud or
 authentication yet; this is a local-development prototype, not safe for public deployment. See [docs/product/mvp-scope.md](docs/product/mvp-scope.md).
 
 ## Layout

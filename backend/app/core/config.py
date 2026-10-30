@@ -133,6 +133,9 @@ class Settings(BaseSettings):
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)
+    # PDF/DOCX text extraction limits: pages apply to PDFs, characters to the extracted text.
+    max_document_pages: int = Field(default=300, ge=1, le=5_000)
+    max_extracted_chars: int = Field(default=1_000_000, ge=1_000, le=10_000_000)
 
     @field_validator("db_host", "db_name", "db_user")
     @classmethod

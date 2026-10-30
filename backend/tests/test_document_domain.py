@@ -53,7 +53,9 @@ def test_invalid_filenames(raw: str | None) -> None:
         sanitize_filename(raw)
 
 
-@pytest.mark.parametrize("name", ["a.pdf", "a.docx", "a", ".txt", "a.txt.exe", "a.md.png"])
+@pytest.mark.parametrize(
+    "name", ["a.doc", "a.docm", "a.pdf.exe", "a", ".txt", ".pdf", "a.txt.exe", "a.md.png"]
+)
 def test_unsupported_extensions(name: str) -> None:
     with pytest.raises(UnsupportedDocumentTypeError):
         parse_upload(name, "text/plain", b"x", LIMIT)

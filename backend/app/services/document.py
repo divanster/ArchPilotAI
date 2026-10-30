@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from sqlalchemy.exc import IntegrityError
 
-from app.domain.document import parse_upload
+from app.domain.document import ExtractionLimits, parse_upload
 from app.models.document import Document
 from app.repositories.document import DocumentRepository
 from app.repositories.project import ProjectRepository
@@ -32,11 +32,16 @@ class DocumentInUseError(Exception):
 
 class DocumentService:
     def __init__(
-        self, documents: DocumentRepository, projects: ProjectRepository, max_upload_bytes: int
+        self,
+        documents: DocumentRepository,
+        projects: ProjectRepository,
+        max_upload_bytes: int,
+        limits: ExtractionLimits | None = None,
     ) -> None:
         self._documents = documents
         self._projects = projects
         self._max_bytes = max_upload_bytes
+        self._limits = limits or ExtractionLimits()
 
     def _require_project(self, project_id: uuid.UUID) -> None:
         if self._projects.get(project_id) is None:
@@ -46,7 +51,7 @@ class DocumentService:
         self, project_id: uuid.UUID, filename: str | None, content_type: str | None, data: bytes
     ) -> Document:
         self._require_project(project_id)
-        parsed = parse_upload(filename, content_type, data, self._max_bytes)
+        parsed = parse_upload(filename, content_type, data, self._max_bytes, self._limits)
 
         existing = self._documents.find_by_hash(project_id, parsed.content_sha256)
         if existing is not None:

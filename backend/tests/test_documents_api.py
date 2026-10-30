@@ -92,8 +92,9 @@ def test_path_like_filename_is_metadata_only(client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("filename", "content_type", "expected"),
     [
-        ("report.pdf", "application/pdf", 415),
-        ("report.docx", "application/octet-stream", 415),
+        ("report.doc", "application/msword", 415),
+        ("report.docm", "application/octet-stream", 415),
+        ("report.pdf", "text/plain", 415),
         ("noextension", "text/plain", 415),
         ("notes.txt", "application/pdf", 415),
     ],

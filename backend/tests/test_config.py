@@ -43,3 +43,14 @@ def test_max_upload_bytes_default_and_validation() -> None:
     assert _settings(max_upload_bytes=2048).max_upload_bytes == 2048
     with pytest.raises(ValidationError):
         _settings(max_upload_bytes=0)
+
+
+def test_extraction_limits_default_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings().max_document_pages == 300
+    assert _settings().max_extracted_chars == 1_000_000
+    monkeypatch.setenv("ARCHPILOT_MAX_DOCUMENT_PAGES", "12")
+    monkeypatch.setenv("ARCHPILOT_MAX_EXTRACTED_CHARS", "5000")
+    assert (_settings().max_document_pages, _settings().max_extracted_chars) == (12, 5000)
+    for bad in ({"max_document_pages": 0}, {"max_extracted_chars": 10}):
+        with pytest.raises(ValidationError):
+            _settings(**bad)

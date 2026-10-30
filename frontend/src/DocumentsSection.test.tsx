@@ -50,15 +50,77 @@ describe("DocumentsSection", () => {
     fetchMock.mockResolvedValueOnce(json([]));
     render(<DocumentsSection projectId={PID} />);
     await screen.findByText("No documents yet.");
-    const file = new File(["x"], "evil.pdf", { type: "application/pdf" });
+    const file = new File(["x"], "evil.exe", {
+      type: "application/octet-stream",
+    });
     fireEvent.change(screen.getByLabelText("Document file"), {
       target: { files: [file] },
     });
     fireEvent.click(screen.getByRole("button", { name: "Upload document" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Only .txt and .md",
+      "Only .txt, .md, .pdf and .docx",
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts PDF and DOCX uploads", async () => {
+    const pdfDoc = {
+      ...doc,
+      filename: "spec.pdf",
+      media_type: "application/pdf",
+    };
+    fetchMock.mockResolvedValueOnce(json([]));
+    fetchMock.mockResolvedValueOnce(json(pdfDoc, 201));
+    render(<DocumentsSection projectId={PID} />);
+    await screen.findByText("No documents yet.");
+    const input = screen.getByLabelText("Document file");
+    expect(input).toHaveAttribute("accept", expect.stringContaining(".pdf"));
+    expect(input).toHaveAttribute("accept", expect.stringContaining(".docx"));
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["%PDF-1.4"], "spec.pdf", { type: "application/pdf" })],
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload document" }));
+    expect(
+      await screen.findByRole("button", { name: "spec.pdf" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["spec.pdf", "application/pdf", "PDF"],
+    [
+      "spec.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "DOCX",
+    ],
+  ])(
+    "notes that the %s preview is extracted text",
+    async (filename, mediaType, label) => {
+      const binary = { ...doc, filename, media_type: mediaType };
+      fetchMock.mockResolvedValueOnce(json([binary]));
+      fetchMock.mockResolvedValueOnce(
+        json({ ...binary, text: "The system shall list projects." }),
+      );
+      render(<DocumentsSection projectId={PID} />);
+      fireEvent.click(await screen.findByRole("button", { name: filename }));
+      expect(
+        await screen.findByText("The system shall list projects."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(new RegExp(`Text extracted from ${label}`)),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("shows no extraction note for plain text documents", async () => {
+    fetchMock.mockResolvedValueOnce(json([doc]));
+    fetchMock.mockResolvedValueOnce(json({ ...doc, text: "# Notes" }));
+    render(<DocumentsSection projectId={PID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "notes.md" }));
+    expect(await screen.findByText("# Notes")).toBeInTheDocument();
+    expect(screen.queryByText(/Text extracted from/)).toBeNull();
   });
 
   it("uploads a file and lists it", async () => {

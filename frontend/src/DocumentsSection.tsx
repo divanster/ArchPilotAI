@@ -10,14 +10,22 @@ import {
 } from "./api";
 import DocumentSearch from "./DocumentSearch";
 const PREVIEW_CHARS = 5000;
-const ALLOWED = /\.(txt|md)$/i;
+const ALLOWED = /\.(txt|md|pdf|docx)$/i;
+const PDF_TYPE = "application/pdf";
+const DOCX_TYPE =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const EXTRACTED_FROM: Record<string, string> = {
+  [PDF_TYPE]: "PDF",
+  [DOCX_TYPE]: "DOCX",
+};
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
 function validateFile(file: File): string | null {
-  if (!ALLOWED.test(file.name)) return "Only .txt and .md files are supported";
+  if (!ALLOWED.test(file.name))
+    return "Only .txt, .md, .pdf and .docx files are supported";
   if (file.size === 0) return "File is empty";
   if (file.size > MAX_UPLOAD_BYTES) return "File exceeds the 1 MiB limit";
   return null;
@@ -135,14 +143,15 @@ export default function DocumentsSection({
                 key={inputKey}
                 id={`doc-file-${projectId}`}
                 type="file"
-                accept=".txt,.md,text/plain,text/markdown"
+                accept={`.txt,.md,.pdf,.docx,text/plain,text/markdown,${PDF_TYPE},${DOCX_TYPE}`}
                 onChange={(e) => {
                   setFile(e.target.files?.[0] ?? null);
                   setUploadError(null);
                 }}
               />
               <span className="hint">
-                .txt or .md, up to 1 MiB. Synthetic data only.
+                .txt, .md, text-based .pdf or .docx, up to 1 MiB. Synthetic
+                data only.
               </span>
             </div>
             <button
@@ -241,6 +250,12 @@ export default function DocumentsSection({
           {preview && (
             <div aria-label="Document preview" role="group">
               <h3>{preview.filename}</h3>
+              {EXTRACTED_FROM[preview.media_type] && (
+                <p className="hint">
+                  Text extracted from {EXTRACTED_FROM[preview.media_type]};
+                  layout, images and formatting are not shown.
+                </p>
+              )}
               {/* Rendered as a plain text node: never interpreted as HTML or Markdown. */}
               <pre>{preview.text.slice(0, PREVIEW_CHARS)}</pre>
               {preview.text.length > PREVIEW_CHARS && <p>Preview truncated.</p>}

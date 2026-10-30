@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.db import get_database, make_session_factory
 from app.domain.chunking import ChunkSettings
+from app.domain.document_extraction import ExtractionLimits
 from app.domain.execution import ExecutionProvider, UnavailableExecutionProvider
 from app.domain.patch import PatchLimits
 from app.embeddings.contracts import EmbeddingProvider
@@ -85,8 +86,22 @@ def get_max_upload_bytes() -> int:
 MaxUploadBytesDep = Annotated[int, Depends(get_max_upload_bytes)]
 
 
-def get_document_service(session: SessionDep, max_bytes: MaxUploadBytesDep) -> DocumentService:
-    return DocumentService(DocumentRepository(session), ProjectRepository(session), max_bytes)
+def get_extraction_limits() -> ExtractionLimits:
+    settings = get_settings()
+    return ExtractionLimits(
+        max_pages=settings.max_document_pages, max_chars=settings.max_extracted_chars
+    )
+
+
+ExtractionLimitsDep = Annotated[ExtractionLimits, Depends(get_extraction_limits)]
+
+
+def get_document_service(
+    session: SessionDep, max_bytes: MaxUploadBytesDep, limits: ExtractionLimitsDep
+) -> DocumentService:
+    return DocumentService(
+        DocumentRepository(session), ProjectRepository(session), max_bytes, limits
+    )
 
 
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]

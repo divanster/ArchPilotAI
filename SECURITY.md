@@ -43,6 +43,13 @@ Uploaded documents are treated as inert data: never executed, never rendered as 
 logged, and filenames are metadata only. Upload size is capped by `ARCHPILOT_MAX_UPLOAD_BYTES`
 (default 1 MiB); a reverse proxy must also limit request bodies in any real deployment.
 
+PDF and DOCX uploads are reduced to their text layer with pypdf and python-docx; embedded
+JavaScript, actions, attachments, macros and scripts are never executed or extracted.
+Encrypted PDFs, PDFs without a text layer (scans) and macro-bearing DOCX files are rejected
+with 422. Extraction is capped by `ARCHPILOT_MAX_DOCUMENT_PAGES` (default 300 PDF pages) and
+`ARCHPILOT_MAX_EXTRACTED_CHARS` (default 1,000,000 characters); DOCX archives are also checked
+for excessive declared uncompressed size before parsing.
+
 ## Reporting
 
 Report vulnerabilities privately to the repository owner, not in public issues.
