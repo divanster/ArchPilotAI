@@ -257,6 +257,11 @@ class CaseResult:
     message: str
     file: str | None
     line: int | None
+    # JUnit rerun markers (flakyFailure, rerunFailure, ...): the case failed, then was re-run.
+    flaky: bool = False
+    # The failure text (stack trace), bounded. Used to link a failure to changed files; never
+    # part of as_json, so never sent to the model.
+    trace: str = ""
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -269,6 +274,8 @@ class CaseResult:
 
 
 FAILING = ("failed", "error")
+RERUN_TAGS = ("flakyFailure", "flakyError", "rerunFailure", "rerunError")
+MAX_TRACE_CHARS = 4_000
 
 
 def _file_of(classname: str, attrs: Mapping[str, str]) -> str | None:
@@ -302,12 +309,16 @@ def parse_junit(xml_text: str) -> list[CaseResult]:
         classname = node.get("classname", "")
         name = node.get("name", "")
         full = f"{classname}::{name}" if classname else name
-        outcome, message = "passed", ""
+        outcome, message, trace = "passed", "", ""
+        flaky = False
         for child in node:
-            if child.tag in ("failure", "error", "skipped"):
+            if child.tag in RERUN_TAGS:
+                flaky = True
+                trace = trace or (child.text or "")[:MAX_TRACE_CHARS]
+            if child.tag in ("failure", "error", "skipped") and outcome == "passed":
                 outcome = "failed" if child.tag == "failure" else child.tag
                 message = (child.get("message") or (child.text or "")).strip()
-                break
+                trace = (child.text or "")[:MAX_TRACE_CHARS]
         raw_line = node.get("line", "")
         cases.append(
             CaseResult(
@@ -316,6 +327,8 @@ def parse_junit(xml_text: str) -> list[CaseResult]:
                 message[:MAX_MESSAGE_CHARS],
                 _file_of(classname, node.attrib),
                 int(raw_line) if raw_line.isdigit() else None,
+                flaky,
+                trace,
             )
         )
     return cases

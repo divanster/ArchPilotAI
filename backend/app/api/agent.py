@@ -37,6 +37,7 @@ from app.services.ci_execution import (
     decide,
     workflow_template,
 )
+from app.services.ci_loop import CILoopError
 from app.services.patch import (
     PatchBusyError,
     PatchGateError,
@@ -278,6 +279,9 @@ class RunResponse(RunSummary):
     hooks: list[HookOut] = []  # the hooks active when the run started
     usage: RunUsage = RunUsage()  # totals of the model calls of the run
     ci: CILiveOut | None = None  # live CI state while the run is active
+    # The CI repair loop of a checklist-step run (Phase 13E): branch, approval, iterations,
+    # workflow, classified failures and budgets.
+    ci_loop: dict[str, Any] | None = None
 
 
 def _duration(run: AgentRun) -> int:
@@ -420,6 +424,7 @@ def _full(
     steps: list[AgentStep],
     jobs: Sequence[AgentJob] = (),
     hooks: Sequence[dict[str, Any]] = (),
+    ci_loop: dict[str, Any] | None = None,
 ) -> RunResponse:
     calls = [c for s in steps if (c := _call(s)) is not None]
     live = ci_state(run.project_id, run.id) if run.status == "running" else None
@@ -428,6 +433,7 @@ def _full(
         jobs=_jobs(jobs),
         usage=_usage(calls),
         ci=CILiveOut(**live) if live else None,
+        ci_loop=ci_loop,
         hooks=[HookOut(**h) for h in (run.hooks if run.hooks is not None else hooks)],
         steps=[
             StepOut(
@@ -511,11 +517,13 @@ def start_run(
             session.close()
 
     _spawn(job)
+    run = service.get_run(project_id, run_id)
     return _full(
-        service.get_run(project_id, run_id),
+        run,
         service.steps(project_id, run_id),
         service.jobs(project_id, run_id),
         service.hook_states(project_id),
+        service.ci_view(project_id, run),
     )
 
 
@@ -540,6 +548,7 @@ def get_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceD
             service.steps(project_id, run_id),
             service.jobs(project_id, run_id),
             service.hook_states(project_id),
+            service.ci_view(project_id, run),
         )
     except NotFound as exc:
         raise _not_found(exc) from exc
@@ -554,6 +563,7 @@ def stop_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadService
             service.steps(project_id, run_id),
             service.jobs(project_id, run_id),
             service.hook_states(project_id),
+            service.ci_view(project_id, run),
         )
     except NotFound as exc:
         raise _not_found(exc) from exc
@@ -584,6 +594,78 @@ def approve_ci_push(
     except CIApprovalError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return CILiveOut(**state)
+
+
+class CILoopApprovalIn(BaseModel):
+    approved_by: str = Field(min_length=1, max_length=100)
+
+
+class CIBranchDeleteIn(BaseModel):
+    confirm: bool = False
+
+
+def _loop_error(exc: CILoopError) -> HTTPException:
+    code = status.HTTP_404_NOT_FOUND if exc.code == "not_found" else status.HTTP_409_CONFLICT
+    return HTTPException(code, {"code": exc.code, "message": str(exc)})
+
+
+@router.get("/agent-runs/{run_id}/ci-loop/approval-info", response_model=dict[str, Any])
+def ci_loop_approval_info(
+    project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceDep
+) -> dict[str, Any]:
+    """What the person approves before the CI repair loop may push: repository, remote, the
+    exact CI branch, base branch, workflow, iteration limit and the protected-branch notice."""
+    try:
+        return service.ci_approval_info(project_id, run_id)
+    except NotFound as exc:
+        raise _not_found(exc) from exc
+    except CILoopError as exc:
+        raise _loop_error(exc) from exc
+
+
+@router.post("/agent-runs/{run_id}/ci-loop/approval", response_model=dict[str, Any])
+def ci_loop_approve(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    body: CILoopApprovalIn,
+    service: AgentReadServiceDep,
+) -> dict[str, Any]:
+    """One explicit approval for this run's CI branch only. A person calls this; it is not a
+    tool, and neither the agent nor MCP can reach it."""
+    try:
+        return service.ci_approve(project_id, run_id, body.approved_by.strip() or "user")
+    except NotFound as exc:
+        raise _not_found(exc) from exc
+    except CILoopError as exc:
+        raise _loop_error(exc) from exc
+
+
+@router.post("/agent-runs/{run_id}/ci-loop/revoke", response_model=dict[str, Any])
+def ci_loop_revoke(
+    project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceDep
+) -> dict[str, Any]:
+    try:
+        return service.ci_revoke(project_id, run_id)
+    except NotFound as exc:
+        raise _not_found(exc) from exc
+    except CILoopError as exc:
+        raise _loop_error(exc) from exc
+
+
+@router.post("/agent-runs/{run_id}/ci-loop/delete-branch", response_model=dict[str, Any])
+def ci_loop_delete_branch(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    body: CIBranchDeleteIn,
+    service: AgentReadServiceDep,
+) -> dict[str, Any]:
+    """Deletes an ended run's CI branch on request (never automatically)."""
+    try:
+        return service.ci_delete_branch(project_id, run_id, confirm=body.confirm)
+    except NotFound as exc:
+        raise _not_found(exc) from exc
+    except CILoopError as exc:
+        raise _loop_error(exc) from exc
 
 
 @checks_router.get("/ci/workflow-template", response_model=WorkflowTemplateOut)

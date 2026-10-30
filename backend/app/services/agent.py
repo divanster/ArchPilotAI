@@ -19,6 +19,7 @@ from app.domain.agent import (
     ContextInput,
     Draft,
     DraftFile,
+    FinishArgs,
     StepView,
     build_context,
     cut,
@@ -28,12 +29,14 @@ from app.domain.agent import (
 )
 from app.domain.architecture import safe_finish_reason
 from app.domain.checklist import Step as ChecklistStep
+from app.domain.ci_loop import GREEN, PATCH_ON_STOP, Batch, protected
 from app.domain.execution import (
     DEFAULT_OUTPUT_CAP,
     DEFAULT_TIMEOUT,
     ProviderUnavailableError,
     UnavailableExecutionProvider,
     UnknownCommandError,
+    check_command,
 )
 from app.domain.patch import (
     Failure,
@@ -56,7 +59,32 @@ from app.repositories.agent import AgentRepository
 from app.repositories.checklist import ChecklistRepository
 from app.repositories.patch import PatchRepository
 from app.services.agent_hooks import HookInput, get_hooks
-from app.services.agent_tools import AgentCall
+from app.services.agent_tools import AgentCall, draft_signature, static_check_data
+from app.services.ci_execution import CIError, _scrub, check_ci_branch
+from app.services.ci_loop import (
+    APPROVAL,
+    CHECKPOINT,
+    CLEANUP,
+    ITERATION,
+    LOOP_VARIANTS,
+    PROTECTION_NOTICE,
+    CILoop,
+    CILoopError,
+    LoopRun,
+    Validation,
+    add_row,
+    approval_record,
+    cancel_loop,
+    chain,
+    classify_counts,
+    grant_live,
+    latest_checkpoint,
+    loop_state,
+    release_loop,
+    revoke_live,
+    rows,
+    update_row,
+)
 from app.services.execution import TestRunner, cancel_run_jobs, release_run
 from app.services.hooks import Point
 from app.services.patch import PatchBusyError, PatchService, TaskNotFoundError
@@ -125,6 +153,23 @@ class AgentConfig:
     last_results: int
 
 
+@dataclass
+class _CIRun:
+    """The CI repair loop of one running checklist step run (Phase 13E)."""
+
+    loop: LoopRun
+    batch: Batch
+    check_cache: dict[str, Any]
+    steps: list[StepView]
+    call: AgentCall | None = None
+    auto_finished: str | None = None  # the draft signature an automatic finish was tried for
+
+
+# Agent stop reasons as CI loop terminal conditions.
+_CI_REASONS = {"user_stop": "cancelled", "token_budget": "token_limit"}
+_CI_FAILED = frozenset({"ci_unavailable", "reasoning_budget_exhausted"})
+
+
 def is_active(run_id: uuid.UUID) -> bool:
     return run_id in _active
 
@@ -146,7 +191,10 @@ class AgentService:
         tests: TestRunner | None = None,
         embedder: EmbeddingProvider | None = None,
         checklists: ChecklistRepository | None = None,
+        ci_loop: CILoop | None = None,
     ) -> None:
+        self._ci_loop = ci_loop
+        self._ci: dict[uuid.UUID, _CIRun] = {}
         self._embedder = embedder
         self._checklists = checklists
         self._step_runs: dict[uuid.UUID, StepRun] = {}
@@ -178,7 +226,8 @@ class AgentService:
         return list(self._agents.steps(project_id, run_id))
 
     def jobs(self, project_id: uuid.UUID, run_id: uuid.UUID) -> list[AgentJob]:
-        return list(self._agents.jobs(project_id, run_id))
+        """Test jobs; the CI loop's bookkeeping rows are shown through ci_view instead."""
+        return [j for j in self._agents.jobs(project_id, run_id) if j.variant not in LOOP_VARIANTS]
 
     def runs_for_task(
         self, project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str
@@ -192,6 +241,9 @@ class AgentService:
             raise RunNotRunningError("The run has already ended")
         self._agents.request_stop(project_id, run_id)
         cancel_run_jobs(run_id)
+        # Stop also ends the CI loop: polling wakes at once and the approval is revoked.
+        cancel_loop(run_id)
+        self._revoke_approval(project_id, run_id, "stopped")
         return self.get_run(project_id, run_id)
 
     def mark_interrupted(self, project_id: uuid.UUID, run_id: uuid.UUID) -> AgentRun:
@@ -225,6 +277,15 @@ class AgentService:
             checklist_step=checklist_id is not None,
         )
         overlay = self.checkpoint_overlay(project_id, resume_from) if resume_from else []
+        if resume_from and checklist_id is not None and self._ci_loop is not None:
+            checklist = self._checklists.get(project_id, checklist_id) if self._checklists else None
+            self._ci_loop.check_resume(
+                self._agents,
+                project_id,
+                resume_from,
+                checklist_id=checklist_id,
+                checklist_version=checklist.version if checklist is not None else None,
+            )
         if not _agent_lock.acquire(blocking=False):
             raise PatchBusyError("An agent run is already in progress")
         try:
@@ -309,6 +370,8 @@ class AgentService:
                 logger.error("agent run not closed run=%s error=%s", run_id, type(inner).__name__)
         finally:
             release_run(run_id)
+            release_loop(run_id)
+            self._ci.pop(run_id, None)
             self._tests.release(run_id)
             _active.discard(run_id)
             _agent_lock.release()
@@ -393,17 +456,29 @@ class AgentService:
         tests_ok, _ = self._tests.status()
         if tests_ok:
             brief["run_tests"] = "available: pytest, ruff, mypy, tsc, npm test"
-        offered = self.offered_tools()
+        check_cache: dict[str, Any] = {}
+        steps: list[StepView] = []
+        started = self._clock()
+        ci = self._ci_start(project_id, run, check_cache, steps, started)
+        if ci is not None:
+            config = ci.loop.loop.config
+            brief["run_tests"] = f"runs in GitHub Actions CI ({config.command})"
+            brief["ci_loop"] = (
+                "Your edits are tested in the repository's CI, in batches: the draft is pushed "
+                "and tested when you call run_tests or finish, when the static checks after an "
+                f"edit find nothing, or after {config.max_edits} edits. You then see new "
+                "failures in changed files (or linked to them), flaky tests and counts of the "
+                f"rest. At most {config.max_iterations} CI iterations. finish succeeds only "
+                "when CI is green for the current draft."
+            )
+        offered = self.offered_tools(ci=ci is not None)
         system_prompt = build_system_prompt(offered)
         tool_models = {t.name: t.args_model for t in self._agent_tools().values()}
-        steps: list[StepView] = []
         disabled_hooks = (
             frozenset(h["name"] for h in run.hooks if not h.get("enabled"))
             if run.hooks is not None
             else frozenset(self._agents.disabled_hooks(project_id))
         )
-        check_cache: dict[str, Any] = {}
-        started = self._clock()
         total_latency = 0
         previous: tuple[str, str | None, str | None] | None = None
         repeats = 0
@@ -415,6 +490,15 @@ class AgentService:
             self._agents.refresh(run)
             elapsed = self._clock() - started
             reason = self._limit(run, elapsed)
+            if ci is not None:
+                if reason is None and ci.loop.revoked():
+                    reason = "approval_revoked"
+                if reason is not None:
+                    self._ci_terminal(
+                        ci, _CI_REASONS.get(reason, reason), project_id, plan, task, draft, run,
+                        warnings, total_latency, based_on, started,
+                    )  # fmt: skip
+                    return
             if reason:
                 self._end(run, "stopped", reason, elapsed)
                 return
@@ -449,6 +533,13 @@ class AgentService:
                 )
             except LLMReasoningBudgetExhaustedError:
                 logger.error("agent provider reasoning budget exhausted run=%s", run_id)
+                if ci is not None:
+                    run.summary = "Reasoning budget exhausted: raise the deployment's budget."
+                    self._ci_terminal(
+                        ci, "reasoning_budget_exhausted", project_id, plan, task, draft, run,
+                        warnings, total_latency, based_on, started,
+                    )  # fmt: skip
+                    return
                 self._end(
                     run,
                     "failed",
@@ -511,6 +602,10 @@ class AgentService:
                 error = exc
                 path = path or (cut(exc.path, 300) if exc.path else None)
                 result = {"error": exc.code, "message": str(exc), **exc.data}
+            if ci is not None and error is None and not done:
+                feed = self._ci_after_action(ci, action_name, draft)
+                if feed is not None:
+                    result["ci"] = feed
             args = {**args, "call": model_call}
             if hook_log:
                 args = {**args, "hooks": hook_log}
@@ -551,8 +646,22 @@ class AgentService:
                 )
             )
             if done:
-                self._end(run, "finished", "finished", self._clock() - started, run.summary)
+                reason = GREEN if ci is not None else "finished"
+                self._end(run, "finished", reason, self._clock() - started, run.summary)
                 return
+            if ci is not None:
+                if ci.loop.terminal is not None:
+                    self._ci_terminal(
+                        ci, ci.loop.terminal, project_id, plan, task, draft, run, warnings,
+                        total_latency, based_on, started,
+                    )  # fmt: skip
+                    return
+                if self._ci_auto_finish(
+                    ci, project_id, plan, task, tasks, draft, run, warnings, total_latency,
+                    based_on, disabled_hooks,
+                ):  # fmt: skip
+                    self._end(run, "finished", GREEN, self._clock() - started, run.summary)
+                    return
             signature = (action_name, error.code if error else None, path)
             if error is None:
                 previous, repeats = None, 0
@@ -603,6 +712,397 @@ class AgentService:
                     project_id, run_id, path, file.content, file.base_hash, file.deleted
                 )
         draft.dirty.clear()
+
+    # ---- CI repair loop (Phase 13E) --------------------------------------------------------
+
+    def _ci_mode(self, project_id: uuid.UUID, run: AgentRun) -> bool:
+        return (
+            self._ci_loop is not None
+            and run.checklist_id is not None
+            and self._ci_loop.available(project_id)
+        )
+
+    def _checklist_version(self, project_id: uuid.UUID, run: AgentRun) -> int | None:
+        if run.checklist_id is None or self._checklists is None:
+            return None
+        found = self._checklists.get(project_id, run.checklist_id)
+        return found.version if found is not None else None
+
+    def _ci_start(
+        self,
+        project_id: uuid.UUID,
+        run: AgentRun,
+        check_cache: dict[str, Any],
+        steps: list[StepView],
+        started: float,
+    ) -> _CIRun | None:
+        if self._ci_loop is None or not self._ci_mode(project_id, run):
+            return None
+        loop = self._ci_loop.start(
+            self._agents,
+            run,
+            clock=self._clock,
+            deadline=started + run.time_limit_seconds,
+            checklist_version=self._checklist_version(project_id, run),
+        )
+        ci = _CIRun(loop, Batch(self._ci_loop.config.max_edits), check_cache, steps)
+        self._ci[run.id] = ci
+        return ci
+
+    def _ci_after_action(self, ci: _CIRun, action_name: str, draft: Draft) -> dict[str, Any] | None:
+        """An edit joins the batch; a full or statically clean batch is validated in CI."""
+        cache = ci.check_cache
+        static = None
+        if cache.get("fresh") and cache.get("sig") == draft_signature(draft):
+            static = int((cache.get("data") or {}).get("total") or 0)
+        if ci.batch.after(action_name, True, static) is None:
+            return None
+        try:
+            return self._ci_validate(ci, draft).feed
+        except ActionError as exc:
+            return {"status": exc.code, "message": str(exc)}
+
+    def _ci_static(self, ci: _CIRun, draft: Draft) -> dict[str, Any]:
+        cache = ci.check_cache
+        if cache.get("sig") == draft_signature(draft) and isinstance(cache.get("data"), dict):
+            return dict(cache["data"])
+        assert ci.call is not None
+        return static_check_data(ci.call)  # ActionError("checks_unavailable") goes to the model
+
+    def _ci_validate(self, ci: _CIRun, draft: Draft) -> Validation:
+        static = self._ci_static(ci, draft)
+        total = int(static.get("total") or 0)
+        changes = draft.changes()
+        validation = ci.loop.validate(
+            files={p: f.content for p, f in draft.live().items()},
+            draft_sig=draft_signature(draft),
+            static_total=total,
+            summaries=[f"{s.step_no} {s.action} {s.summary}" for s in ci.steps],
+            file_hashes={
+                c.path: None if c.change == "delete" else content_hash(c.content) for c in changes
+            },
+        )
+        if validation.status == "static_failed":
+            validation.feed["findings"] = list(static.get("findings") or [])[:MAX_NOTE_FINDINGS]
+        ci.batch.reset()
+        return validation
+
+    def _ci_auto_finish(
+        self,
+        ci: _CIRun,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        tasks: Any,
+        draft: Draft,
+        run: AgentRun,
+        warnings: list[str],
+        latency_ms: int,
+        based_on: int | None,
+        disabled_hooks: frozenset[str],
+    ) -> bool:
+        """Green for the current draft: finish without another model call (once per draft).
+        A refusal by a finish gate is a step the model sees; the loop goes on."""
+        signature = draft_signature(draft)
+        if ci.loop.green_sig != signature or ci.auto_finished == signature:
+            return False
+        ci.auto_finished = signature
+        hook_log: list[dict[str, str]] = []
+        summary = f"CI green after {ci.loop.iteration} iteration(s)"
+        error: ActionError | None = None
+        done = False
+        try:
+            result, done = self._act(
+                Action("finish", FinishArgs(summary=summary)), project_id, plan, task, tasks,
+                draft, run, warnings, latency_ms, run.provider, run.model, based_on,
+                hook_log=hook_log, disabled_hooks=disabled_hooks, check_cache=ci.check_cache,
+            )  # fmt: skip
+        except ActionError as exc:
+            error = exc
+            result = {"error": exc.code, "message": str(exc), **exc.data}
+        step_no = run.steps_taken + 1
+        text = dump(result)
+        short = cut(str(error) if error else str(result.pop("summary", "ok")), MAX_SUMMARY_CHARS)
+        self._save_draft(project_id, run.id, draft)
+        self._agents.add_step(
+            AgentStep(
+                id=uuid.uuid4(),
+                run_id=run.id,
+                project_id=project_id,
+                step_no=step_no,
+                action="finish",
+                path=None,
+                args={"auto": "ci_green", **({"hooks": hook_log} if hook_log else {})},
+                status="error" if error else "ok",
+                error_code=error.code if error else None,
+                result_summary=short,
+                result=text,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+            )
+        )
+        run.steps_taken = step_no
+        self._agents.commit()
+        ci.steps.append(
+            StepView(
+                step_no, "finish", None, "error" if error else "ok",
+                error.code if error else None, short, text,
+            )
+        )  # fmt: skip
+        return done
+
+    def _ci_terminal(
+        self,
+        ci: _CIRun,
+        reason: str,
+        project_id: uuid.UUID,
+        plan: ImplementationPlan,
+        task: PlanTask,
+        draft: Draft,
+        run: AgentRun,
+        warnings: list[str],
+        latency_ms: int,
+        based_on: int | None,
+        started: float,
+    ) -> None:
+        """A non-green end. A reviewable patch only when deterministic validation passes and
+        the stop is one to review (not a cancel, a revoke or an unavailable CI)."""
+        loop = ci.loop
+        if loop.terminal is None:
+            loop.terminal = reason
+        run.summary = cut(f"CI loop stopped: {reason}. {loop.message or ''}".strip(), 1000)
+        if reason in PATCH_ON_STOP and draft.changes():
+            call = AgentCall(
+                self, project_id, plan, task, draft, run, warnings, latency_ms, run.provider,
+                run.model, based_on,
+            )  # fmt: skip
+            try:
+                valid = not self.draft_failures(call) and not static_check_data(call)["total"]
+            except ActionError:
+                valid = False
+            if valid:
+                try:
+                    self._propose_draft(
+                        project_id, plan, task, draft, run, warnings, latency_ms, run.provider,
+                        run.model, loop.stop_notes(reason), [], [], based_on,
+                    )  # fmt: skip
+                except ActionError as exc:
+                    logger.warning("ci loop draft not proposed run=%s code=%s", run.id, exc.code)
+        status = "failed" if reason in _CI_FAILED else "stopped"
+        self._end(run, status, reason, self._clock() - started, run.summary)
+
+    def _revoke_approval(self, project_id: uuid.UUID, run_id: uuid.UUID, how: str) -> bool:
+        """Revokes the run's CI approval, or denies a pending one. True when one was active."""
+        live = loop_state(project_id, run_id)
+        waiting = live is not None and live["approval"] in ("pending", "approved")
+        revoke_live(project_id, run_id)
+        found = approval_record(self._agents, project_id, run_id)
+        now = self._agents.now().isoformat()
+        if found is None:
+            if waiting:  # a denial is final too: the run cannot be approved afterwards
+                add_row(
+                    self._agents, project_id, run_id, APPROVAL,
+                    {
+                        "project_id": str(project_id), "run_id": str(run_id),
+                        "approved_by": None, "approved_at": None, "revoked_at": now,
+                        "revoked": how,
+                    },
+                )  # fmt: skip
+            return waiting
+        if (found.summary or {}).get("revoked_at"):
+            return waiting
+        update_row(self._agents, found, revoked_at=now, revoked=how)
+        return True
+
+    def _ci_run(self, project_id: uuid.UUID, run_id: uuid.UUID) -> tuple[AgentRun, CILoop]:
+        run = self.get_run(project_id, run_id)
+        if self._ci_loop is None or run.checklist_id is None:
+            raise CILoopError("not_found", "This run has no CI repair loop")
+        return run, self._ci_loop
+
+    def ci_approval_info(self, project_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
+        """What the person approves: shown before the approval, never the token."""
+        run, loop = self._ci_run(project_id, run_id)
+        try:
+            target = loop.target(project_id)
+        except ProviderUnavailableError as exc:
+            raise CILoopError("ci_unavailable", str(exc)) from None
+        branch = loop.branch_for(self._agents, project_id, run.id)
+        found = approval_record(self._agents, project_id, run.id)
+        return {
+            "run_id": str(run.id),
+            "coding_step": run.checklist_step_key,
+            "repository": f"{target.owner}/{target.repo}",
+            "remote": target.html_repo,
+            "branch": branch,
+            "base_branch": target.base_branch,
+            "workflow": loop.config.workflow,
+            "command": loop.config.command,
+            "max_iterations": loop.config.max_iterations,
+            "protected_notice": PROTECTION_NOTICE,
+            "approved": found is not None,
+        }
+
+    def ci_approve(
+        self, project_id: uuid.UUID, run_id: uuid.UUID, approved_by: str
+    ) -> dict[str, Any]:
+        """One explicit approval for this run and its exact CI branch; never extended or
+        reused. Only a person calls this (the API); no agent or MCP tool reaches it."""
+        run, loop = self._ci_run(project_id, run_id)
+        if run.status != "running":
+            raise CILoopError("not_running", "The run has ended")
+        if approval_record(self._agents, project_id, run.id) is not None:
+            raise CILoopError("already_decided", "The CI branch of this run was already decided")
+        info = self.ci_approval_info(project_id, run_id)
+        target = loop.target(project_id)
+        try:
+            check_ci_branch(
+                info["branch"],
+                prefix=target.branch_prefix,
+                base_branch=target.base_branch,
+                default_branch=target.base_branch,
+            )
+        except CIError as exc:
+            raise CILoopError("protected_branch", str(exc)) from None
+        if protected(info["branch"], base_branch=target.base_branch, default_branch="main"):
+            raise CILoopError("protected_branch", "A protected branch can never be approved")
+        at = self._agents.now().isoformat()
+        add_row(
+            self._agents,
+            project_id,
+            run.id,
+            APPROVAL,
+            {
+                "project_id": str(project_id),
+                "run_id": str(run.id),
+                "repository": info["repository"],
+                "remote": info["remote"],
+                "branch": info["branch"],
+                "base_branch": info["base_branch"],
+                "approved_by": approved_by,
+                "approved_at": at,
+                "revoked_at": None,
+            },
+        )
+        grant_live(project_id, run.id, approved_by, at)
+        logger.info("ci loop approved run=%s", run.id)
+        return self.ci_view(project_id, run) or {}
+
+    def ci_revoke(self, project_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
+        run, _ = self._ci_run(project_id, run_id)
+        if not self._revoke_approval(project_id, run.id, "revoked"):
+            raise CILoopError("not_approved", "There is no active CI approval to revoke")
+        logger.info("ci loop approval revoked run=%s", run.id)
+        return self.ci_view(project_id, run) or {}
+
+    def ci_delete_branch(
+        self, project_id: uuid.UUID, run_id: uuid.UUID, *, confirm: bool
+    ) -> dict[str, Any]:
+        """Deletes the CI branch of an ended run on request; never while an open pull request
+        uses it, and only with an explicit confirmation while a patch references it. Logs and
+        parsed results stay."""
+        run, loop = self._ci_run(project_id, run_id)
+        if run.status == "running":
+            raise CILoopError("not_ended", "The run is still running")
+        checkpoint = latest_checkpoint(self._agents, project_id, run.id)
+        branch = str((checkpoint or {}).get("branch") or "")
+        if not branch:
+            raise CILoopError("no_branch", "This run has no CI branch")
+        ids = chain(self._agents, project_id, run.id)
+        if rows(self._agents, project_id, ids, CLEANUP):
+            raise CILoopError("already_deleted", "The CI branch was already deleted")
+        try:
+            target = loop.target(project_id)
+            if loop.open_pulls(target, branch):
+                raise CILoopError("in_use", "An open pull request uses the CI branch")
+            if run.patch_id is not None and not confirm:
+                raise CILoopError(
+                    "confirm_required", "A proposed patch references the CI branch; confirm"
+                )
+            loop.delete_branch(target, branch)
+        except ProviderUnavailableError as exc:
+            raise CILoopError("ci_unavailable", str(exc)) from None
+        except CIError as exc:
+            raise CILoopError("ci_unavailable", _scrub(str(exc), target.token)) from None
+        add_row(
+            self._agents, project_id, run.id, CLEANUP,
+            {"branch": branch, "deleted_at": self._agents.now().isoformat()},
+        )  # fmt: skip
+        return self.ci_view(project_id, run) or {}
+
+    def ci_view(self, project_id: uuid.UUID, run: AgentRun) -> dict[str, Any] | None:
+        """The run panel's CI loop block (None for a run without one)."""
+        if self._ci_loop is None or run.checklist_id is None:
+            return None
+        live = loop_state(project_id, run.id)
+        iterations = [
+            dict(r.summary or {}) for r in rows(self._agents, project_id, [run.id], ITERATION)
+        ]
+        checkpoints = rows(self._agents, project_id, [run.id], CHECKPOINT)
+        approval = approval_record(self._agents, project_id, run.id)
+        if (
+            live is None
+            and not iterations
+            and not checkpoints
+            and approval is None
+            and not self._ci_loop.available(project_id)
+        ):
+            return None
+        tried = [i for i in iterations if not i.get("baseline")]
+        latest = tried[-1] if tried else {}
+        results = list(latest.get("results") or [])
+        actionable = set(latest.get("actionable") or [])
+        checkpoint = dict(checkpoints[-1].summary or {}) if checkpoints else {}
+        record = dict(approval.summary or {}) if approval is not None else {}
+        ids = chain(self._agents, project_id, run.id)
+        branch = (live or {}).get("branch") or checkpoint.get("branch")
+        if not branch:
+            try:
+                branch = self._ci_loop.branch_for(self._agents, project_id, run.id)
+            except ProviderUnavailableError:
+                branch = None
+        status = "none"
+        if record:
+            status = "revoked" if record.get("revoked_at") else "approved"
+        elif live is not None and live["approval"] == "pending":
+            status = "pending"
+        elapsed = (run.duration_ms or 0) / 1000
+        if run.status == "running":
+            began = run.started_at
+            started = began if began.tzinfo else began.replace(tzinfo=UTC)
+            elapsed = max((self._agents.now() - started).total_seconds(), 0.0)
+        baseline = next((i for i in iterations if i.get("baseline")), None)
+        return {
+            "coding_step": run.checklist_step_key,
+            "branch": branch,
+            "approval": status,
+            "approved_by": record.get("approved_by"),
+            "approved_at": record.get("approved_at"),
+            "phase": (live or {}).get("phase") or ("ended" if run.status != "running" else "idle"),
+            "iteration": int(latest.get("iteration") or checkpoint.get("iteration") or 0),
+            "max_iterations": self._ci_loop.config.max_iterations,
+            "commit": (live or {}).get("commit")
+            or latest.get("commit")
+            or checkpoint.get("pushed_commit"),
+            "workflow_status": (live or {}).get("workflow_status") or latest.get("conclusion"),
+            "workflow_url": (live or {}).get("workflow_url") or latest.get("workflow_url"),
+            "baseline_url": baseline.get("workflow_url") if baseline else None,
+            "counts": classify_counts(latest),
+            "actionable": [r for r in results if r.get("signature") in actionable][:50],
+            "elsewhere": [
+                r for r in results if r.get("novelty") == "new" and r.get("scope") == "elsewhere"
+            ][:50],  # fmt: skip
+            "flaky": [r for r in results if r.get("novelty") == "flaky"][:50],
+            "green": bool(latest.get("green")),
+            "terminal": run.stop_reason if run.status != "running" else None,
+            "branch_deleted": bool(rows(self._agents, project_id, ids, CLEANUP)),
+            "tokens_used": run.input_tokens + run.output_tokens,
+            "token_budget": run.token_budget,
+            "elapsed_seconds": round(elapsed, 1),
+            "time_limit_seconds": run.time_limit_seconds,
+            "message": (live or {}).get("message"),
+        }
 
     # ---- checklist steps -------------------------------------------------------------------
 
@@ -856,10 +1356,11 @@ class AgentService:
     def _agent_tools(self) -> dict[str, Tool]:
         return {t.name: t for t in get_registry().exposed("agent")}
 
-    def offered_tools(self) -> list[Tool]:
-        """The tools listed to the model: run_tests only with a real execution provider."""
+    def offered_tools(self, *, ci: bool = False) -> list[Tool]:
+        """The tools listed to the model: run_tests only with a real execution provider or in
+        the CI repair loop (where it asks for a CI iteration)."""
         tests_ok, _ = self._tests.status()
-        return [t for t in self._agent_tools().values() if tests_ok or not t.needs_execution]
+        return [t for t in self._agent_tools().values() if ci or tests_ok or not t.needs_execution]
 
     def _act(
         self,
@@ -887,6 +1388,9 @@ class AgentService:
         call.criteria = self._criteria(run)
         if check_cache is not None:
             call.check_cache = check_cache
+        ci = self._ci.get(run.id)
+        if ci is not None:
+            ci.call = call
         tool = get_registry().get("agent", action.name)
         log = hook_log if hook_log is not None else []
         hooks = get_hooks()
@@ -923,7 +1427,15 @@ class AgentService:
         warnings: list[str],
     ) -> dict[str, Any]:
         """Runs through the execution provider only; never locally. Unavailable is a result the
-        model sees, and a note on the patch."""
+        model sees, and a note on the patch. In the CI repair loop it asks for a CI iteration."""
+        ci = self._ci.get(run.id)
+        if ci is not None:
+            try:
+                check_command(command_id)
+            except UnknownCommandError:
+                raise ActionError("unknown_command") from None
+            validation = self._ci_validate(ci, draft)
+            return {"summary": f"CI: {validation.status}", "ci": validation.feed}
         files = {p: f.content for p, f in draft.live().items()}
         baseline = {f.path: f.content for f in self._patch_repo.workspace(project_id)}
         # A job can wait minutes (CI approval, a workflow run): hold no write transaction meanwhile,
@@ -1005,6 +1517,19 @@ class AgentService:
     ) -> tuple[dict[str, Any], bool]:
         # The before_finish hooks have validated the draft and applied the coverage gate.
         notes = ([a.summary] if a.summary else []) + list(hook_notes) + list(a.notes)
+        ci = self._ci.get(run.id)
+        if ci is not None:
+            if ci.loop.green_sig != draft_signature(draft):
+                validation = self._ci_validate(ci, draft)
+                if validation.terminal is not None:
+                    return {"summary": f"CI: {validation.terminal}", "ci": validation.feed}, False
+                if validation.status != "green":
+                    raise ActionError(
+                        "ci_not_green",
+                        "Finish refused: CI is not green for this draft; fix the failures shown.",
+                        data={"ci": validation.feed},
+                    )
+            notes = ci.loop.green_notes(warnings) + notes
         version = self._propose_draft(
             project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
             notes, a.assumptions, a.test_suggestions, based_on,

@@ -128,6 +128,23 @@ class AgentRepository:
         )
         return self._session.scalars(stmt).all()
 
+    def loop_rows(
+        self, project_id: uuid.UUID, run_ids: Sequence[uuid.UUID], variant: str
+    ) -> Sequence[AgentJob]:
+        """CI loop rows (approval, checkpoints, ...), re-read: another session may write them."""
+        if not run_ids:
+            return []
+        stmt = (
+            select(AgentJob)
+            .where(
+                AgentJob.project_id == project_id,
+                AgentJob.run_id.in_(run_ids),
+                AgentJob.variant == variant,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return self._session.scalars(stmt).all()
+
     def commit(self) -> None:
         try:
             self._session.commit()

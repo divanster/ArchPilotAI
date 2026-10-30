@@ -36,6 +36,7 @@ from app.services.checklist import (
     DeciderError,
     StepState,
 )
+from app.services.ci_loop import CIResumeRefusedError
 from app.services.patch import PatchBusyError, PatchGateError
 
 router = APIRouter(
@@ -294,6 +295,11 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
     if isinstance(exc, AgentRevisionError):
         return HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+    if isinstance(exc, CIResumeRefusedError):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": exc.code, "message": str(exc), "problems": exc.codes},
+        )
     raise exc
 
 
@@ -308,6 +314,7 @@ _HANDLED = (
     CheckpointStaleError,
     PatchBusyError,
     AgentRevisionError,
+    CIResumeRefusedError,
 )
 
 
@@ -439,11 +446,13 @@ def _launch(
 
     agent_api._spawn(job)
     agent = service.agent
+    run = agent.get_run(project_id, run_id)
     return agent_api._full(
-        agent.get_run(project_id, run_id),
+        run,
         agent.steps(project_id, run_id),
         agent.jobs(project_id, run_id),
         agent.hook_states(project_id),
+        agent.ci_view(project_id, run),
     )
 
 

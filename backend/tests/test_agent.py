@@ -52,7 +52,7 @@ from tests.test_requirements_api import use
 world = _world_fixture  # re-exported so pytest finds the fixture here
 
 
-def action(name: str, **args: Any) -> str:
+def action(name: str, /, **args: Any) -> str:
     return json.dumps({"action": name, "args": args})
 
 

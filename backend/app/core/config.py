@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     agent_ci_timeout_seconds: float = Field(default=900.0, gt=0, le=7200)
     agent_ci_approval_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     agent_ci_poll_seconds: float = Field(default=10.0, ge=1, le=120)
+    # CI repair loop (Phase 13E, checklist steps with the github_actions provider): the most CI
+    # iterations of one run, the edits batched before a push and the command the workflow runs.
+    agent_ci_max_iterations: int = Field(default=5, ge=1, le=20)
+    agent_ci_max_edits_per_batch: int = Field(default=5, ge=1, le=50)
+    agent_ci_loop_command: Literal["pytest", "ruff", "mypy", "tsc", "npm test"] = "pytest"
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

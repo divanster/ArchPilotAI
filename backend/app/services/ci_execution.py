@@ -412,6 +412,60 @@ class _Api:
         raise CIError("The artifact download was redirected too often")
 
 
+def draft_changes(
+    accepted: Mapping[str, str], files: Mapping[str, str]
+) -> tuple[dict[str, str], list[str]]:
+    """What the draft changes against the accepted workspace (the patch to apply on the base
+    branch). Workflows and other CI configuration are never pushed."""
+    upserts = {p: c for p, c in files.items() if accepted.get(p) != c}
+    deletions = sorted(p for p in accepted if p not in files)
+    if len(upserts) + len(deletions) > MAX_COMMIT_FILES:
+        raise CIError("Refused: the draft changes too many files for one CI commit")
+    for path in [*upserts, *deletions]:
+        if path.replace("\\", "/").lower().startswith(".github/"):
+            raise CIError("Refused: the draft changes files under .github/")
+        if path_problem(path) is not None:
+            raise CIError("Refused: the draft holds a path that cannot be pushed")
+    return upserts, deletions
+
+
+def build_tree(
+    api: _Api, base_tree: str, upserts: Mapping[str, str], deletions: list[str]
+) -> tuple[str, list[dict[str, Any]]]:
+    """A tree of the base tree with the draft's changes applied (the base tree when nothing
+    differs), and the entries written."""
+    listing = api.json(
+        api.call("GET", f"git/trees/{base_tree}", "the base tree read", params={"recursive": "1"})
+    )
+    known = {
+        str(e.get("path")): e
+        for e in listing.get("tree") or []
+        if isinstance(e, dict) and e.get("type") == "blob"
+    }
+    entries: list[dict[str, Any]] = []
+    for path, content in sorted(upserts.items()):
+        existing = known.get(path)
+        if existing is not None and existing.get("sha") == git_blob_sha(content):
+            continue
+        mode = str(existing.get("mode")) if existing is not None else "100644"
+        entries.append({"path": path, "mode": mode, "type": "blob", "content": content})
+    for path in deletions:
+        if path in known:
+            entries.append(
+                {"path": path, "mode": str(known[path].get("mode")), "type": "blob", "sha": None}
+            )
+    if not entries:
+        return base_tree, entries
+    created = api.call(
+        "POST",
+        "git/trees",
+        "the tree creation",
+        ok=(201,),
+        json={"base_tree": base_tree, "tree": entries},
+    )
+    return str(api.json(created).get("sha") or ""), entries
+
+
 # ---- the provider ------------------------------------------------------------------------------
 
 
@@ -652,20 +706,8 @@ class CIExecutionProvider:
         return {"exit_code": None, "timed_out": True, "stderr": "CI job timed out"}
 
     def _changes(self, files: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
-        """What the draft changes against the accepted workspace (the patch to apply on the base
-        branch). Workflows and other CI configuration are never pushed."""
         assert self._project_id is not None
-        accepted = self._workspace(self._project_id)
-        upserts = {p: c for p, c in files.items() if accepted.get(p) != c}
-        deletions = sorted(p for p in accepted if p not in files)
-        if len(upserts) + len(deletions) > MAX_COMMIT_FILES:
-            raise CIError("Refused: the draft changes too many files for one CI commit")
-        for path in [*upserts, *deletions]:
-            if path.replace("\\", "/").lower().startswith(".github/"):
-                raise CIError("Refused: the draft changes files under .github/")
-            if path_problem(path) is not None:
-                raise CIError("Refused: the draft holds a path that cannot be pushed")
-        return upserts, deletions
+        return draft_changes(self._workspace(self._project_id), files)
 
     def _await_approval(
         self, state: _RunState, cancelled: Callable[[], bool], deadline: float
@@ -701,43 +743,7 @@ class CIExecutionProvider:
         base_sha = str((head.get("object") or {}).get("sha") or "")
         commit = api.json(api.call("GET", f"git/commits/{base_sha}", "the base commit read"))
         base_tree = str((commit.get("tree") or {}).get("sha") or "")
-        listing = api.json(
-            api.call(
-                "GET", f"git/trees/{base_tree}", "the base tree read", params={"recursive": "1"}
-            )
-        )
-        known = {
-            str(e.get("path")): e
-            for e in listing.get("tree") or []
-            if isinstance(e, dict) and e.get("type") == "blob"
-        }
-        entries: list[dict[str, Any]] = []
-        for path, content in sorted(upserts.items()):
-            existing = known.get(path)
-            if existing is not None and existing.get("sha") == git_blob_sha(content):
-                continue
-            mode = str(existing.get("mode")) if existing is not None else "100644"
-            entries.append({"path": path, "mode": mode, "type": "blob", "content": content})
-        for path in deletions:
-            if path in known:
-                entries.append(
-                    {
-                        "path": path,
-                        "mode": str(known[path].get("mode")),
-                        "type": "blob",
-                        "sha": None,
-                    }
-                )
-        tree_sha = base_tree
-        if entries:
-            created = api.call(
-                "POST",
-                "git/trees",
-                "the tree creation",
-                ok=(201,),
-                json={"base_tree": base_tree, "tree": entries},
-            )
-            tree_sha = str(api.json(created).get("sha") or "")
+        tree_sha, entries = build_tree(api, base_tree, upserts, deletions)
 
         ref_path = f"git/ref/heads/{quote(branch, safe='/')}"
         existing_ref = api.call("GET", ref_path, "the CI branch read", ok=(200, 404))

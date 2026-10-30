@@ -621,7 +621,7 @@ def test_agent_reads_only_its_own_projects_repository(
     assert {i["path"] for i in brief["instruction_files"]} >= {"AGENTS.md", "README.md"}
     assert len(json.dumps(brief)) <= service_module.CONTEXT_CHARS
     assert len(brief["related_files"]) <= service_module.CONTEXT_FILES
-    assert "instruction files" in provider.requests[0].system_prompt
+    assert "instruction files" in (provider.requests[0].system_prompt or "")
 
 
 def test_agent_brief_has_no_repository_without_a_connection(

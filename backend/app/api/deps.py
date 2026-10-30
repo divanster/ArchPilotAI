@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from functools import lru_cache
+from types import EllipsisType
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -39,6 +40,7 @@ from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.architecture_lint import lint_config_from_settings
 from app.services.ci_execution import CIExecutionProvider, settings_targets
+from app.services.ci_loop import CILoop, LoopConfig
 from app.services.credential_store import KeyringCredentialStore
 from app.services.decision import DecisionService
 from app.services.document import DocumentService
@@ -303,6 +305,27 @@ def make_execution_provider(session: Session) -> ExecutionProvider:
     )
 
 
+def make_ci_loop(session: Session) -> CILoop | None:
+    """The CI repair loop of checklist-step runs; only with the GitHub Actions provider."""
+    settings = get_settings()
+    if settings.agent_execution_provider != "github_actions":
+        return None
+    patches = PatchRepository(session)
+    return CILoop(
+        settings_targets(session, KeyringCredentialStore()),
+        lambda project_id: {f.path: f.content for f in patches.workspace(project_id)},
+        LoopConfig(
+            workflow=settings.agent_ci_workflow,
+            command=settings.agent_ci_loop_command,
+            poll=settings.agent_ci_poll_seconds,
+            ci_timeout=settings.agent_ci_timeout_seconds,
+            approval_timeout=settings.agent_ci_approval_timeout_seconds,
+            max_iterations=settings.agent_ci_max_iterations,
+            max_edits=settings.agent_ci_max_edits_per_batch,
+        ),
+    )
+
+
 def make_agent_service(
     session: Session,
     provider: LLMProvider,
@@ -311,9 +334,12 @@ def make_agent_service(
     checker: StaticChecker | None = None,
     execution: ExecutionProvider | None = None,
     embedder: EmbeddingProvider | None = None,
+    ci_loop: CILoop | None | EllipsisType = ...,
 ) -> AgentService:
     settings = get_settings()
     execution = execution or make_execution_provider(session)
+    if isinstance(ci_loop, EllipsisType):
+        ci_loop = make_ci_loop(session)
     test_timeout = (
         settings.agent_ci_timeout_seconds
         if execution.name == "github_actions"
@@ -348,6 +374,7 @@ def make_agent_service(
         ),
         embedder=embedder or get_embedding_provider(),
         checklists=ChecklistRepository(session),
+        ci_loop=ci_loop,
     )
 
 
