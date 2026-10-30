@@ -11,6 +11,7 @@ from app.api.ai import router as ai_router
 from app.api.architecture import router as architecture_router
 from app.api.decisions import router as decisions_router
 from app.api.documents import router as documents_router
+from app.api.git_remote import router as git_remote_router
 from app.api.graph import router as graph_router
 from app.api.health import router as health_router
 from app.api.patches import router as patches_router
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(plans_router)
     app.include_router(patches_router)
     app.include_router(decisions_router)
+    app.include_router(git_remote_router)
     app.include_router(agent_router)
     app.include_router(agent_checks_router)
     app.include_router(ai_router)
