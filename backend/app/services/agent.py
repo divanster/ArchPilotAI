@@ -46,6 +46,7 @@ from app.domain.patch import (
 from app.embeddings.contracts import EmbeddingProvider
 from app.llm.agent_prompt import build_prompt, build_system_prompt
 from app.llm.contracts import LLMProvider, LLMRequest
+from app.llm.exceptions import LLMReasoningBudgetExhaustedError
 from app.mcp import tools
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.plan import ImplementationPlan, PlanTask
@@ -184,6 +185,7 @@ class AgentService:
         *,
         acknowledge_blocking_questions: bool = False,
         max_steps: int | None = None,
+        deployment: str | None = None,
     ) -> AgentRun:
         plan, task, _ = self._patches.check_gates(
             project_id, plan_id, task_key, acknowledge_blocking_questions
@@ -205,7 +207,8 @@ class AgentService:
                 token_budget=self._config.token_budget,
                 time_limit_seconds=self._config.time_limit_seconds,
                 provider=self._provider.provider_name,
-                model=self._provider.model_name,
+                model=deployment or self._provider.model_name,
+                deployment=deployment or self._provider.model_name,
                 prompt_version=AGENT_PROMPT_VERSION,
             )
             run = self._agents.add_run(run, self._patch_repo.workspace(project_id))
@@ -359,12 +362,29 @@ class AgentService:
                         temperature=0,
                     )
                 )
+            except LLMReasoningBudgetExhaustedError:
+                logger.error("agent provider reasoning budget exhausted run=%s", run_id)
+                self._end(
+                    run,
+                    "failed",
+                    "reasoning_budget_exhausted",
+                    self._clock() - started,
+                    "Reasoning budget exhausted: raise the completion budget of this deployment.",
+                )
+                return
             except Exception as exc:
                 logger.error("agent provider error run=%s error=%s", run_id, type(exc).__name__)
                 self._end(run, "failed", "provider_error", self._clock() - started)
                 return
             used_in = response.usage.input_tokens or 0
             used_out = response.usage.output_tokens or 0
+            model_call = {
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
+                "reasoning_tokens": response.usage.reasoning_tokens,
+                "finish_reason": response.finish_reason,
+                "latency_ms": response.latency_ms,
+            }
             run.input_tokens += used_in
             run.output_tokens += used_out
             total_latency += response.latency_ms
@@ -406,6 +426,7 @@ class AgentService:
                 error = exc
                 path = path or (cut(exc.path, 300) if exc.path else None)
                 result = {"error": exc.code, "message": str(exc), **exc.data}
+            args = {**args, "call": model_call}
             if hook_log:
                 args = {**args, "hooks": hook_log}
             summary = cut(

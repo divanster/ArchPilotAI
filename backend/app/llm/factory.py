@@ -4,7 +4,12 @@ from app.core.config import Settings
 from app.llm.contracts import LLMProvider
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.fake_provider import FakeLLMProvider
-from app.llm.workbench_provider import WorkbenchConfig, WorkbenchProvider
+from app.llm.workbench_provider import (
+    ReasoningEffort,
+    WorkbenchConfig,
+    WorkbenchProvider,
+    is_reasoning_deployment,
+)
 
 _REQUIRED = {
     "ARCHPILOT_WORKBENCH_ENDPOINT": "workbench_endpoint",
@@ -44,17 +49,39 @@ def require_workbench_settings(settings: Settings, *, need_deployment: bool = Tr
         _require_url(settings.workbench_proxy, "ARCHPILOT_WORKBENCH_PROXY", ("http", "https"))
 
 
+def deployment_settings(
+    settings: Settings, deployment: str
+) -> tuple[int | None, ReasoningEffort | None]:
+    """(completion budget, reasoning effort) of a deployment: its own setting, else the global."""
+    own = settings.workbench_deployments.get(deployment)
+    effort = settings.workbench_reasoning_effort
+    if own is not None and own.reasoning_effort is not None:
+        effort = own.reasoning_effort
+    budget: int | None = None
+    if is_reasoning_deployment(deployment):
+        budget = settings.workbench_max_completion_tokens_reasoning
+        if own is not None and own.max_completion_tokens is not None:
+            budget = own.max_completion_tokens
+    return budget, effort or None
+
+
+def verified_deployments(settings: Settings) -> list[str]:
+    return sorted(name for name, d in settings.workbench_deployments.items() if d.verified)
+
+
 def create_provider(settings: Settings) -> LLMProvider:
     """Build the configured provider. Never substitutes the fake for a misconfigured Workbench."""
     if settings.llm_provider == "fake":
         return FakeLLMProvider()
 
     require_workbench_settings(settings)
+    deployment = settings.workbench_deployment.strip()
+    budget, effort = deployment_settings(settings, deployment)
 
     return WorkbenchProvider(
         WorkbenchConfig(
             endpoint=settings.workbench_endpoint.strip(),
-            deployment=settings.workbench_deployment.strip(),
+            deployment=deployment,
             api_version=settings.workbench_api_version.strip(),
             region=settings.workbench_region.strip(),
             charge_code=settings.workbench_charge_code.strip(),
@@ -62,6 +89,7 @@ def create_provider(settings: Settings) -> LLMProvider:
             proxy=settings.workbench_proxy.strip() or None,
             timeout=settings.workbench_timeout,
             max_retries=settings.workbench_max_retries,
-            reasoning_effort=settings.workbench_reasoning_effort or None,
+            reasoning_effort=effort,
+            max_completion_tokens=budget,
         )
     )

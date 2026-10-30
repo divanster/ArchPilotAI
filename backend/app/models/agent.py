@@ -78,6 +78,8 @@ class AgentRun(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     provider: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # The chat deployment chosen for this run; null on runs from before the choice existed.
+    deployment: Mapped[str | None] = mapped_column(String(100), nullable=True)
     prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
     summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     patch_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)

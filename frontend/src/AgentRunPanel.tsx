@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getAgentDeployments,
   getAgentHooks,
   getAgentRun,
   getChecksStatus,
@@ -8,6 +9,7 @@ import {
   startAgentRun,
   stopAgentRun,
   type AgentHook,
+  type AgentDeployments,
   type AgentJob,
   type AgentRun,
   type AgentStepView,
@@ -16,6 +18,10 @@ import {
 } from "./api";
 
 const POLL_MS = 1500;
+
+const STOP_LABELS: Record<string, string> = {
+  reasoning_budget_exhausted: "reasoning budget exhausted",
+};
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
@@ -117,6 +123,19 @@ function FindingList({ step }: { step: AgentStepView }) {
   );
 }
 
+function ModelCall({ step }: { step: AgentStepView }) {
+  const c = step.call;
+  if (!c) return null;
+  return (
+    <span className="sub" aria-label={`Model call of step ${step.step_no}`}>
+      {" "}
+      {c.prompt_tokens ?? 0} in / {c.completion_tokens ?? 0} out
+      {c.reasoning_tokens ? `, ${c.reasoning_tokens} reasoning` : ""}
+      {c.finish_reason ? `, ${c.finish_reason}` : ""}
+    </span>
+  );
+}
+
 function HookDecisions({ step }: { step: AgentStepView }) {
   const found = step.hooks ?? [];
   if (found.length === 0) return null;
@@ -194,6 +213,8 @@ export default function AgentRunPanel({
   const [busy, setBusy] = useState(false);
   const [checks, setChecks] = useState<ChecksStatus | null>(null);
   const [hooks, setHooks] = useState<AgentHook[]>([]);
+  const [deployments, setDeployments] = useState<AgentDeployments | null>(null);
+  const [deployment, setDeployment] = useState("");
   const mounted = useRef(true);
   const runId = run?.id ?? null;
   const running = run?.status === "running";
@@ -209,6 +230,15 @@ export default function AgentRunPanel({
     getChecksStatus()
       .then((s) => {
         if (mounted.current && s && s.tools) setChecks(s);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    getAgentDeployments()
+      .then((d) => {
+        if (mounted.current && d && Array.isArray(d.verified))
+          setDeployments(d);
       })
       .catch(() => undefined);
   }, []);
@@ -275,7 +305,15 @@ export default function AgentRunPanel({
     setBusy(true);
     setError(null);
     try {
-      setRun(await startAgentRun(projectId, planId, task.key, acknowledge));
+      setRun(
+        await startAgentRun(
+          projectId,
+          planId,
+          task.key,
+          acknowledge,
+          deployment || undefined,
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the agent");
     } finally {
@@ -317,6 +355,25 @@ export default function AgentRunPanel({
             " ? ruff and mypy are required; a run would stop immediately."}
         </p>
       )}
+      {deployments && deployments.verified.length > 0 && (
+        <label>
+          Model{" "}
+          <select
+            value={deployment}
+            disabled={running}
+            onChange={(e) => setDeployment(e.target.value)}
+          >
+            <option value="">{deployments.default} (default)</option>
+            {deployments.verified
+              .filter((d) => d !== deployments.default)
+              .map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+          </select>
+        </label>
+      )}
       <div className="btn-row">
         <button
           type="button"
@@ -347,12 +404,21 @@ export default function AgentRunPanel({
           <p>
             <strong>{run.status}</strong>
             {run.stop_reason && run.status !== "finished"
-              ? ` (${run.stop_reason})`
+              ? ` (${STOP_LABELS[run.stop_reason] ?? run.stop_reason})`
               : ""}{" "}
             · step {run.steps_taken}/{run.max_steps} · tokens{" "}
             {run.input_tokens + run.output_tokens}/{run.token_budget} ·{" "}
             {seconds(run.duration_ms)}
           </p>
+          {run.usage && run.usage.calls > 0 && (
+            <p className="sub" aria-label="Model usage of the run">
+              Model calls: {run.usage.calls}
+              {run.deployment ? ` (${run.deployment})` : ""} · prompt{" "}
+              {run.usage.prompt_tokens} · completion{" "}
+              {run.usage.completion_tokens} (reasoning{" "}
+              {run.usage.reasoning_tokens}) · {seconds(run.usage.latency_ms)}
+            </p>
+          )}
           {run.hooks && run.hooks.length > 0 && (
             <p className="sub" aria-label="Active hooks of the run">
               Active hooks:{" "}
@@ -382,6 +448,7 @@ export default function AgentRunPanel({
                   {s.finding_total !== null &&
                     s.finding_total !== undefined && <FindingList step={s} />}
                   <TestsView step={s} />
+                  <ModelCall step={s} />
                   <HookDecisions step={s} />
                 </li>
               ))}

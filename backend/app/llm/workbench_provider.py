@@ -14,6 +14,7 @@ from app.llm.exceptions import (
     LLMError,
     LLMInvalidResponseError,
     LLMRateLimitError,
+    LLMReasoningBudgetExhaustedError,
     LLMRequestRejectedError,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -52,6 +53,8 @@ class WorkbenchConfig(BaseModel):
     max_retries: int = 2
     # Only sent to reasoning deployments; None leaves the model's own default in place.
     reasoning_effort: ReasoningEffort | None = None
+    # Reasoning deployments only: the completion budget sent instead of the request's limit.
+    max_completion_tokens: int | None = None
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -70,6 +73,14 @@ def _count(value: object) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
+
+
+def _finish_reason(data: Any) -> str | None:
+    try:
+        found = data["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return found if isinstance(found, str) else None
 
 
 class WorkbenchProvider:
@@ -97,6 +108,23 @@ class WorkbenchProvider:
     @property
     def model_name(self) -> str:
         return self._config.deployment
+
+    def for_deployment(
+        self,
+        deployment: str,
+        *,
+        max_completion_tokens: int | None,
+        reasoning_effort: ReasoningEffort | None,
+    ) -> "WorkbenchProvider":
+        """The same endpoint, credentials and transport, for another chat deployment."""
+        config = self._config.model_copy(
+            update={
+                "deployment": deployment,
+                "max_completion_tokens": max_completion_tokens,
+                "reasoning_effort": reasoning_effort,
+            }
+        )
+        return WorkbenchProvider(config, transport=self._transport, sleep=self._sleep)
 
     def __repr__(self) -> str:
         return f"WorkbenchProvider(deployment={self._config.deployment!r})"
@@ -141,7 +169,8 @@ class WorkbenchProvider:
         # Documented for GPT-5 reasoning models: `max_tokens` and `temperature` are unsupported,
         # `max_completion_tokens` is required and also covers reasoning tokens.
         del body["temperature"]
-        body["max_completion_tokens"] = body.pop("max_tokens")
+        max_tokens = body.pop("max_tokens")
+        body["max_completion_tokens"] = self._config.max_completion_tokens or max_tokens
         if self._config.reasoning_effort is not None:
             body["reasoning_effort"] = self._config.reasoning_effort
         return body
@@ -218,10 +247,14 @@ class WorkbenchProvider:
         except (ValueError, KeyError, IndexError, TypeError):
             raise invalid from None
         if not isinstance(content, str) or not content.strip():
+            if _finish_reason(data) == "length":
+                raise LLMReasoningBudgetExhaustedError(status_code=response.status_code)
             raise invalid
 
         usage_raw = data.get("usage")
         usage_raw = usage_raw if isinstance(usage_raw, dict) else {}
+        details = usage_raw.get("completion_tokens_details")
+        details = details if isinstance(details, dict) else {}
         model = data.get("model")
         finish = data["choices"][0].get("finish_reason")
         finish = finish if isinstance(finish, str) and _FINISH_REASON.match(finish) else None
@@ -234,6 +267,7 @@ class WorkbenchProvider:
                 input_tokens=_count(usage_raw.get("prompt_tokens")),
                 output_tokens=_count(usage_raw.get("completion_tokens")),
                 total_tokens=_count(usage_raw.get("total_tokens")),
+                reasoning_tokens=_count(details.get("reasoning_tokens")),
             ),
             http_status=response.status_code,
             finish_reason=finish,

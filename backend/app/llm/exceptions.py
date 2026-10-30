@@ -37,3 +37,12 @@ class LLMRequestRejectedError(LLMError):
 
 class LLMInvalidResponseError(LLMError):
     public_message = "The language model provider returned an unexpected response."
+
+
+class LLMReasoningBudgetExhaustedError(LLMInvalidResponseError):
+    """Empty reply with finish_reason "length": the budget went into reasoning."""
+
+    public_message = (
+        "Reasoning budget exhausted: the model used its whole completion budget before it wrote "
+        "a reply."
+    )

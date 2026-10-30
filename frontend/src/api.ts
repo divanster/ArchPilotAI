@@ -1102,6 +1102,29 @@ export interface AgentStepView {
   scope_counts?: Record<string, number>;
   tests?: AgentTestsView | null;
   hooks?: AgentHookDecision[];
+  call?: AgentModelCall | null;
+}
+
+export interface AgentModelCall {
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  reasoning_tokens: number | null;
+  finish_reason: string | null;
+  latency_ms: number | null;
+}
+
+export interface AgentUsage {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  latency_ms: number;
+  finish_reasons: Record<string, number>;
+}
+
+export interface AgentDeployments {
+  default: string;
+  verified: string[];
 }
 
 export interface AgentHookDecision {
@@ -1176,24 +1199,31 @@ export interface AgentRunSummary {
   started_at: string;
   finished_at: string | null;
   duration_ms: number;
+  deployment?: string | null;
 }
 
 export interface AgentRun extends AgentRunSummary {
   steps: AgentStepView[];
   jobs?: AgentJob[];
   hooks?: AgentHook[];
+  usage?: AgentUsage;
 }
+
+export const getAgentDeployments = () =>
+  request<AgentDeployments>("/api/agent/deployments");
 
 export const startAgentRun = (
   projectId: string,
   planId: string,
   key: string,
   acknowledgeBlockingQuestions: boolean,
+  deployment?: string,
 ) =>
   request<AgentRun>(`${taskPath(projectId, planId, key)}/agent-runs`, {
     method: "POST",
     body: JSON.stringify({
       acknowledge_blocking_questions: acknowledgeBlockingQuestions,
+      ...(deployment ? { deployment } : {}),
     }),
   });
 

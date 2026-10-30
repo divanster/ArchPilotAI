@@ -15,8 +15,10 @@ from app.api.deps import (
     AgentServiceDep,
     LLMProviderDep,
     SessionDep,
+    agent_deployments,
     make_agent_service,
     make_static_checker,
+    provider_for_deployment,
 )
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.project import Project
@@ -75,6 +77,37 @@ NotFound = (ProjectNotFoundError, PlanNotFoundError, TaskNotFoundError, RunNotFo
 class StartRunIn(BaseModel):
     acknowledge_blocking_questions: bool = False
     max_steps: int | None = Field(default=None, ge=1, le=50)
+    deployment: str | None = Field(default=None, max_length=100)  # verified ones only
+
+
+class DeploymentsOut(BaseModel):
+    default: str
+    verified: list[str]
+
+
+@checks_router.get("/deployments", response_model=DeploymentsOut)
+def deployments() -> DeploymentsOut:
+    default, verified = agent_deployments()
+    return DeploymentsOut(default=default, verified=verified)
+
+
+class ModelCallOut(BaseModel):
+    """What one model call of a step used, as the provider reported it."""
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    finish_reason: str | None = None
+    latency_ms: int = 0
+
+
+class RunUsage(BaseModel):
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    latency_ms: int = 0
+    finish_reasons: dict[str, int] = {}
 
 
 class FindingOut(BaseModel):
@@ -157,6 +190,7 @@ class StepOut(BaseModel):
     scope_counts: dict[str, int] = {}  # findings "in changed files" / "elsewhere"
     tests: TestsOut | None = None
     hooks: list[HookDecisionOut] = []  # what each hook decided for this step
+    call: ModelCallOut | None = None  # the model call that chose this step
 
 
 class RunSummary(BaseModel):
@@ -173,6 +207,7 @@ class RunSummary(BaseModel):
     time_limit_seconds: float
     provider: str
     model: str
+    deployment: str | None = None  # the chat deployment chosen for the run
     prompt_version: str
     summary: str | None
     patch_id: uuid.UUID | None
@@ -184,7 +219,8 @@ class RunSummary(BaseModel):
 class RunResponse(RunSummary):
     steps: list[StepOut]
     jobs: list[JobOut] = []
-    hooks: list[HookOut] = []  # the hooks of the project; those enabled are active in the run
+    hooks: list[HookOut] = []  # the hooks active when the run started
+    usage: RunUsage = RunUsage()  # totals of the model calls of the run
 
 
 def _duration(run: AgentRun) -> int:
@@ -209,6 +245,7 @@ def _summary(run: AgentRun) -> RunSummary:
         time_limit_seconds=run.time_limit_seconds,
         provider=run.provider,
         model=run.model,
+        deployment=run.deployment,
         prompt_version=run.prompt_version,
         summary=run.summary,
         patch_id=run.patch_id,
@@ -288,15 +325,39 @@ def _hook_log(step: AgentStep) -> list[HookDecisionOut]:
     ]
 
 
+def _call(step: AgentStep) -> ModelCallOut | None:
+    found = (step.args or {}).get("call")
+    if not isinstance(found, dict):
+        return None
+    return ModelCallOut(**{k: found.get(k) for k in ModelCallOut.model_fields if k in found})
+
+
+def _usage(calls: Sequence[ModelCallOut]) -> RunUsage:
+    reasons: dict[str, int] = {}
+    for c in calls:
+        if c.finish_reason:
+            reasons[c.finish_reason] = reasons.get(c.finish_reason, 0) + 1
+    return RunUsage(
+        calls=len(calls),
+        prompt_tokens=sum(c.prompt_tokens or 0 for c in calls),
+        completion_tokens=sum(c.completion_tokens or 0 for c in calls),
+        reasoning_tokens=sum(c.reasoning_tokens or 0 for c in calls),
+        latency_ms=sum(c.latency_ms for c in calls),
+        finish_reasons=reasons,
+    )
+
+
 def _full(
     run: AgentRun,
     steps: list[AgentStep],
     jobs: Sequence[AgentJob] = (),
     hooks: Sequence[dict[str, Any]] = (),
 ) -> RunResponse:
+    calls = [c for s in steps if (c := _call(s)) is not None]
     return RunResponse(
         **_summary(run).model_dump(),
         jobs=_jobs(jobs),
+        usage=_usage(calls),
         hooks=[HookOut(**h) for h in (run.hooks if run.hooks is not None else hooks)],
         steps=[
             StepOut(
@@ -314,6 +375,7 @@ def _full(
                 **_findings(s),
                 tests=_tests(s),
                 hooks=_hook_log(s),
+                call=_call(s),
             )
             for s in steps
         ],
@@ -344,6 +406,12 @@ def start_run(
     body: StartRunIn | None = None,
 ) -> RunResponse:
     body = body or StartRunIn()
+    default, verified = agent_deployments()
+    if body.deployment and body.deployment != default and body.deployment not in verified:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The deployment is not marked as verified in the settings.",
+        )
     try:
         run = service.start_run(
             project_id,
@@ -351,6 +419,7 @@ def start_run(
             task_key,
             acknowledge_blocking_questions=body.acknowledge_blocking_questions,
             max_steps=body.max_steps,
+            deployment=body.deployment,
         )
     except NotFound as exc:
         raise _not_found(exc) from exc
@@ -361,12 +430,13 @@ def start_run(
     except PatchBusyError as exc:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
     run_id = run.id
+    run_provider = provider_for_deployment(provider, body.deployment)
     factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
 
     def job() -> None:
         session: Session = factory()
         try:
-            make_agent_service(session, provider).execute(project_id, run_id)
+            make_agent_service(session, run_provider).execute(project_id, run_id)
         finally:
             session.close()
 

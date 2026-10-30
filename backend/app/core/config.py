@@ -2,8 +2,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class DeploymentSetting(BaseModel):
+    """Overrides of one Workbench chat deployment; unset values use the global settings."""
+
+    max_completion_tokens: int | None = Field(default=None, ge=1, le=200_000)
+    reasoning_effort: Literal["", "none", "low", "medium", "high"] | None = None
+    verified: bool = False
 
 
 class Settings(BaseSettings):
@@ -42,7 +50,13 @@ class Settings(BaseSettings):
     workbench_timeout: float = Field(default=90.0, gt=0, le=300)
     workbench_max_retries: int = Field(default=2, ge=0, le=5)
     # Reasoning deployments only (GPT-5 / o-series); empty keeps the model default.
-    workbench_reasoning_effort: Literal["", "none", "low", "medium", "high"] = ""
+    workbench_reasoning_effort: Literal["", "none", "low", "medium", "high"] = "low"
+    # Completion budget (visible reply plus reasoning) sent to reasoning deployments. Other
+    # deployments (GPT-4.1) keep the limit of the request.
+    workbench_max_completion_tokens_reasoning: int = Field(default=25_000, ge=1, le=200_000)
+    # Per deployment: {"<deployment>": {"max_completion_tokens": 40000, "reasoning_effort":
+    # "medium", "verified": true}}. Only verified deployments can be chosen for an agent run.
+    workbench_deployments: dict[str, DeploymentSetting] = Field(default_factory=dict)
 
     # Local-prototype guard rails for POST /api/ai/generate.
     ai_max_prompt_chars: int = Field(default=4000, ge=1, le=20_000)

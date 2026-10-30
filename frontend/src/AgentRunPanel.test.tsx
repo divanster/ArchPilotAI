@@ -434,4 +434,86 @@ describe("AgentRunPanel", () => {
       (screen.getByLabelText(/static_checks/) as HTMLInputElement).checked,
     ).toBe(false);
   });
+
+  it("offers only verified deployments and starts the run with the chosen one", async () => {
+    const bodies: string[] = [];
+    setup((url, init) => {
+      if (url.endsWith("/agent/deployments"))
+        return json({ default: "gpt-4-1", verified: ["gpt-5"] });
+      if (init?.method === "POST") {
+        bodies.push(String(init.body));
+        return json(run({ status: "finished", deployment: "gpt-5" }), 202);
+      }
+      return url.endsWith("/agent-runs") ? json([]) : json(run());
+    });
+    const select = (await screen.findByLabelText("Model")) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      "",
+      "gpt-5",
+    ]);
+    fireEvent.change(select, { target: { value: "gpt-5" } });
+    fireEvent.click(screen.getByText("Run agent"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(JSON.parse(bodies[0]).deployment).toBe("gpt-5");
+  });
+
+  it("shows no model choice without verified deployments and omits the field", async () => {
+    const bodies: string[] = [];
+    setup((url, init) => {
+      if (url.endsWith("/agent/deployments"))
+        return json({ default: "gpt-4-1", verified: [] });
+      if (init?.method === "POST") {
+        bodies.push(String(init.body));
+        return json(run({ status: "finished" }), 202);
+      }
+      return url.endsWith("/agent-runs") ? json([]) : json(run());
+    });
+    fireEvent.click(await screen.findByText("Run agent"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(JSON.parse(bodies[0])).not.toHaveProperty("deployment");
+  });
+
+  it("shows each call and the run totals, and names an exhausted budget", async () => {
+    const withCalls = run({
+      status: "failed",
+      stop_reason: "reasoning_budget_exhausted",
+      deployment: "gpt-5",
+      usage: {
+        calls: 1,
+        prompt_tokens: 100,
+        completion_tokens: 25000,
+        reasoning_tokens: 25000,
+        latency_ms: 2000,
+        finish_reasons: { length: 1 },
+      },
+      steps: [
+        {
+          ...run().steps[0],
+          call: {
+            prompt_tokens: 100,
+            completion_tokens: 25000,
+            reasoning_tokens: 25000,
+            finish_reason: "length",
+            latency_ms: 2000,
+          },
+        },
+      ],
+    });
+    setup((url, init) => {
+      if (init?.method === "POST") return json(withCalls, 202);
+      return url.endsWith("/agent-runs") ? json([withCalls]) : json(withCalls);
+    });
+    const usage = await screen.findByLabelText("Model usage of the run");
+    expect(usage.textContent).toContain("completion 25000");
+    expect(usage.textContent).toContain("gpt-5");
+    expect(screen.getByLabelText("Model call of step 1").textContent).toContain(
+      "25000 reasoning, length",
+    );
+    expect(screen.getByText(/reasoning budget exhausted/)).toBeTruthy();
+  });
 });

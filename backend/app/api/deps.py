@@ -17,7 +17,8 @@ from app.embeddings.contracts import EmbeddingProvider
 from app.embeddings.factory import create_embedding_provider
 from app.llm.contracts import LLMProvider, LLMRequest, LLMResponse
 from app.llm.exceptions import LLMConfigurationError
-from app.llm.factory import create_provider
+from app.llm.factory import create_provider, deployment_settings, verified_deployments
+from app.llm.workbench_provider import WorkbenchProvider
 from app.mcp.tools import ToolContext
 from app.repositories.agent import AgentRepository
 from app.repositories.architecture import ArchitectureRepository
@@ -131,6 +132,24 @@ def get_llm_provider() -> LLMProvider:
 
 
 LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]
+
+
+def agent_deployments() -> tuple[str, list[str]]:
+    """(default chat deployment, the deployments marked verified in settings)."""
+    settings = get_settings()
+    return settings.workbench_deployment.strip(), verified_deployments(settings)
+
+
+def provider_for_deployment(provider: LLMProvider, deployment: str | None) -> LLMProvider:
+    """The provider of a run: the default one, or a verified deployment on the same endpoint."""
+    if not deployment or deployment == provider.model_name:
+        return provider
+    if not isinstance(provider, WorkbenchProvider):
+        return provider
+    budget, effort = deployment_settings(get_settings(), deployment)
+    return provider.for_deployment(
+        deployment, max_completion_tokens=budget, reasoning_effort=effort
+    )
 
 
 def get_requirement_service(session: SessionDep) -> RequirementService:
