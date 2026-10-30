@@ -1255,7 +1255,109 @@ export interface AgentRun extends AgentRunSummary {
   hooks?: AgentHook[];
   usage?: AgentUsage;
   ci?: CILive | null;
+  ci_loop?: CiLoopView | null;
 }
+
+/* ---- CI repair loop (Phase 13E) ---------------------------------------- */
+
+export type CiLoopNovelty = "new" | "pre_existing" | "fixed" | "flaky";
+
+export interface CiLoopResult {
+  name: string;
+  file: string | null;
+  outcome: string;
+  category: string;
+  message: string;
+  signature: string;
+  novelty: CiLoopNovelty;
+  /** File attribution, separate from novelty: the failing test's file was changed or not. */
+  scope: "changed" | "elsewhere";
+  /** A changed file the stack trace or imports reach, for an "elsewhere" failure. */
+  linked_via: string | null;
+}
+
+export interface CiLoopCounts {
+  new: number;
+  pre_existing: number;
+  fixed: number;
+  flaky: number;
+  elsewhere: number;
+}
+
+export interface CiLoopView {
+  coding_step: string | null;
+  branch: string | null;
+  approval: "none" | "pending" | "approved" | "revoked";
+  approved_by: string | null;
+  approved_at: string | null;
+  phase: string;
+  iteration: number;
+  max_iterations: number;
+  commit: string | null;
+  workflow_status: string | null;
+  workflow_url: string | null;
+  baseline_url: string | null;
+  counts: CiLoopCounts;
+  actionable: CiLoopResult[];
+  elsewhere: CiLoopResult[];
+  flaky: CiLoopResult[];
+  green: boolean;
+  terminal: string | null;
+  branch_deleted: boolean;
+  tokens_used: number;
+  token_budget: number;
+  elapsed_seconds: number;
+  time_limit_seconds: number;
+  message: string | null;
+}
+
+/** Shown before the person grants the run-scoped CI branch approval. */
+export interface CiLoopApprovalInfo {
+  run_id: string;
+  coding_step: string | null;
+  repository: string;
+  remote: string;
+  branch: string;
+  base_branch: string;
+  workflow: string;
+  command: string;
+  max_iterations: number;
+  protected_notice: string;
+  approved: boolean;
+}
+
+const ciLoopPath = (projectId: string, runId: string) =>
+  `${projectPath(projectId)}/agent-runs/${runId}/ci-loop`;
+
+export const getCiLoopApprovalInfo = (projectId: string, runId: string) =>
+  request<CiLoopApprovalInfo>(`${ciLoopPath(projectId, runId)}/approval-info`);
+
+/** One approval for this run's CI branch only; it cannot be reused by another run. */
+export const approveCiLoop = (
+  projectId: string,
+  runId: string,
+  approvedBy: string,
+) =>
+  request<CiLoopView>(`${ciLoopPath(projectId, runId)}/approval`, {
+    method: "POST",
+    body: JSON.stringify({ approved_by: approvedBy }),
+  });
+
+/** Denies a pending approval or revokes a granted one; the run then stops. */
+export const revokeCiLoop = (projectId: string, runId: string) =>
+  request<CiLoopView>(`${ciLoopPath(projectId, runId)}/revoke`, {
+    method: "POST",
+  });
+
+export const deleteCiBranch = (
+  projectId: string,
+  runId: string,
+  confirm: boolean,
+) =>
+  request<CiLoopView>(`${ciLoopPath(projectId, runId)}/delete-branch`, {
+    method: "POST",
+    body: JSON.stringify({ confirm }),
+  });
 
 export const getAgentDeployments = () =>
   request<AgentDeployments>("/api/agent/deployments");

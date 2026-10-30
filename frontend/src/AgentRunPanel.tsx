@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   answerCiPush,
+  approveCiLoop,
+  deleteCiBranch,
   getAgentDeployments,
   getAgentHooks,
   getAgentRun,
   getChecksStatus,
+  getCiLoopApprovalInfo,
   listAgentRuns,
+  resumeStep,
+  revokeCiLoop,
   setAgentHookEnabled,
   startAgentRun,
   stopAgentRun,
@@ -16,6 +22,9 @@ import {
   type AgentStepView,
   type ChecksStatus,
   type CILive,
+  type CiLoopApprovalInfo,
+  type CiLoopResult,
+  type CiLoopView,
   type PlanTask,
 } from "./api";
 
@@ -188,6 +197,225 @@ function CIStatus({
       </p>
       {ci.message && <p className="hint">{ci.message}</p>}
       {ci.approval === "pending" && <CIApproval ci={ci} onAnswer={onAnswer} />}
+    </div>
+  );
+}
+
+/** What the person sees before the one run-scoped approval of the CI branch. */
+function CiLoopApproval({
+  info,
+  onApprove,
+  onDeny,
+}: {
+  info: CiLoopApprovalInfo;
+  onApprove: (by: string) => Promise<void>;
+  onDeny: () => Promise<void>;
+}) {
+  const [by, setBy] = useState("");
+  const [sending, setSending] = useState(false);
+  const send = async (fn: () => Promise<void>) => {
+    setSending(true);
+    try {
+      await fn();
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div role="group" aria-label="CI loop approval">
+      <p>
+        Approve pushing this run's draft to its own CI branch and running the
+        workflow after each batch of edits. The approval covers this run and
+        this branch only.
+      </p>
+      <dl aria-label="CI loop approval details">
+        <dt>Repository</dt>
+        <dd>{info.repository}</dd>
+        <dt>Remote</dt>
+        <dd>
+          <code>{info.remote}</code>
+        </dd>
+        <dt>CI branch</dt>
+        <dd>
+          <code>{info.branch}</code>
+        </dd>
+        <dt>Base branch</dt>
+        <dd>
+          <code>{info.base_branch}</code>
+        </dd>
+        <dt>Workflow</dt>
+        <dd>
+          <code>{info.workflow}</code> ({info.command})
+        </dd>
+        <dt>Maximum CI iterations</dt>
+        <dd>{info.max_iterations}</dd>
+      </dl>
+      <p role="note">{info.protected_notice}</p>
+      <label>
+        Your name{" "}
+        <input
+          value={by}
+          maxLength={100}
+          onChange={(e) => setBy(e.target.value)}
+        />
+      </label>
+      <div className="btn-row">
+        <button
+          type="button"
+          disabled={sending || by.trim() === ""}
+          onClick={() => void send(() => onApprove(by.trim()))}
+        >
+          Approve CI branch {info.branch}
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={sending}
+          onClick={() => void send(onDeny)}
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CiLoopFailures({
+  label,
+  results,
+}: {
+  label: string;
+  results: CiLoopResult[];
+}) {
+  if (results.length === 0) return null;
+  return (
+    <>
+      <p className="sub">{label}</p>
+      <ul aria-label={label}>
+        {results.map((r) => (
+          <li key={r.signature || r.name}>
+            <code>{r.name}</code>
+            {r.file ? ` (${r.file})` : ""} {r.message}
+            {r.linked_via ? (
+              <>
+                {" "}
+                · linked to changed file <code>{r.linked_via}</code>
+              </>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function CiLoopStatus({
+  loop,
+  running,
+  info,
+  onApprove,
+  onRevoke,
+  onDeleteBranch,
+  onResume,
+}: {
+  loop: CiLoopView;
+  running: boolean;
+  info: CiLoopApprovalInfo | null;
+  onApprove: (by: string) => Promise<void>;
+  onRevoke: () => Promise<void>;
+  onDeleteBranch: (confirm: boolean) => Promise<void>;
+  onResume: (() => Promise<void>) | null;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const c = loop.counts;
+  const ended = !running;
+  return (
+    <div aria-label="CI repair loop">
+      <h5>CI repair loop</h5>
+      <p className="sub">
+        Coding step {loop.coding_step ?? "—"} · CI branch{" "}
+        <code>{loop.branch ?? "—"}</code>
+        {loop.branch_deleted ? " (deleted)" : ""}
+      </p>
+      <p className="sub" aria-label="CI loop approval status">
+        Approval: {loop.approval}
+        {loop.approved_by ? ` by ${loop.approved_by}` : ""}
+      </p>
+      <p className="sub" aria-label="CI loop progress">
+        Iteration {loop.iteration}/{loop.max_iterations} ·{" "}
+        {loop.phase.replace(/_/g, " ")}
+        {loop.commit ? (
+          <>
+            {" "}
+            · commit <code>{loop.commit.slice(0, 12)}</code>
+          </>
+        ) : null}
+        {loop.workflow_status ? ` · workflow ${loop.workflow_status}` : ""}
+        {loop.workflow_url ? (
+          <>
+            {" "}
+            · <WorkflowLink url={loop.workflow_url} />
+          </>
+        ) : null}
+        {loop.terminal ? ` · ended: ${loop.terminal}` : ""}
+      </p>
+      <p className="sub" aria-label="CI loop counts">
+        {c.new} new · {c.pre_existing} pre-existing · {c.fixed} fixed ·{" "}
+        {c.flaky} flaky · {c.elsewhere} elsewhere
+      </p>
+      <p className="sub" aria-label="CI loop budgets">
+        Tokens {loop.tokens_used}/{loop.token_budget} · time{" "}
+        {loop.elapsed_seconds.toFixed(1)}/{loop.time_limit_seconds} s
+      </p>
+      {loop.message && <p className="hint">{loop.message}</p>}
+      <CiLoopFailures label="Actionable failures" results={loop.actionable} />
+      <CiLoopFailures
+        label="New failures elsewhere (reviewer only unless linked to a changed file)"
+        results={loop.elsewhere}
+      />
+      <CiLoopFailures label="Flaky tests" results={loop.flaky} />
+      {running && loop.approval === "pending" && info && (
+        <CiLoopApproval info={info} onApprove={onApprove} onDeny={onRevoke} />
+      )}
+      {running && loop.approval === "approved" && (
+        <div className="btn-row">
+          <button
+            type="button"
+            className="danger"
+            onClick={() => void onRevoke()}
+          >
+            Revoke CI approval
+          </button>
+        </div>
+      )}
+      {ended && (
+        <div className="btn-row">
+          {onResume && (
+            <button type="button" onClick={() => void onResume()}>
+              Resume {loop.coding_step}
+            </button>
+          )}
+          {loop.branch && loop.commit && !loop.branch_deleted && (
+            <>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={confirming}
+                  onChange={(e) => setConfirming(e.target.checked)}
+                />{" "}
+                Delete even if a patch uses it
+              </label>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void onDeleteBranch(confirming)}
+              >
+                Delete CI branch
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -485,6 +713,77 @@ export default function AgentRunPanel({
     }
   };
 
+  const loop = run?.ci_loop ?? null;
+  const pending = running && loop?.approval === "pending";
+  const [loopInfo, setLoopInfo] = useState<CiLoopApprovalInfo | null>(null);
+
+  useEffect(() => {
+    if (!pending || !runId) return;
+    let cancelled = false;
+    getCiLoopApprovalInfo(projectId, runId)
+      .then((info) => {
+        if (!cancelled && mounted.current && info && info.branch)
+          setLoopInfo(info);
+      })
+      .catch((e) => {
+        if (!cancelled && mounted.current)
+          setError(
+            e instanceof Error ? e.message : "Could not load the CI approval",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pending, projectId, runId]);
+
+  const loopAction = async (
+    fn: (id: string) => Promise<CiLoopView>,
+    fallback: string,
+  ) => {
+    if (!run) return;
+    setError(null);
+    try {
+      const next = await fn(run.id);
+      if (mounted.current)
+        setRun((cur) => (cur ? { ...cur, ci_loop: next } : cur));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : fallback);
+    }
+  };
+
+  const resumeLoop = async () => {
+    if (!loop?.coding_step) return;
+    setError(null);
+    try {
+      const next = await resumeStep(
+        projectId,
+        planId,
+        task.key,
+        loop.coding_step,
+        acknowledge,
+      );
+      if (mounted.current) setRun(next);
+    } catch (e) {
+      const d =
+        e instanceof ApiError ? (e.detail as { problems?: unknown }) : null;
+      const problems =
+        d && Array.isArray(d.problems) ? ` (${d.problems.join(", ")})` : "";
+      setError(
+        (e instanceof Error ? e.message : "Could not resume the step") +
+          problems,
+      );
+    }
+  };
+
+  const canResume =
+    !running &&
+    loop !== null &&
+    loop.coding_step !== null &&
+    loop.commit !== null &&
+    loop.terminal !== "green" &&
+    !loop.branch_deleted &&
+    !run?.patch_id;
+
   return (
     <div data-testid={`agent-${task.key}`}>
       <h4>Agent run</h4>
@@ -583,6 +882,32 @@ export default function AgentRunPanel({
             </p>
           )}
           {running && run.ci && <CIStatus ci={run.ci} onAnswer={answerCi} />}
+          {loop && (
+            <CiLoopStatus
+              loop={loop}
+              running={running}
+              info={pending ? loopInfo : null}
+              onApprove={(by) =>
+                loopAction(
+                  (id) => approveCiLoop(projectId, id, by),
+                  "Could not approve the CI branch",
+                )
+              }
+              onRevoke={() =>
+                loopAction(
+                  (id) => revokeCiLoop(projectId, id),
+                  "Could not revoke the CI approval",
+                )
+              }
+              onDeleteBranch={(confirm) =>
+                loopAction(
+                  (id) => deleteCiBranch(projectId, id, confirm),
+                  "Could not delete the CI branch",
+                )
+              }
+              onResume={canResume ? resumeLoop : null}
+            />
+          )}
           {run.steps.length > 0 && (
             <ol aria-label="Agent steps">
               {run.steps.map((s) => (

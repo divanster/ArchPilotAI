@@ -1,7 +1,16 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentRunPanel from "./AgentRunPanel";
-import type { AgentHook, AgentJob, AgentRun, CILive, PlanTask } from "./api";
+import type {
+  AgentHook,
+  AgentJob,
+  AgentRun,
+  CILive,
+  CiLoopApprovalInfo,
+  CiLoopResult,
+  CiLoopView,
+  PlanTask,
+} from "./api";
 
 const TASK = {
   key: "T-001",
@@ -671,5 +680,315 @@ describe("AgentRunPanel", () => {
     );
     const status = await screen.findByLabelText("CI status");
     expect(within(status).queryByRole("link")).toBeNull();
+  });
+});
+
+const LOOP: CiLoopView = {
+  coding_step: "S-01",
+  branch: "agent/ci/r1",
+  approval: "pending",
+  approved_by: null,
+  approved_at: null,
+  phase: "awaiting_approval",
+  iteration: 0,
+  max_iterations: 5,
+  commit: null,
+  workflow_status: null,
+  workflow_url: null,
+  baseline_url: null,
+  counts: { new: 0, pre_existing: 0, fixed: 0, flaky: 0, elsewhere: 0 },
+  actionable: [],
+  elsewhere: [],
+  flaky: [],
+  green: false,
+  terminal: null,
+  branch_deleted: false,
+  tokens_used: 120,
+  token_budget: 150000,
+  elapsed_seconds: 12.5,
+  time_limit_seconds: 300,
+  message: null,
+};
+
+const INFO: CiLoopApprovalInfo = {
+  run_id: "r1",
+  coding_step: "S-01",
+  repository: "acme/app",
+  remote: "https://github.com/acme/app",
+  branch: "agent/ci/r1",
+  base_branch: "main",
+  workflow: "archpilot-tests.yml",
+  command: "pytest",
+  max_iterations: 5,
+  protected_notice:
+    "The base branch, the default branch, main and master can never be changed.",
+  approved: false,
+};
+
+function failure(name: string, over: Partial<CiLoopResult> = {}): CiLoopResult {
+  return {
+    name,
+    file: "tests/test_invoice.py",
+    outcome: "failed",
+    category: "AssertionError",
+    message: "AssertionError: not paid",
+    signature: `sig-${name}`,
+    novelty: "new",
+    scope: "changed",
+    linked_via: null,
+    ...over,
+  };
+}
+
+describe("AgentRunPanel CI repair loop", () => {
+  it("shows every approval detail and approves this run's branch only", async () => {
+    const { fetchMock } = setup((u, init) => {
+      if (u.endsWith("/ci-loop/approval-info")) return json(INFO);
+      if (init?.method === "POST" && u.endsWith("/ci-loop/approval"))
+        return json({ ...LOOP, approval: "approved", approved_by: "Ivan" });
+      if (u.endsWith("/agent-runs")) return json([run({ ci_loop: LOOP })]);
+      return json(run({ ci_loop: LOOP }));
+    });
+    const dialog = await screen.findByRole("group", {
+      name: "CI loop approval",
+    });
+    const details = within(dialog).getByLabelText("CI loop approval details");
+    for (const text of [
+      "acme/app",
+      "https://github.com/acme/app",
+      "agent/ci/r1",
+      "main",
+      "archpilot-tests.yml",
+      "5",
+    ])
+      expect(details.textContent).toContain(text);
+    expect(within(dialog).getByRole("note").textContent).toMatch(
+      /main and master can never be changed/,
+    );
+    const approve = within(dialog).getByRole("button", {
+      name: "Approve CI branch agent/ci/r1",
+    });
+    expect((approve as HTMLButtonElement).disabled).toBe(true); // a name is required
+    fireEvent.change(within(dialog).getByLabelText("Your name"), {
+      target: { value: " Ivan " },
+    });
+    fireEvent.click(approve);
+    expect(await screen.findByText(/Approval: approved by Ivan/)).toBeTruthy();
+    const post = fetchMock.mock.calls.find(
+      ([u, i]) =>
+        String(u).endsWith("/ci-loop/approval") && i?.method === "POST",
+    );
+    expect(String(post?.[0])).toContain(
+      "/api/projects/p/agent-runs/r1/ci-loop/approval",
+    );
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+      approved_by: "Ivan",
+    });
+    expect(
+      screen.queryByRole("group", { name: "CI loop approval" }),
+    ).toBeNull();
+  });
+
+  it("denies a pending approval", async () => {
+    const { fetchMock } = setup((u, init) => {
+      if (u.endsWith("/ci-loop/approval-info")) return json(INFO);
+      if (init?.method === "POST" && u.endsWith("/ci-loop/revoke"))
+        return json({ ...LOOP, approval: "revoked" });
+      if (u.endsWith("/agent-runs")) return json([run({ ci_loop: LOOP })]);
+      return json(run({ ci_loop: LOOP }));
+    });
+    const dialog = await screen.findByRole("group", {
+      name: "CI loop approval",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deny" }));
+    expect(await screen.findByText(/Approval: revoked/)).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).endsWith("/ci-loop/approval"),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the iteration, commit, workflow, counts, failures and budgets", async () => {
+    const live: CiLoopView = {
+      ...LOOP,
+      approval: "approved",
+      approved_by: "Ivan",
+      phase: "polling",
+      iteration: 2,
+      commit: "c2d4e6f8a0b1c3d5",
+      workflow_status: "in_progress",
+      workflow_url: "https://github.com/acme/app/actions/runs/1002",
+      counts: { new: 2, pre_existing: 1, fixed: 3, flaky: 1, elsewhere: 1 },
+      actionable: [
+        failure("tests.test_invoice::test_paid"),
+        failure("tests.test_report::test_summary", {
+          scope: "elsewhere",
+          linked_via: "src/invoice.py",
+          file: "tests/test_report.py",
+        }),
+      ],
+      elsewhere: [
+        failure("tests.test_other::test_unrelated", {
+          scope: "elsewhere",
+          file: "tests/test_other.py",
+        }),
+      ],
+      flaky: [failure("tests.test_net::test_retry", { novelty: "flaky" })],
+    };
+    setup((u) =>
+      u.endsWith("/agent-runs")
+        ? json([run({ ci_loop: live })])
+        : json(run({ ci_loop: live })),
+    );
+    const panel = await screen.findByLabelText("CI repair loop");
+    expect(panel.textContent).toContain("Coding step S-01");
+    expect(panel.textContent).toContain("agent/ci/r1");
+    expect(
+      within(panel).getByLabelText("CI loop approval status").textContent,
+    ).toBe("Approval: approved by Ivan");
+    const progress = within(panel).getByLabelText("CI loop progress");
+    expect(progress.textContent).toContain("Iteration 2/5");
+    expect(progress.textContent).toContain("c2d4e6f8a0b1");
+    expect(progress.textContent).toContain("workflow in_progress");
+    expect(
+      within(progress)
+        .getByRole("link", { name: "workflow run" })
+        .getAttribute("href"),
+    ).toBe("https://github.com/acme/app/actions/runs/1002");
+    expect(within(panel).getByLabelText("CI loop counts").textContent).toBe(
+      "2 new · 1 pre-existing · 3 fixed · 1 flaky · 1 elsewhere",
+    );
+    expect(within(panel).getByLabelText("CI loop budgets").textContent).toBe(
+      "Tokens 120/150000 · time 12.5/300 s",
+    );
+    const actionable = within(panel).getByLabelText("Actionable failures");
+    expect(actionable.textContent).toContain("tests.test_invoice::test_paid");
+    expect(actionable.textContent).toContain(
+      "linked to changed file src/invoice.py",
+    );
+    expect(
+      within(panel).getByLabelText(/New failures elsewhere/).textContent,
+    ).toContain("tests.test_other::test_unrelated");
+    expect(within(panel).getByLabelText("Flaky tests").textContent).toContain(
+      "tests.test_net::test_retry",
+    );
+    // Stop is offered while the run waits for CI; the approval can be revoked.
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(
+      within(panel).getByRole("button", { name: "Revoke CI approval" }),
+    ).toBeTruthy();
+    expect(within(panel).queryByRole("button", { name: /Resume/ })).toBeNull();
+    expect(
+      within(panel).queryByRole("button", { name: "Delete CI branch" }),
+    ).toBeNull();
+  });
+
+  it("resumes a stopped run from its checkpoint and shows a refusal", async () => {
+    const stopped: CiLoopView = {
+      ...LOOP,
+      approval: "revoked",
+      approved_by: "Ivan",
+      phase: "ended",
+      iteration: 1,
+      commit: "c1",
+      terminal: "cancelled",
+    };
+    let refuse = true;
+    const { fetchMock } = setup((u, init) => {
+      if (init?.method === "POST" && u.endsWith("/steps/S-01/resume")) {
+        if (refuse)
+          return json(
+            {
+              detail: {
+                code: "foreign_commits",
+                message: "The CI branch has commits this run did not make",
+                problems: ["foreign_commits"],
+              },
+            },
+            409,
+          );
+        return json(run({ id: "r2", ci_loop: { ...LOOP, iteration: 1 } }), 202);
+      }
+      const ended = run({
+        status: "stopped",
+        stop_reason: "cancelled",
+        ci_loop: stopped,
+      });
+      return u.endsWith("/agent-runs") ? json([ended]) : json(ended);
+    });
+    const resume = await screen.findByRole("button", { name: "Resume S-01" });
+    fireEvent.click(resume);
+    expect(
+      await screen.findByText(/did not make \(foreign_commits\)/),
+    ).toBeTruthy();
+    refuse = false;
+    fireEvent.click(screen.getByRole("button", { name: "Resume S-01" }));
+    expect(await screen.findByText("running")).toBeTruthy();
+    const posts = fetchMock.mock.calls.filter(([u]) =>
+      String(u).endsWith("/plans/pl/tasks/T-001/checklist/steps/S-01/resume"),
+    );
+    expect(posts).toHaveLength(2);
+  });
+
+  it("offers branch deletion after the run, never automatically", async () => {
+    const green: CiLoopView = {
+      ...LOOP,
+      approval: "approved",
+      approved_by: "Ivan",
+      phase: "ended",
+      iteration: 2,
+      commit: "c2",
+      green: true,
+      terminal: "green",
+    };
+    const { fetchMock } = setup((u, init) => {
+      if (init?.method === "POST" && u.endsWith("/ci-loop/delete-branch")) {
+        const body = JSON.parse(String(init.body)) as { confirm: boolean };
+        if (!body.confirm)
+          return json(
+            {
+              detail: {
+                code: "confirm_required",
+                message: "A patch references this branch; confirm the deletion",
+              },
+            },
+            409,
+          );
+        return json({ ...green, branch_deleted: true });
+      }
+      const done = run({
+        status: "finished",
+        stop_reason: "green",
+        patch_id: "pat1",
+        ci_loop: green,
+      });
+      return u.endsWith("/agent-runs") ? json([done]) : json(done);
+    });
+    const panel = await screen.findByLabelText("CI repair loop");
+    expect(within(panel).queryByRole("button", { name: /Resume/ })).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).endsWith("/delete-branch")),
+    ).toBe(false);
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Delete CI branch" }),
+    );
+    expect(await screen.findByText(/confirm the deletion/)).toBeTruthy();
+    fireEvent.click(
+      within(panel).getByLabelText("Delete even if a patch uses it"),
+    );
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Delete CI branch" }),
+    );
+    expect(await screen.findByText(/\(deleted\)/)).toBeTruthy();
+    expect(
+      within(panel).queryByRole("button", { name: "Delete CI branch" }),
+    ).toBeNull();
+  });
+
+  it("has no CI loop block for a run without one", async () => {
+    setup((u) => (u.endsWith("/agent-runs") ? json([run()]) : json(run())));
+    expect(await screen.findByText("running")).toBeTruthy();
+    expect(screen.queryByLabelText("CI repair loop")).toBeNull();
   });
 });
