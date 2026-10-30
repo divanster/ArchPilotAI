@@ -112,6 +112,10 @@ $env:ARCHPILOT_TEST_DATABASE_URL = "postgresql+psycopg://<user>:<password>@local
 $env:ARCHPILOT_REQUIRE_POSTGRES = "1"   # fail instead of skip when the URL is missing
 cd backend; pytest
 
+# Or, per file with a fresh schema each time: builds the archpilot_test URL from backend\.env
+# without printing it, empties only its public schema before each file, refuses non-*_test names
+.\scripts\pg_validate.ps1 tests\test_migrations.py, tests\test_patches.py
+
 # E2E: Playwright starts the real backend (alembic upgrade head) on :8100 and the UI on :5183
 cd frontend
 npx playwright install chromium         # once

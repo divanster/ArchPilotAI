@@ -674,8 +674,11 @@ def test_export_writes_only_accepted_files_and_a_manifest(
     root = tmp_path / "ws"
     workspace_root(monkeypatch, str(root))
     serve([create("src/rejected.py")])
-    rejected = generate(client, world).json()
-    review(client, pid, rejected["id"], "reject")
+    # Status checks keep a failed setup step from surfacing later as a cryptic KeyError.
+    generated = generate(client, world)
+    assert generated.status_code == 201, generated.text
+    rejection = review(client, pid, generated.json()["id"], "reject")
+    assert rejection.status_code == 200, rejection.text
     accepted(client, world, [create("src/a.py", "a = 1\n"), create("docs/readme.md", "# x\n")])
     response = export(client, pid)
     assert response.status_code == 200, response.text
@@ -768,8 +771,9 @@ def test_export_refuses_symlinks(
     (root / pid).mkdir(parents=True)
     try:
         os.symlink(outside, root / pid / "src", target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks are not available")
+    except (OSError, NotImplementedError) as exc:
+        # Windows needs Developer Mode or an elevated shell (WinError 1314) to create symlinks.
+        pytest.skip(f"symlinks are not available on this machine: {exc}")
     assert export(client, pid, confirm_overwrite=True).status_code == 409
     assert list(outside.iterdir()) == []
 

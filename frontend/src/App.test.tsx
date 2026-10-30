@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -113,13 +113,20 @@ describe("App", () => {
   });
 });
 
+// The shell fetches /health and the dashboard fetches /api/projects on mount; awaiting their
+// outcome keeps those state updates inside the test (no act(...) warnings).
+async function dashboardSettled() {
+  expect(await screen.findByText("Backend: ok")).toBeInTheDocument();
+  expect(await screen.findByText("No projects yet.")).toBeInTheDocument();
+}
+
 describe("Navigation", () => {
   beforeEach(() => {
     window.location.hash = "";
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("lists every destination and only links the ones that exist", () => {
+  it("lists every destination and only links the ones that exist", async () => {
     stubFetch(true);
     render(<App />);
     const nav = screen.getByRole("navigation", { name: "Primary" });
@@ -142,13 +149,15 @@ describe("Navigation", () => {
       within(nav).getByText(/Knowledge graph/).closest("[aria-disabled]"),
     ).toHaveAttribute("aria-disabled", "true");
     expect(within(nav).queryByRole("link", { name: /Knowledge graph/ })).toBeNull();
+    await dashboardSettled();
   });
 
-  it("disables Export and the top bar generate button outside a project architecture page", () => {
+  it("disables Export and the top bar generate button outside a project architecture page", async () => {
     stubFetch(true);
     render(<App />);
     expect(screen.getByRole("button", { name: "Export brief" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Generate architecture" })).toBeDisabled();
+    await dashboardSettled();
   });
 
   it("marks the current page and switches pages", async () => {
@@ -230,16 +239,17 @@ describe("Navigation", () => {
     ).toBeInTheDocument();
   });
 
-  it("falls back to the dashboard for unknown routes", () => {
+  it("falls back to the dashboard for unknown routes", async () => {
     stubFetch(true);
     window.location.hash = "#/settings";
     render(<App />);
     expect(
       screen.getByRole("heading", { name: "Welcome to ArchPilotAI" }),
     ).toBeInTheDocument();
+    await dashboardSettled();
   });
 
-  it("toggles the mobile navigation", () => {
+  it("toggles the mobile navigation", async () => {
     stubFetch(true);
     const { container } = render(<App />);
     const toggle = screen.getByRole("button", { name: "Toggle navigation" });
@@ -248,6 +258,7 @@ describe("Navigation", () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(sidebar).toHaveAttribute("data-open", "true");
+    await dashboardSettled();
   });
 
   it("opens the create-project dialog from the dashboard action", async () => {
@@ -315,6 +326,14 @@ describe("Project switcher", () => {
     return screen.findByRole("button", { name: /Switch project/ });
   }
 
+  // The documents page loads its list and search capabilities on mount; awaiting the loaded
+  // list keeps those state updates inside the test (no act(...) warnings).
+  async function documentsSettled() {
+    await waitFor(() =>
+      expect(screen.getByText("No documents yet.")).toBeInTheDocument(),
+    );
+  }
+
   it("opens and closes, Escape returns focus to the trigger", async () => {
     stubFetch(true, {}, [alpha, beta]);
     render(<App />);
@@ -336,6 +355,7 @@ describe("Project switcher", () => {
     fireEvent.click(btn);
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu")).toBeNull();
+    await documentsSettled();
   });
 
   it("moves between items with the arrow keys", async () => {
@@ -353,6 +373,7 @@ describe("Project switcher", () => {
     expect(items[0]).toHaveFocus();
     fireEvent.keyDown(items[0], { key: "ArrowUp" });
     expect(items[2]).toHaveFocus();
+    await documentsSettled();
   });
 
   it("selecting a project switches it", async () => {
@@ -363,6 +384,8 @@ describe("Project switcher", () => {
     expect(window.location.hash).toBe(`#/documents/${beta.id}`);
     expect(localStorage.getItem("archpilot.activeProject")).toBe(beta.id);
     expect(screen.queryByRole("menu")).toBeNull();
+    await screen.findByRole("button", { name: "Switch project, current: Beta" });
+    await documentsSettled();
   });
 
   it("All projects links to the Projects page", async () => {
@@ -373,6 +396,7 @@ describe("Project switcher", () => {
       "href",
       "#/projects",
     );
+    await documentsSettled();
   });
 
   it("truncates long names and keeps the full name in title", async () => {
@@ -385,5 +409,6 @@ describe("Project switcher", () => {
     expect(css).toMatch(/\.switcher-name\s*{[^}]*text-overflow:\s*ellipsis/);
     expect(css).toMatch(/\.switcher-trigger\s*{[^}]*max-width:\s*220px/);
     expect(css).toMatch(/\.crumbs\s*{[^}]*flex-wrap:\s*nowrap/);
+    await documentsSettled();
   });
 });

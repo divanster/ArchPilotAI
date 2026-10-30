@@ -84,14 +84,20 @@ describe("DocumentSearch", () => {
       />,
     );
 
-  it("labels results as keyword matches, not AI answers", () => {
+  // Mount effects fetch capabilities and index status; awaiting their outcome keeps the
+  // resulting state updates inside the test (no act(...) warnings).
+  it("labels results as keyword matches, not AI answers", async () => {
     renderIt();
     expect(screen.getByText(/not an AI answer/)).toBeInTheDocument();
+    await screen.findByRole("button", { name: "Index alpha.txt" });
+    await screen.findByRole("button", { name: "Reindex beta.txt" });
   });
 
-  it("shows an empty prompt without documents", () => {
+  it("shows an empty prompt without documents", async () => {
     renderIt([]);
-    expect(screen.getByText(/Upload a document/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Upload a document/),
+    ).toBeInTheDocument();
   });
 
   it("shows unindexed and indexed status with Index / Reindex actions", async () => {
