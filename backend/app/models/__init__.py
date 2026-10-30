@@ -1,4 +1,4 @@
-from app.models.agent import AgentDraftFile, AgentRun, AgentStep
+from app.models.agent import AgentDraftFile, AgentHookSetting, AgentRun, AgentStep
 from app.models.architecture import ArchitectureProposal
 from app.models.chunk_embedding import ChunkEmbedding
 from app.models.decision import ProjectDecision
@@ -12,6 +12,7 @@ from app.models.requirement import ExtractionRun, Requirement
 
 __all__ = [
     "AgentDraftFile",
+    "AgentHookSetting",
     "AgentRun",
     "AgentStep",
     "CodePatch",

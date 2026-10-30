@@ -19,7 +19,14 @@ from app.api.deps import (
     make_static_checker,
 )
 from app.models.agent import AgentJob, AgentRun, AgentStep
-from app.services.agent import RunNotFoundError, RunNotRunningError, is_active
+from app.models.project import Project
+from app.services.agent import (
+    HookNotFoundError,
+    HookRequiredError,
+    RunNotFoundError,
+    RunNotRunningError,
+    is_active,
+)
 from app.services.patch import (
     PatchBusyError,
     PatchGateError,
@@ -110,6 +117,27 @@ class JobOut(BaseModel):
     flaky: bool | None = None  # set on a re-run job
 
 
+class HookDecisionOut(BaseModel):
+    hook: str
+    point: str
+    result: str  # allow | block | annotate
+    reason: str
+
+
+class HookOut(BaseModel):
+    name: str
+    point: str
+    tools: list[str]
+    order: int
+    required: bool  # cannot be disabled
+    description: str
+    enabled: bool
+
+
+class HookEnabledIn(BaseModel):
+    enabled: bool
+
+
 class StepOut(BaseModel):
     step_no: int
     action: str
@@ -128,6 +156,7 @@ class StepOut(BaseModel):
     environment_reasons: dict[str, int] = {}  # why they are environment noise -> count
     scope_counts: dict[str, int] = {}  # findings "in changed files" / "elsewhere"
     tests: TestsOut | None = None
+    hooks: list[HookDecisionOut] = []  # what each hook decided for this step
 
 
 class RunSummary(BaseModel):
@@ -155,6 +184,7 @@ class RunSummary(BaseModel):
 class RunResponse(RunSummary):
     steps: list[StepOut]
     jobs: list[JobOut] = []
+    hooks: list[HookOut] = []  # the hooks of the project; those enabled are active in the run
 
 
 def _duration(run: AgentRun) -> int:
@@ -248,10 +278,26 @@ def _tier(action: str) -> str | None:
     return found.tier if found else None
 
 
-def _full(run: AgentRun, steps: list[AgentStep], jobs: Sequence[AgentJob] = ()) -> RunResponse:
+def _hook_log(step: AgentStep) -> list[HookDecisionOut]:
+    found = (step.args or {}).get("hooks")
+    if not isinstance(found, list):
+        return []
+    return [
+        HookDecisionOut(**{k: str(h.get(k, "")) for k in HookDecisionOut.model_fields})
+        for h in found
+    ]
+
+
+def _full(
+    run: AgentRun,
+    steps: list[AgentStep],
+    jobs: Sequence[AgentJob] = (),
+    hooks: Sequence[dict[str, Any]] = (),
+) -> RunResponse:
     return RunResponse(
         **_summary(run).model_dump(),
         jobs=_jobs(jobs),
+        hooks=[HookOut(**h) for h in (run.hooks if run.hooks is not None else hooks)],
         steps=[
             StepOut(
                 step_no=s.step_no,
@@ -267,6 +313,7 @@ def _full(run: AgentRun, steps: list[AgentStep], jobs: Sequence[AgentJob] = ()) 
                 latency_ms=s.latency_ms,
                 **_findings(s),
                 tests=_tests(s),
+                hooks=_hook_log(s),
             )
             for s in steps
         ],
@@ -328,6 +375,7 @@ def start_run(
         service.get_run(project_id, run_id),
         service.steps(project_id, run_id),
         service.jobs(project_id, run_id),
+        service.hook_states(project_id),
     )
 
 
@@ -347,7 +395,12 @@ def get_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceD
         run = service.get_run(project_id, run_id)
         if run.status == "running" and not is_active(run.id):
             run = service.mark_interrupted(project_id, run_id)
-        return _full(run, service.steps(project_id, run_id), service.jobs(project_id, run_id))
+        return _full(
+            run,
+            service.steps(project_id, run_id),
+            service.jobs(project_id, run_id),
+            service.hook_states(project_id),
+        )
     except NotFound as exc:
         raise _not_found(exc) from exc
 
@@ -356,8 +409,41 @@ def get_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceD
 def stop_run(project_id: uuid.UUID, run_id: uuid.UUID, service: AgentReadServiceDep) -> RunResponse:
     try:
         run = service.stop(project_id, run_id)
-        return _full(run, service.steps(project_id, run_id), service.jobs(project_id, run_id))
+        return _full(
+            run,
+            service.steps(project_id, run_id),
+            service.jobs(project_id, run_id),
+            service.hook_states(project_id),
+        )
     except NotFound as exc:
         raise _not_found(exc) from exc
     except RunNotRunningError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+@router.get("/agent-hooks", response_model=list[HookOut])
+def list_hooks(
+    project_id: uuid.UUID, service: AgentReadServiceDep, session: SessionDep
+) -> list[HookOut]:
+    if session.get(Project, project_id) is None:
+        raise _not_found(ProjectNotFoundError(project_id))
+    return [HookOut(**h) for h in service.hook_states(project_id)]
+
+
+@router.put("/agent-hooks/{name}", response_model=list[HookOut])
+def set_hook(
+    project_id: uuid.UUID,
+    name: str,
+    body: HookEnabledIn,
+    service: AgentReadServiceDep,
+    session: SessionDep,
+) -> list[HookOut]:
+    if session.get(Project, project_id) is None:
+        raise _not_found(ProjectNotFoundError(project_id))
+    try:
+        service.set_hook_enabled(project_id, name, body.enabled)
+    except HookNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except HookRequiredError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return [HookOut(**h) for h in service.hook_states(project_id)]

@@ -240,8 +240,8 @@ describe("PatchPanel", () => {
 
   describe("removals from accepted file", () => {
     const removed = [
-      { kind: "class", name: "Invoice", file: "src/a.py", listed: true },
-      { kind: "function", name: "total", file: "src/a.py", listed: false },
+      { kind: "class", name: "Invoice", file: "src/a.py", listed: true, reason: "removed" },
+      { kind: "function", name: "total", file: "src/a.py", listed: false, reason: "removed" },
     ];
 
     it("shows no removal section for patches without removals", async () => {

@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
@@ -27,7 +27,6 @@ from app.domain.agent import (
     write_problem,
 )
 from app.domain.architecture import safe_finish_reason
-from app.domain.coverage import missing_findings, missing_lines
 from app.domain.execution import (
     DEFAULT_OUTPUT_CAP,
     DEFAULT_TIMEOUT,
@@ -52,8 +51,10 @@ from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.plan import ImplementationPlan, PlanTask
 from app.repositories.agent import AgentRepository
 from app.repositories.patch import PatchRepository
+from app.services.agent_hooks import HookInput, get_hooks
 from app.services.agent_tools import AgentCall
 from app.services.execution import TestRunner, cancel_run_jobs, release_run
+from app.services.hooks import Point
 from app.services.patch import PatchBusyError, PatchService, TaskNotFoundError
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
@@ -78,6 +79,16 @@ class RunNotFoundError(Exception):
 
 class RunNotRunningError(Exception):
     pass
+
+
+class HookNotFoundError(Exception):
+    def __init__(self, name: str) -> None:
+        super().__init__(f"Unknown hook: {name[:60]}")
+
+
+class HookRequiredError(Exception):
+    def __init__(self, name: str) -> None:
+        super().__init__(f"The hook {name} cannot be disabled")
 
 
 @dataclass(frozen=True)
@@ -182,6 +193,7 @@ class AgentService:
         try:
             run = AgentRun(
                 id=uuid.uuid4(),
+                hooks=self.hook_states(project_id),
                 project_id=project_id,
                 plan_id=plan.id,
                 task_id=task.id,
@@ -297,6 +309,12 @@ class AgentService:
         system_prompt = build_system_prompt(offered)
         tool_models = {t.name: t.args_model for t in self._agent_tools().values()}
         steps: list[StepView] = []
+        disabled_hooks = (
+            frozenset(h["name"] for h in run.hooks if not h.get("enabled"))
+            if run.hooks is not None
+            else frozenset(self._agents.disabled_hooks(project_id))
+        )
+        check_cache: dict[str, Any] = {}
         started = self._clock()
         total_latency = 0
         previous: tuple[str, str | None, str | None] | None = None
@@ -355,6 +373,7 @@ class AgentService:
             result: dict[str, Any]
             error: ActionError | None = None
             done = False
+            hook_log: list[dict[str, str]] = []
             try:
                 action = parse_action(
                     response.text,
@@ -379,11 +398,16 @@ class AgentService:
                     response.provider,
                     response.model,
                     based_on,
+                    hook_log=hook_log,
+                    disabled_hooks=disabled_hooks,
+                    check_cache=check_cache,
                 )
             except ActionError as exc:
                 error = exc
                 path = path or (cut(exc.path, 300) if exc.path else None)
                 result = {"error": exc.code, "message": str(exc), **exc.data}
+            if hook_log:
+                args = {**args, "hooks": hook_log}
             summary = cut(
                 str(error) if error else str(result.pop("summary", "ok")), MAX_SUMMARY_CHARS
             )
@@ -436,10 +460,17 @@ class AgentService:
             if repeats >= REPEAT_LIMIT:
                 self._end(run, "stopped", "repeated_error", self._clock() - started)
                 return
-            if action_name == "run_static_checks" and error is None and result.get("total"):
-                total = int(result["total"])
+            counted: dict[str, Any] | None = None
+            if check_cache.pop("fresh", False):
+                counted = check_cache.get("data")
+            elif action_name == "run_static_checks" and error is None:
+                counted = None if check_cache.pop("served", False) else result
+            else:
+                check_cache.pop("served", None)
+            if counted is not None and counted.get("total"):
+                total = int(counted["total"])
                 check_totals.append(total)
-                last_findings = list(result.get("findings") or [])
+                last_findings = list(counted.get("findings") or [])
                 if best_total is None or total < best_total:
                     best_total, stalled = total, 0
                 else:
@@ -453,7 +484,7 @@ class AgentService:
                         run, "stopped", "not_converging", self._clock() - started, run.summary
                     )
                     return
-            elif action_name == "run_static_checks" and error is None:
+            elif counted is not None:
                 best_total, stalled = 0, 0
 
     def _save_draft(self, project_id: uuid.UUID, run_id: uuid.UUID, draft: Draft) -> None:
@@ -581,8 +612,58 @@ class AgentService:
             self._tools, str(project_id), query, top_k, self._embedder
         )
 
+    @property
+    def limits(self) -> PatchLimits:
+        return self._limits
+
     def write_problem(self, path: str, content: str) -> str | None:
         return write_problem(path, content, self._limits)
+
+    def accepted_files(self, project_id: uuid.UUID) -> dict[str, str]:
+        return {f.path: f.content for f in self._patch_repo.workspace(project_id)}
+
+    def draft_failures(self, call: AgentCall) -> list[Failure]:
+        """Why the draft is not a valid patch (the patch_validation hook)."""
+        changes = call.draft.changes()
+        current = self._patch_repo.workspace_hashes(call.project_id)
+        base = call.draft.base_hashes()
+        failures: list[Failure] = list(validate_patch(changes, current, self._limits))
+        failures += stale_failures(
+            [
+                (c.path, c.change, None if c.change == "create" else base.get(c.path))
+                for c in changes
+            ],
+            current,
+        )
+        if failures:
+            self._log_failures(call.project_id, call.task, failures)
+        return failures
+
+    # ---- hooks -----------------------------------------------------------------------------
+
+    def hook_states(self, project_id: uuid.UUID) -> list[dict[str, Any]]:
+        """Every hook with whether it is enabled for the project."""
+        disabled = self._agents.disabled_hooks(project_id)
+        return [
+            {
+                "name": h.name,
+                "point": h.point,
+                "tools": sorted(h.tools) if h.tools else [],
+                "order": h.order,
+                "required": h.required,
+                "description": h.description,
+                "enabled": h.required or h.name not in disabled,
+            }
+            for h in get_hooks().all()
+        ]
+
+    def set_hook_enabled(self, project_id: uuid.UUID, name: str, enabled: bool) -> None:
+        hook = get_hooks().get(name)
+        if hook is None:
+            raise HookNotFoundError(name)
+        if hook.required and not enabled:
+            raise HookRequiredError(name)
+        self._agents.set_hook_enabled(project_id, name, enabled)
 
     def _agent_tools(self) -> dict[str, Tool]:
         return {t.name: t for t in get_registry().exposed("agent")}
@@ -606,13 +687,43 @@ class AgentService:
         provider: str,
         model: str,
         based_on: int | None = None,
+        *,
+        hook_log: list[dict[str, str]] | None = None,
+        disabled_hooks: frozenset[str] = frozenset(),
+        check_cache: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         call = AgentCall(
             self, project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
             based_on,
         )  # fmt: skip
+        if check_cache is not None:
+            call.check_cache = check_cache
         tool = get_registry().get("agent", action.name)
-        return tool.handler(call, action.args), call.done
+        log = hook_log if hook_log is not None else []
+        hooks = get_hooks()
+        ctx = HookInput(call, action.name, action.args)
+        points: list[Point] = ["before_action"]
+        if action.name == "finish":
+            points.append("before_finish")
+        attach: dict[str, Any] = {}
+        for point in points:
+            outcome = hooks.run(point, action.name, ctx, disabled_hooks)
+            log += outcome.log
+            attach |= outcome.attach
+            if outcome.blocked is not None:
+                blocked = outcome.blocked
+                raise ActionError(
+                    blocked.code or "blocked",
+                    blocked.reason,
+                    path=cut(str(getattr(action.args, "path", "") or ""), 300) or None,
+                    data=blocked.data,
+                )
+        result = tool.handler(call, action.args)
+        if action.name != "finish":
+            after = hooks.run("after_action", action.name, ctx, disabled_hooks)
+            log += after.log
+            attach |= after.attach
+        return {**result, **attach}, call.done
 
     def run_tests(
         self,
@@ -698,43 +809,10 @@ class AgentService:
         provider: str,
         model: str,
         based_on: int | None = None,
+        hook_notes: Sequence[str] = (),
     ) -> tuple[dict[str, Any], bool]:
-        changes = draft.changes()
-        current = self._patch_repo.workspace_hashes(project_id)
-        base = draft.base_hashes()
-        failures: list[Failure] = list(validate_patch(changes, current, self._limits))
-        failures += stale_failures(
-            [
-                (c.path, c.change, None if c.change == "create" else base.get(c.path))
-                for c in changes
-            ],
-            current,
-        )
-        if failures:
-            self._log_failures(project_id, task, failures)
-            raise ActionError(
-                "patch_invalid",
-                data={"failures": [f.as_json() for f in failures[:50]]},
-            )
-        coverage = self._patches.coverage(
-            project_id, task, {p: f.content for p, f in draft.live().items()}
-        )
-        open_items = missing_lines(coverage)
-        coverage_notes: list[str] = []
-        if open_items:
-            if run.steps_taken + 1 < run.max_steps:
-                raise ActionError(
-                    "acceptance_missing",
-                    f"Finish refused: {len(open_items)} acceptance item(s) name terms the draft "
-                    "does not define. Add them to the code (names, roles, statuses) and finish "
-                    "again.",
-                    data={
-                        "findings": missing_findings(coverage),
-                        "coverage": {k: coverage[k] for k in ("covered", "missing", "unchecked")},
-                    },
-                )
-            coverage_notes = [f"Not covered at the step limit: {line}" for line in open_items]
-        notes = ([a.summary] if a.summary else []) + coverage_notes + list(a.notes)
+        # The before_finish hooks have validated the draft and applied the coverage gate.
+        notes = ([a.summary] if a.summary else []) + list(hook_notes) + list(a.notes)
         version = self._propose_draft(
             project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
             notes, a.assumptions, a.test_suggestions, based_on,

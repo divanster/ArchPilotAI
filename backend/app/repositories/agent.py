@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from app.models.agent import AgentDraftFile, AgentJob, AgentRun, AgentStep
+from app.models.agent import AgentDraftFile, AgentHookSetting, AgentJob, AgentRun, AgentStep
 from app.models.patch import WorkspaceFile
 
 
@@ -83,6 +83,20 @@ class AgentRepository:
         except Exception:
             self._session.rollback()
             raise
+
+    def disabled_hooks(self, project_id: uuid.UUID) -> set[str]:
+        stmt = select(AgentHookSetting.hook).where(
+            AgentHookSetting.project_id == project_id, AgentHookSetting.enabled.is_(False)
+        )
+        return set(self._session.scalars(stmt).all())
+
+    def set_hook_enabled(self, project_id: uuid.UUID, hook: str, enabled: bool) -> None:
+        row = self._session.get(AgentHookSetting, (project_id, hook))
+        if row is None:
+            self._session.add(AgentHookSetting(project_id=project_id, hook=hook, enabled=enabled))
+        else:
+            row.enabled = enabled
+        self.commit()
 
     def rollback(self) -> None:
         self._session.rollback()

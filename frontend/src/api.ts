@@ -1101,8 +1101,25 @@ export interface AgentStepView {
   environment_reasons?: Record<string, number>;
   scope_counts?: Record<string, number>;
   tests?: AgentTestsView | null;
+  hooks?: AgentHookDecision[];
 }
 
+export interface AgentHookDecision {
+  hook: string;
+  point: string;
+  result: "allow" | "block" | "annotate";
+  reason: string;
+}
+
+export interface AgentHook {
+  name: string;
+  point: "before_action" | "after_action" | "before_finish";
+  tools: string[];
+  order: number;
+  required: boolean;
+  description: string;
+  enabled: boolean;
+}
 export interface AgentTestsView {
   command_id: string;
   status: string;
@@ -1164,6 +1181,7 @@ export interface AgentRunSummary {
 export interface AgentRun extends AgentRunSummary {
   steps: AgentStepView[];
   jobs?: AgentJob[];
+  hooks?: AgentHook[];
 }
 
 export const startAgentRun = (
@@ -1190,6 +1208,18 @@ export const stopAgentRun = (projectId: string, runId: string) =>
     method: "POST",
   });
 
+export const getAgentHooks = (projectId: string) =>
+  request<AgentHook[]>(`${projectPath(projectId)}/agent-hooks`);
+
+export const setAgentHookEnabled = (
+  projectId: string,
+  name: string,
+  enabled: boolean,
+) =>
+  request<AgentHook[]>(
+    `${projectPath(projectId)}/agent-hooks/${encodeURIComponent(name)}`,
+    { method: "PUT", body: JSON.stringify({ enabled }) },
+  );
 export interface ChecksStatus {
   ok: boolean;
   tools: Record<string, { available: boolean; version: string | null }>;

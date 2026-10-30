@@ -4,7 +4,9 @@ Handlers get an `AgentCall` (the run's state) and the validated arguments. They 
 `ActionError` for refusals; the loop turns those into step results.
 """
 
-from dataclasses import dataclass
+import copy
+import hashlib
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.agent import (
@@ -36,6 +38,9 @@ class AgentCall:
     model: str
     based_on: int | None = None
     done: bool = False  # set by the tool that ends the run
+    notes: list[str] = field(default_factory=list)  # patch notes added by before_finish hooks
+    # The last automatic static check of the run: {"sig": draft signature, "data": result}.
+    check_cache: dict[str, Any] = field(default_factory=dict)
 
 
 def _existing(draft: Draft, path: str) -> DraftFile:
@@ -138,18 +143,12 @@ def edit_file(call: AgentCall, a: Any) -> dict[str, Any]:
     new = file.content.replace(a.search, a.replace, 1)
     if new == file.content:
         raise ActionError("unchanged", path=a.path)
-    problem = call.svc.write_problem(a.path, new)
-    if problem:
-        raise ActionError(problem, f"Refused: {problem}", path=a.path)
     call.draft.put(a.path, new)
     return {"summary": "edited 1 occurrence", "path": a.path, "bytes": len(new.encode())}
 
 
 def write_file(call: AgentCall, a: Any) -> dict[str, Any]:
     _refuse_migration(call, a.path)
-    problem = call.svc.write_problem(a.path, a.content)
-    if problem:
-        raise ActionError(problem, f"Refused: {problem}", path=a.path)
     clash = call.draft.clash(a.path)
     if clash is not None:
         existing = call.draft.get(clash)
@@ -171,7 +170,8 @@ def delete_file(call: AgentCall, a: Any) -> dict[str, Any]:
     return {"summary": "deleted", "path": a.path}
 
 
-def run_static_checks(call: AgentCall, _a: Any) -> dict[str, Any]:
+def static_check_data(call: AgentCall) -> dict[str, Any]:
+    """The static checks of the draft with scope tags; also used by the after-edit hook."""
     report = call.svc.checker.run({p: f.content for p, f in call.draft.live().items()})
     if report.unavailable:
         # Never "0 findings" when a checker did not run.
@@ -180,12 +180,36 @@ def run_static_checks(call: AgentCall, _a: Any) -> dict[str, Any]:
             f"Static checker unavailable: {', '.join(report.unavailable)}",
             data={"status": "unavailable", "unavailable": report.unavailable},
         )
-    data = report.as_json()
+    data: dict[str, Any] = report.as_json()
     changed = [c.path for c in call.draft.changes()]
     tagged, counts = attribute(data.get("findings") or [], changed)
     data["findings"] = tagged
     data["scope"] = counts
-    return {"summary": f"{report.total} finding(s)", **data}
+    data["total"] = report.total
+    return data
+
+
+def draft_signature(draft: Draft) -> str:
+    items = sorted((p, f.content) for p, f in draft.live().items())
+    return hashlib.sha256(repr(items).encode()).hexdigest()
+
+
+def remember_check(call: AgentCall, data: dict[str, Any]) -> None:
+    call.check_cache.clear()
+    call.check_cache.update(sig=draft_signature(call.draft), data=copy.deepcopy(data), fresh=True)
+
+
+def run_static_checks(call: AgentCall, _a: Any) -> dict[str, Any]:
+    cache = call.check_cache
+    if cache.get("sig") == draft_signature(call.draft):
+        # The automatic check after the last edit already covers this draft. Used once: a
+        # second explicit call checks again.
+        data = copy.deepcopy(cache["data"])
+        cache.clear()
+        cache["served"] = True  # the loop already counted this result; it must not count twice
+    else:
+        data = static_check_data(call)
+    return {"summary": f"{data['total']} finding(s)", **data}
 
 
 def run_tests(call: AgentCall, a: Any) -> dict[str, Any]:
@@ -207,6 +231,7 @@ def finish(call: AgentCall, a: Any) -> dict[str, Any]:
         call.provider,
         call.model,
         call.based_on,
+        call.notes,
     )
     return result  # type: ignore[no-any-return]
 

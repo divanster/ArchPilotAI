@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getAgentHooks,
   getAgentRun,
   getChecksStatus,
   listAgentRuns,
+  setAgentHookEnabled,
   startAgentRun,
   stopAgentRun,
+  type AgentHook,
   type AgentJob,
   type AgentRun,
   type AgentStepView,
@@ -114,6 +117,63 @@ function FindingList({ step }: { step: AgentStepView }) {
   );
 }
 
+function HookDecisions({ step }: { step: AgentStepView }) {
+  const found = step.hooks ?? [];
+  if (found.length === 0) return null;
+  return (
+    <ul className="sub" aria-label={`Hooks of step ${step.step_no}`}>
+      {found.map((h, i) => (
+        <li key={`${h.hook}:${i}`}>
+          <code>{h.hook}</code> <span className="badge">{h.result}</span>
+          {h.reason ? ` ${h.reason}` : ""}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function HookSettings({
+  hooks,
+  disabled,
+  onToggle,
+}: {
+  hooks: AgentHook[];
+  disabled: boolean;
+  onToggle: (hook: AgentHook) => void;
+}) {
+  if (hooks.length === 0) return null;
+  return (
+    <div aria-label="Agent hooks">
+      <h5>Hooks</h5>
+      <p className="sub">
+        Active:{" "}
+        {hooks
+          .filter((h) => h.enabled)
+          .map((h) => h.name)
+          .join(", ") || "none"}
+      </p>
+      <ul>
+        {hooks.map((h) => (
+          <li key={h.name}>
+            <label>
+              <input
+                type="checkbox"
+                checked={h.enabled}
+                disabled={disabled || h.required}
+                onChange={() => onToggle(h)}
+              />{" "}
+              <code>{h.name}</code>
+            </label>{" "}
+            <span className="badge">{h.point}</span>
+            {h.required ? <span className="badge">locked</span> : null}
+            <span className="sub"> {h.description}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function AgentRunPanel({
   projectId,
   planId,
@@ -133,6 +193,7 @@ export default function AgentRunPanel({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [checks, setChecks] = useState<ChecksStatus | null>(null);
+  const [hooks, setHooks] = useState<AgentHook[]>([]);
   const mounted = useRef(true);
   const runId = run?.id ?? null;
   const running = run?.status === "running";
@@ -151,6 +212,28 @@ export default function AgentRunPanel({
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    getAgentHooks(projectId)
+      .then((h) => {
+        if (mounted.current && Array.isArray(h)) setHooks(h);
+      })
+      .catch(() => undefined);
+  }, [projectId]);
+
+  const toggleHook = async (hook: AgentHook) => {
+    setError(null);
+    try {
+      const next = await setAgentHookEnabled(
+        projectId,
+        hook.name,
+        !hook.enabled,
+      );
+      if (mounted.current && Array.isArray(next)) setHooks(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change the hook");
+    }
+  };
 
   // Pick up the latest run of this task (it may still be running after a reload).
   useEffect(() => {
@@ -254,6 +337,11 @@ export default function AgentRunPanel({
         )}
       </div>
       {error && <p role="alert">{error}</p>}
+      <HookSettings
+        hooks={hooks}
+        disabled={running}
+        onToggle={(h) => void toggleHook(h)}
+      />
       {run && (
         <div aria-label={`Agent run of ${task.key}`}>
           <p>
@@ -265,6 +353,15 @@ export default function AgentRunPanel({
             {run.input_tokens + run.output_tokens}/{run.token_budget} ·{" "}
             {seconds(run.duration_ms)}
           </p>
+          {run.hooks && run.hooks.length > 0 && (
+            <p className="sub" aria-label="Active hooks of the run">
+              Active hooks:{" "}
+              {run.hooks
+                .filter((h) => h.enabled)
+                .map((h) => h.name)
+                .join(", ") || "none"}
+            </p>
+          )}
           {run.steps.length > 0 && (
             <ol aria-label="Agent steps">
               {run.steps.map((s) => (
@@ -285,6 +382,7 @@ export default function AgentRunPanel({
                   {s.finding_total !== null &&
                     s.finding_total !== undefined && <FindingList step={s} />}
                   <TestsView step={s} />
+                  <HookDecisions step={s} />
                 </li>
               ))}
             </ol>

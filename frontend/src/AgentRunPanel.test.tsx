@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentRunPanel from "./AgentRunPanel";
-import type { AgentRun, PlanTask } from "./api";
+import type { AgentHook, AgentRun, PlanTask } from "./api";
 
 const TASK = {
   key: "T-001",
@@ -356,5 +356,82 @@ describe("AgentRunPanel", () => {
     const jobs = screen.getByLabelText("Jobs");
     expect(jobs.textContent).toContain("timed_out");
     expect(jobs.textContent).toContain("output truncated");
+  });
+
+  it("lists hooks with required ones locked, toggles optional ones and shows decisions", async () => {
+    const hooks: AgentHook[] = [
+      {
+        name: "secret_scan",
+        point: "before_action",
+        tools: ["write_file"],
+        order: 20,
+        required: true,
+        description: "Blocks a write with a secret in it.",
+        enabled: true,
+      },
+      {
+        name: "static_checks",
+        point: "after_action",
+        tools: ["write_file"],
+        order: 10,
+        required: false,
+        description: "Runs the static checks after an edit.",
+        enabled: true,
+      },
+    ];
+    const base = run().steps[0];
+    const withHooks = run({
+      status: "finished",
+      hooks,
+      steps: [
+        {
+          ...base,
+          hooks: [
+            {
+              hook: "static_checks",
+              point: "after_action",
+              result: "annotate",
+              reason: "2 finding(s)",
+            },
+          ],
+        },
+      ],
+    });
+    const puts: string[] = [];
+    setup((url, init) => {
+      if (url.endsWith("/agent-hooks") || url.includes("/agent-hooks/")) {
+        if (init?.method === "PUT") {
+          puts.push(String(init.body));
+          return json(
+            hooks.map((h) =>
+              h.name === "static_checks" ? { ...h, enabled: false } : h,
+            ),
+          );
+        }
+        return json(hooks);
+      }
+      return url.endsWith("/agent-runs") ? json([withHooks]) : json(withHooks);
+    });
+    const secret = (await screen.findByLabelText(
+      /secret_scan/,
+    )) as HTMLInputElement;
+    expect(secret.disabled).toBe(true);
+    expect(screen.getByText("locked")).toBeTruthy();
+    expect(
+      (await screen.findByLabelText("Active hooks of the run")).textContent,
+    ).toContain("secret_scan, static_checks");
+    expect(
+      within(screen.getByLabelText("Hooks of step 1")).getByText("annotate"),
+    ).toBeTruthy();
+
+    const optional = screen.getByLabelText(/static_checks/) as HTMLInputElement;
+    fireEvent.click(optional);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(puts).toEqual([JSON.stringify({ enabled: false })]);
+    expect(
+      (screen.getByLabelText(/static_checks/) as HTMLInputElement).checked,
+    ).toBe(false);
   });
 });

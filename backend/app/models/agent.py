@@ -86,6 +86,8 @@ class AgentRun(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The hooks and their enabled state when the run started; null on runs from before hooks.
+    hooks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
 
 
 class AgentStep(Base):
@@ -164,6 +166,18 @@ class AgentJob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
+
+
+class AgentHookSetting(Base):
+    """A per-project switch of an agent hook. No row: the hook is enabled."""
+
+    __tablename__ = "agent_hook_settings"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    hook: Mapped[str] = mapped_column(String(40), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class AgentDraftFile(Base):

@@ -870,6 +870,9 @@ def test_not_converging_stops_early_and_puts_the_findings_in_the_patch_notes(
         [write("src/m.py"), *[action("run_static_checks")] * 6, finish()],
     )
     assert (run["status"], run["stop_reason"]) == ("stopped", "not_converging")
+    # The write_file runs an automatic check (call 1, 12 findings); the first run_static_checks
+    # is served from it (the draft did not change), so the scripted totals 12, 10, 11, 11, 10
+    # are consumed by 5 checker calls in total.
     assert checker.calls == 5 and run["steps_taken"] == 6 and len(provider.requests) == 6
     assert run["patch_id"]
     patch = client.get(api(world[0], f"/patches/{run['patch_id']}")).json()
