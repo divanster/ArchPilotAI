@@ -31,6 +31,11 @@ READ_NAMES = {
     "get_impact",
     "get_orphans",
     "search_documents",
+    "get_repo_summary",
+    "find_symbol",
+    "find_references",
+    "get_file_dependants",
+    "search_repository",
 }
 AGENT_NAMES = {
     "read_file",
@@ -40,6 +45,11 @@ AGENT_NAMES = {
     "get_task",
     "get_impact",
     "search_documents",
+    "get_repo_summary",
+    "find_symbol",
+    "find_references",
+    "get_file_dependants",
+    "search_repository",
     "edit_file",
     "write_file",
     "delete_file",

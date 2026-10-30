@@ -327,6 +327,11 @@ def test_server_exposes_only_read_tools(world: World) -> None:
         "get_impact",
         "get_orphans",
         "search_documents",
+        "get_repo_summary",
+        "find_symbol",
+        "find_references",
+        "get_file_dependants",
+        "search_repository",
     }
     assert not any(
         verb in n for n in names for verb in ("create", "update", "delete", "set_", "approve")

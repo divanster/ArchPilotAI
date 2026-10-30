@@ -132,6 +132,41 @@ def search_documents(call: AgentCall, a: Any) -> dict[str, Any]:
     return {"summary": summary, **found}
 
 
+def _repository(call: AgentCall, query: Any, *args: Any) -> dict[str, Any]:
+    """A code-map query on this run's project only (the project id never comes from the model)."""
+    try:
+        found: dict[str, Any] = query(call.svc.tool_context, str(call.project_id), *args)
+    except tools.ToolInputError as exc:
+        raise ActionError("tool_input", str(exc)) from None
+    return found
+
+
+def get_repo_summary(call: AgentCall, _a: Any) -> dict[str, Any]:
+    found = _repository(call, tools.get_repo_summary)
+    state = "stale" if found["stale"] else "current"
+    return {"summary": f"{found['summary']['files_total']} file(s), map {state}", **found}
+
+
+def find_symbol(call: AgentCall, a: Any) -> dict[str, Any]:
+    found = _repository(call, tools.find_symbol, a.name, a.kind)
+    return {"summary": f"{len(found['matches'])} definition(s)", **found}
+
+
+def find_references(call: AgentCall, a: Any) -> dict[str, Any]:
+    found = _repository(call, tools.find_references, a.name)
+    return {"summary": f"{len(found['references'])} reference(s)", **found}
+
+
+def get_file_dependants(call: AgentCall, a: Any) -> dict[str, Any]:
+    found = _repository(call, tools.get_file_dependants, a.path, a.transitive)
+    return {"summary": f"{len(found['dependants'])} direct dependant(s)", **found}
+
+
+def search_repository(call: AgentCall, a: Any) -> dict[str, Any]:
+    found = _repository(call, tools.search_repository, a.query, a.prefix)
+    return {"summary": f"{len(found['matches'])} match(es)", **found}
+
+
 def edit_file(call: AgentCall, a: Any) -> dict[str, Any]:
     _refuse_migration(call, a.path)
     file = _existing(call.draft, a.path)
@@ -285,6 +320,38 @@ AGENT_TOOLS: list[Tool] = [
         search_documents,
         "Search this project's documents; hybrid when embeddings are available, else BM25 "
         "(the result says which).",
+    ),
+    _tool(
+        "get_repo_summary",
+        "read",
+        get_repo_summary,
+        "Code map of the connected repository (languages, frameworks, entry points, commands, "
+        "instruction files, scan revision, stale flag). Not the draft.",
+    ),
+    _tool(
+        "find_symbol",
+        "read",
+        find_symbol,
+        "Where a symbol is defined in the connected repository; kind: function, class, method, "
+        "interface, type, enum or variable.",
+    ),
+    _tool(
+        "find_references",
+        "read",
+        find_references,
+        "Whole-word occurrences of an identifier in the connected repository.",
+    ),
+    _tool(
+        "get_file_dependants",
+        "read",
+        get_file_dependants,
+        "A repository file's imports and the files importing it; transitive follows further.",
+    ),
+    _tool(
+        "search_repository",
+        "read",
+        search_repository,
+        "Literal, case-insensitive search of the connected repository; optional path prefix.",
     ),
     _tool(
         "edit_file",

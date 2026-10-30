@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.mcp import tools
 from app.mcp.tools import ToolContext
@@ -91,6 +91,53 @@ def _search_log_args(a: SearchArgs) -> dict[str, Any]:
     return {"project_id": a.project_id, "query_chars": len(a.query), "top_k": a.top_k}
 
 
+class SymbolArgs(_Args):
+    project_id: str
+    name: str = Field(min_length=1, max_length=200)
+    kind: str | None = Field(default=None, max_length=20)
+
+
+class ReferencesArgs(_Args):
+    project_id: str
+    name: str = Field(min_length=1, max_length=200)
+
+
+class DependantsArgs(_Args):
+    project_id: str
+    path: str = Field(min_length=1, max_length=500)
+    transitive: bool = False
+
+
+class RepoSearchArgs(_Args):
+    project_id: str
+    query: str = Field(min_length=2, max_length=200)
+    prefix: str = Field(default="", max_length=300)
+
+
+def _get_repo_summary(ctx: ToolContext, a: ProjectArgs) -> dict[str, Any]:
+    return tools.get_repo_summary(ctx, a.project_id)
+
+
+def _find_symbol(ctx: ToolContext, a: SymbolArgs) -> dict[str, Any]:
+    return tools.find_symbol(ctx, a.project_id, a.name, a.kind)
+
+
+def _find_references(ctx: ToolContext, a: ReferencesArgs) -> dict[str, Any]:
+    return tools.find_references(ctx, a.project_id, a.name)
+
+
+def _get_file_dependants(ctx: ToolContext, a: DependantsArgs) -> dict[str, Any]:
+    return tools.get_file_dependants(ctx, a.project_id, a.path, a.transitive)
+
+
+def _search_repository(ctx: ToolContext, a: RepoSearchArgs) -> dict[str, Any]:
+    return tools.search_repository(ctx, a.project_id, a.query, a.prefix)
+
+
+def _repo_search_log_args(a: RepoSearchArgs) -> dict[str, Any]:
+    return {"project_id": a.project_id, "query_chars": len(a.query), "prefix": a.prefix[:200]}
+
+
 def _read(name: str, description: str, model: type[BaseModel], handler: Any, **extra: Any) -> Tool:
     return Tool(name, description, "read", "mcp", model, handler, **extra)
 
@@ -160,5 +207,44 @@ READ_TOOLS: list[Tool] = [
         SearchArgs,
         _search_documents,
         log_args=_search_log_args,
+    ),
+    _read(
+        "get_repo_summary",
+        "Code map of the project's connected repository: languages, frameworks, manifests,\n"
+        "entry points, source/test roots, generated and excluded file counts, scripts and\n"
+        "lint/test/build commands, instruction files, scan revision and whether it is stale.\n"
+        "Read-only; repository code is never executed.",
+        ProjectArgs,
+        _get_repo_summary,
+    ),
+    _read(
+        "find_symbol",
+        "Where a function, class, method, type or variable is defined in the connected\n"
+        "repository (exact name, else partial). kind filters: function, class, method,\n"
+        "interface, type, enum, variable.",
+        SymbolArgs,
+        _find_symbol,
+    ),
+    _read(
+        "find_references",
+        "Whole-word occurrences of an identifier in the connected repository's source and\n"
+        "test files, marked definition, import or use; capped at 100.",
+        ReferencesArgs,
+        _find_references,
+    ),
+    _read(
+        "get_file_dependants",
+        "The files a repository file imports and the files that import it (Python and\n"
+        "TypeScript/JavaScript relative imports); transitive=true follows dependants further.",
+        DependantsArgs,
+        _get_file_dependants,
+    ),
+    _read(
+        "search_repository",
+        "Literal, case-insensitive search of the connected repository's mapped text files\n"
+        "(generated, secret and excluded files are never searched); optional path prefix.",
+        RepoSearchArgs,
+        _search_repository,
+        log_args=_repo_search_log_args,
     ),
 ]

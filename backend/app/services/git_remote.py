@@ -212,6 +212,14 @@ class GitRemoteService:
         self._own = list(own_remotes) if own_remotes is not None else None
         self._patches = PatchRepository(session)
 
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    @property
+    def workspace_root(self) -> str:
+        return self._root_setting
+
     # ---- settings --------------------------------------------------------------------------
 
     def get(self, project_id: uuid.UUID) -> GitRemoteSettings:

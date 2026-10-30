@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.api.ai import require_non_production
 from app.api.deps import SessionDep
+from app.api.repository import refresh_quietly
 from app.core.config import get_settings
 from app.domain.git_remote import GitSettingsError
 from app.models.git_remote import GitRemoteSettings
@@ -216,25 +217,35 @@ async def test_connection(project_id: uuid.UUID, service: GitServiceDep) -> Conn
 @router.post("/clone", response_model=FolderOut)
 async def clone(project_id: uuid.UUID, service: GitServiceDep) -> FolderOut:
     try:
-        return FolderOut(folder=str(await run_in_threadpool(service.clone, project_id)))
+        folder = await run_in_threadpool(service.clone, project_id)
     except _HANDLED as exc:
         raise _http(exc) from exc
+    await run_in_threadpool(_refresh_map, service, project_id)
+    return FolderOut(folder=str(folder))
 
 
 @router.post("/attach", response_model=FolderOut)
 def attach(project_id: uuid.UUID, service: GitServiceDep) -> FolderOut:
     try:
-        return FolderOut(folder=str(service.attach(project_id)))
+        folder = service.attach(project_id)
     except _HANDLED as exc:
         raise _http(exc) from exc
+    _refresh_map(service, project_id)
+    return FolderOut(folder=str(folder))
 
 
 @router.post("/patches/{patch_id}/commit", response_model=CommitOut)
 def commit_patch(project_id: uuid.UUID, patch_id: uuid.UUID, service: GitServiceDep) -> CommitOut:
     try:
-        return CommitOut(**service.commit_patch(project_id, patch_id).__dict__)
+        result = service.commit_patch(project_id, patch_id)
     except _HANDLED as exc:
         raise _http(exc) from exc
+    _refresh_map(service, project_id)
+    return CommitOut(**result.__dict__)
+
+
+def _refresh_map(service: GitRemoteService, project_id: uuid.UUID) -> None:
+    refresh_quietly(service.session, service.workspace_root, project_id)
 
 
 @router.post("/push", response_model=PushOut)

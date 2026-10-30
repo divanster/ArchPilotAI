@@ -18,6 +18,7 @@ from app.api.patches import router as patches_router
 from app.api.plans import router as plans_router
 from app.api.projects import router as projects_router
 from app.api.providers import router as providers_router
+from app.api.repository import router as repository_router
 from app.api.requirements import router as requirements_router
 from app.api.retrieval import router as retrieval_router
 from app.core.config import get_settings
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(patches_router)
     app.include_router(decisions_router)
     app.include_router(git_remote_router)
+    app.include_router(repository_router)
     app.include_router(agent_router)
     app.include_router(agent_checks_router)
     app.include_router(ai_router)

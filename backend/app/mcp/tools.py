@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import event
@@ -32,12 +33,20 @@ from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.requirement import RequirementRepository
+from app.services import repo_map as repo_queries
 from app.services.architecture import ArchitectureService
 from app.services.embedding import space_of
 from app.services.graph import GraphNodeNotFoundError, GraphService
 from app.services.hybrid import HybridRetrievalService
 from app.services.plan import PlanService
 from app.services.project import ProjectNotFoundError, ProjectService
+from app.services.repo_map import (
+    RepoMap,
+    RepoMapService,
+    RepoQueryError,
+    RepositoryUnavailableError,
+    read_head,
+)
 from app.services.requirement import RequirementService
 from app.services.retrieval import RetrievalService
 from app.tools.registry import ToolInputError as ToolInputError  # re-exported for callers
@@ -741,6 +750,84 @@ def search_documents_auto(
         "unindexed_documents": unindexed,
         "truncated": limited or cut_text,
     }
+
+
+# ---- repository code map ---------------------------------------------------------------------
+
+
+@contextmanager
+def _repository(ctx: ToolContext, project_id: str) -> Iterator[tuple[RepoMap, Path, str | None]]:
+    """The project's code map (scanned once when missing), its clone and the current HEAD."""
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        service = RepoMapService(session, get_settings().workspace_root)
+        try:
+            repo_map = service.ensure(pid)
+            _, clone = service.clone(pid)
+        except RepositoryUnavailableError as exc:
+            raise ToolInputError(str(exc)) from None
+        except OSError:
+            logger.exception("repository map failed project=%s", pid)
+            raise ToolInputError("The repository map could not be built") from None
+    _, head = read_head(clone)
+    try:
+        yield repo_map, clone, head
+    except RepoQueryError as exc:
+        raise ToolInputError(str(exc)) from None
+
+
+def get_repo_summary(ctx: ToolContext, project_id: str) -> dict[str, Any]:
+    with _repository(ctx, project_id) as (repo_map, _clone, head):
+        return repo_queries.summary_view(repo_map, head)
+
+
+def find_symbol(
+    ctx: ToolContext, project_id: str, name: str, kind: str | None = None
+) -> dict[str, Any]:
+    with _repository(ctx, project_id) as (repo_map, _clone, _head):
+        return repo_queries.find_symbol(repo_map, name, kind)
+
+
+def find_references(ctx: ToolContext, project_id: str, name: str) -> dict[str, Any]:
+    with _repository(ctx, project_id) as (repo_map, clone, _head):
+        return repo_queries.find_references(repo_map, clone, name)
+
+
+def get_file_dependants(
+    ctx: ToolContext, project_id: str, path: str, transitive: bool = False
+) -> dict[str, Any]:
+    with _repository(ctx, project_id) as (repo_map, _clone, _head):
+        return repo_queries.file_dependants(repo_map, path, transitive)
+
+
+def search_repository(
+    ctx: ToolContext, project_id: str, query: str, prefix: str = ""
+) -> dict[str, Any]:
+    with _repository(ctx, project_id) as (repo_map, clone, _head):
+        return repo_queries.search(repo_map, clone, query, prefix or None)
+
+
+def repository_context(ctx: ToolContext, project_id: str, task_text: str) -> dict[str, Any] | None:
+    """The bounded repository block of an agent brief; None when no repository is connected."""
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        service = RepoMapService(session, get_settings().workspace_root)
+        try:
+            if service.settings(pid) is None:
+                return None
+            repo_map = service.ensure(pid)
+            _, clone = service.clone(pid)
+        except RepositoryUnavailableError as exc:
+            return {"note": repo_queries.CONTEXT_NOTE, "available": False, "reason": str(exc)}
+        except OSError:
+            logger.exception("repository map failed project=%s", pid)
+            return {
+                "note": repo_queries.CONTEXT_NOTE,
+                "available": False,
+                "reason": "The repository map could not be built",
+            }
+    branch, head = read_head(clone)
+    return repo_queries.agent_context(repo_map, branch, head, task_text)
 
 
 def timed(name: str, args: dict[str, Any], call: Callable[[], dict[str, Any]]) -> dict[str, Any]:

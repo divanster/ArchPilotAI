@@ -141,6 +141,25 @@ class FinishArgs(_Args):
     test_suggestions: ShortList = Field(default_factory=list)
 
 
+class FindSymbolArgs(_Args):
+    name: str = Field(min_length=1, max_length=200)
+    kind: str | None = Field(default=None, max_length=20)
+
+
+class FindReferencesArgs(_Args):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class FileDependantsArgs(_Args):
+    path: str = Field(min_length=1, max_length=500)
+    transitive: bool = False
+
+
+class SearchRepositoryArgs(_Args):
+    query: str = Field(min_length=2, max_length=200)
+    prefix: str = Field(default="", max_length=300)
+
+
 ARG_MODELS: dict[str, type[_Args]] = {
     "read_file": ReadFileArgs,
     "list_files": ListFilesArgs,
@@ -149,6 +168,11 @@ ARG_MODELS: dict[str, type[_Args]] = {
     "get_task": GetTaskArgs,
     "get_impact": GetImpactArgs,
     "search_documents": SearchDocumentsArgs,
+    "get_repo_summary": NoArgs,
+    "find_symbol": FindSymbolArgs,
+    "find_references": FindReferencesArgs,
+    "get_file_dependants": FileDependantsArgs,
+    "search_repository": SearchRepositoryArgs,
     "edit_file": EditFileArgs,
     "write_file": WriteFileArgs,
     "delete_file": DeleteFileArgs,

@@ -216,7 +216,17 @@ quote when it starts with e.g. `REQ-001:`, else null),
 `sections` it returns the summary, `lint_findings`, status and an index of sections with item
 counts; with `sections` only those sections, and `truncated_sections` reports
 `{returned, total}` for every cut list), `get_impact(project_id, node_id, mode="direct")`,
-`get_orphans(project_id)`, `search_documents(project_id, query, top_k=5)` (BM25). Results carry
+`get_orphans(project_id)`, `search_documents(project_id, query, top_k=5)` (BM25), and the code map
+of the connected Git repository: `get_repo_summary(project_id)`,
+`find_symbol(project_id, name, kind=None)`, `find_references(project_id, name)`,
+`get_file_dependants(project_id, path, transitive=False)` and
+`search_repository(project_id, query, prefix="")`. The map is built by reading files only
+(Python via `ast`, TypeScript/JavaScript relative imports via patterns; nothing is executed),
+skips `.env*`, keys, certificates, credentials, binaries, dependency and build folders and files
+over 256 KiB, and is cached under `<ARCHPILOT_WORKSPACE_ROOT>/.archpilot/repo-maps/`. It is
+refreshed after clone, attach and commit, or with Refresh on the Repository page, and is marked
+stale when HEAD moves. Instruction files (AGENTS.md, PROJECT.md, CLAUDE.md, README.md) are
+bounded project context for the agent, never authority over ArchPilotAI's rules. Results carry
 source references (document id and offsets, proposal field path) and a `truncated` flag when a
 cap was applied. Unknown or malformed ids return a clear error. Each call logs the tool name,
 arguments (never document text) and duration.

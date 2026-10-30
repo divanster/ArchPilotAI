@@ -307,6 +307,9 @@ class AgentService:
         framework_rules = self._patches.frameworks(project_id, draft.live()).context()
         if framework_rules:
             brief["framework_rules"] = framework_rules
+        repository = self.repository_context(project_id, task)
+        if repository is not None:
+            brief["repository"] = repository
         tests_ok, _ = self._tests.status()
         if tests_ok:
             brief["run_tests"] = "available: pytest, ruff, mypy, tsc, npm test"
@@ -634,6 +637,11 @@ class AgentService:
         return tools.search_documents_auto(
             self._tools, str(project_id), query, top_k, self._embedder
         )
+
+    def repository_context(self, project_id: uuid.UUID, task: PlanTask) -> dict[str, Any] | None:
+        """The bounded code-map block of the connected repository, or None without one."""
+        text = " ".join([task.title, task.description, *task.acceptance_criteria[:20]])
+        return tools.repository_context(self._tools, str(project_id), text)
 
     @property
     def limits(self) -> PatchLimits:
