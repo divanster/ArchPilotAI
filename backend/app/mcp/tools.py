@@ -830,6 +830,42 @@ def repository_context(ctx: ToolContext, project_id: str, task_text: str) -> dic
     return repo_queries.agent_context(repo_map, branch, head, task_text)
 
 
+REPOSITORY_FILE_SYMBOLS = 30
+
+
+def repository_files(ctx: ToolContext, project_id: str) -> dict[str, Any] | None:
+    """Every file of the code map, for checklist proposals; None when no repository is connected.
+
+    `files` maps source and test files to their first symbol names; `other_paths` lists the rest
+    (configuration, documentation) so a revision may name them without inventing a path.
+    """
+    with read_only_session(ctx) as session:
+        pid = _project(session, project_id)
+        service = RepoMapService(session, get_settings().workspace_root)
+        try:
+            if service.settings(pid) is None:
+                return None
+            repo_map = service.ensure(pid)
+        except RepositoryUnavailableError as exc:
+            return {"available": False, "reason": str(exc)}
+        except OSError:
+            logger.exception("repository map failed project=%s", pid)
+            return {"available": False, "reason": "The repository map could not be built"}
+    files: dict[str, list[str]] = {}
+    other: list[str] = []
+    for path, info in sorted(repo_map.files.items()):
+        if info.get("kind") in ("source", "test"):
+            files[path] = [s[0] for s in info.get("symbols", [])[:REPOSITORY_FILE_SYMBOLS]]
+        else:
+            other.append(path)
+    return {
+        "available": True,
+        "files": files,
+        "other_paths": other,
+        "source_roots": list(repo_map.summary.get("source_roots", []))[:8],
+    }
+
+
 def timed(name: str, args: dict[str, Any], call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """Log tool name, argument values (never document text) and duration; hide unexpected errors."""
     start = time.perf_counter()

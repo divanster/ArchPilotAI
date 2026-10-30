@@ -92,8 +92,7 @@ MIXED: dict[str, str | bytes] = {
         "class Order:\n    def total(self) -> int:\n        return 0\n\n\nTAX_RATE = 0.2\n"
     ),
     "backend/orders/services.py": (
-        "from .models import TAX_RATE, Order\n\n\ndef place_order() -> Order:\n"
-        "    return Order()\n"
+        "from .models import TAX_RATE, Order\n\n\ndef place_order() -> Order:\n    return Order()\n"
     ),
     "backend/orders/views.py": (
         "from orders import services\nfrom orders.models import Order\n\n\n"
@@ -119,7 +118,8 @@ MIXED: dict[str, str | bytes] = {
         "createRoot(document.getElementById('root')!).render(<App />);\n"
     ),
     "frontend/src/App.tsx": (
-        "import { OrderList } from './components/OrderList';\nimport { fetchOrders } from './api';\n"
+        "import { OrderList } from './components/OrderList';\n"
+        "import { fetchOrders } from './api';\n"
         "\nexport default function App() {\n  return <OrderList load={fetchOrders} />;\n}\n"
     ),
     "frontend/src/api.ts": (
@@ -231,7 +231,9 @@ def test_mixed_django_react_repository_summary(engine: Engine, mixed: tuple[str,
     languages = {x["language"] for x in summary["languages"]}
     assert {"Python", "TypeScript", "Markdown", "JSON", "HTML"} <= languages
     frameworks = {f["name"]: f["evidence"] for f in summary["frameworks"]}
-    assert frameworks["Django"] == "backend/manage.py" or frameworks["Django"].startswith("backend/")
+    assert frameworks["Django"] == "backend/manage.py" or frameworks["Django"].startswith(
+        "backend/"
+    )
     assert {"Django", "Django REST framework", "React", "Vite", "Vitest", "TypeScript"} <= set(
         frameworks
     )
@@ -513,8 +515,9 @@ def test_clone_and_accepted_commit_refresh_the_map(
     client: TestClient, engine: Engine, world: World, workspace: str, tmp_path: Path
 ) -> None:
     pid = world[0]
-    patch = accepted(client, world, [create("src/orders_report.py", "def report() -> int:\n"
-                                            "    return 1\n")])
+    patch = accepted(
+        client, world, [create("src/orders_report.py", "def report() -> int:\n    return 1\n")]
+    )
     svc = make(engine, workspace, FakeStore(), runner=NetFreeRunner())
     svc.save(uuid.UUID(pid), settings_in(remote_of(tmp_path, MIXED)))
     use_service(svc)

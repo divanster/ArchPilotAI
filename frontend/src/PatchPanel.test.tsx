@@ -85,6 +85,61 @@ function setup(t: PlanTask, handler: (url: string, init?: RequestInit) => Respon
 }
 
 describe("PatchPanel", () => {
+  function checklistView(status: string) {
+    return {
+      task_key: "T-001",
+      checklist: {
+        id: "c1",
+        version: 1,
+        status,
+        proposed_by: "system",
+        proposal_reason: null,
+        decided_by: status === "approved" ? "ana" : null,
+        decision_reason: null,
+        created_at: "2026-01-01T00:00:00Z",
+        decided_at: null,
+        task_key: "T-001",
+        read_only: status !== "proposed",
+        warnings: [],
+        manual_verification: [],
+        steps: [],
+      },
+      next_step: null,
+      history: [],
+    };
+  }
+
+  function withChecklist(status: string) {
+    return setup(task(), (url) =>
+      url.includes("/checklist") ? json(checklistView(status)) : json([]),
+    );
+  }
+
+  it("keeps task-level actions for a proposed checklist, with a warning", async () => {
+    withChecklist("proposed");
+    expect(
+      await screen.findByText(/approving the checklist switches the task/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate patch" })).not.toBeDisabled();
+    expect(screen.queryByText(/This task is in step-based mode/)).toBeNull();
+  });
+
+  it("blocks task-level actions once the checklist is approved", async () => {
+    withChecklist("approved");
+    expect(await screen.findByText(/This task is in step-based mode/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate patch" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run agent" })).toBeDisabled();
+  });
+
+  it("restores task-level actions for a rejected checklist", async () => {
+    withChecklist("rejected");
+    expect(
+      await screen.findByRole("button", { name: "Propose a new version" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate patch" })).not.toBeDisabled();
+    expect(screen.queryByText(/step-based mode/)).toBeNull();
+  });
+
   it("renders nothing for an unapproved plan", () => {
     vi.stubGlobal("fetch", vi.fn());
     const { container } = render(

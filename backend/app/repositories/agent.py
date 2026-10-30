@@ -15,22 +15,50 @@ class AgentRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add_run(self, run: AgentRun, workspace: Sequence[WorkspaceFile]) -> AgentRun:
-        """Save the run together with its draft copy of the accepted workspace."""
+    def add_run(
+        self,
+        run: AgentRun,
+        workspace: Sequence[WorkspaceFile],
+        overlay: Sequence[tuple[str, str, str | None, bool]] = (),
+        retire: uuid.UUID | None = None,
+    ) -> AgentRun:
+        """Save the run together with its draft copy of the accepted workspace.
+
+        `overlay` holds (path, content, base_hash, deleted) of a checkpoint's changed files and is
+        applied on top; the draft of the `retire` run (that checkpoint) is dropped in the same
+        transaction.
+        """
+        files = {
+            f.path: AgentDraftFile(
+                run_id=run.id,
+                path=f.path,
+                project_id=run.project_id,
+                content=f.content,
+                base_hash=f.content_hash,
+                deleted=False,
+            )
+            for f in workspace
+        }
+        for path, content, base_hash, deleted in overlay:
+            existing = files.get(path)
+            if existing is not None:
+                existing.content = content
+                existing.deleted = deleted
+            else:
+                files[path] = AgentDraftFile(
+                    run_id=run.id,
+                    path=path,
+                    project_id=run.project_id,
+                    content=content,
+                    base_hash=base_hash,
+                    deleted=deleted,
+                )
         try:
             self._session.add(run)
             self._session.flush()
-            self._session.add_all(
-                AgentDraftFile(
-                    run_id=run.id,
-                    path=f.path,
-                    project_id=run.project_id,
-                    content=f.content,
-                    base_hash=f.content_hash,
-                    deleted=False,
-                )
-                for f in workspace
-            )
+            self._session.add_all(files.values())
+            if retire is not None:
+                self.drop_draft(run.project_id, retire)
             self._session.commit()
         except Exception:
             self._session.rollback()
@@ -54,6 +82,29 @@ class AgentRepository:
             .order_by(AgentRun.started_at.desc())
         )
         return self._session.scalars(stmt).all()
+
+    def runs_for_checklist(
+        self, project_id: uuid.UUID, checklist_id: uuid.UUID
+    ) -> Sequence[AgentRun]:
+        """Newest first."""
+        stmt = (
+            select(AgentRun)
+            .where(AgentRun.project_id == project_id, AgentRun.checklist_id == checklist_id)
+            .order_by(AgentRun.started_at.desc(), AgentRun.id)
+        )
+        return self._session.scalars(stmt).all()
+
+    def runs_with_draft(
+        self, project_id: uuid.UUID, run_ids: Sequence[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        if not run_ids:
+            return set()
+        stmt = (
+            select(AgentDraftFile.run_id)
+            .where(AgentDraftFile.project_id == project_id, AgentDraftFile.run_id.in_(run_ids))
+            .distinct()
+        )
+        return set(self._session.scalars(stmt).all())
 
     def steps(self, project_id: uuid.UUID, run_id: uuid.UUID) -> Sequence[AgentStep]:
         stmt = (

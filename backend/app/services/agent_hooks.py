@@ -111,7 +111,10 @@ def removal_check(ctx: HookInput) -> HookResult:
 def coverage_gate(ctx: HookInput) -> HookResult:
     call = ctx.call
     coverage = call.svc.patches.coverage(
-        call.project_id, call.task, {p: f.content for p, f in call.draft.live().items()}
+        call.project_id,
+        call.task,
+        {p: f.content for p, f in call.draft.live().items()},
+        call.criteria,
     )
     open_items = missing_lines(coverage)
     if not open_items:

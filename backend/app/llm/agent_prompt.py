@@ -70,6 +70,9 @@ def fake_agent_answer(prompt: str) -> str:
     if int(context.get("progress", {}).get("step", 1)) > 1:
         return json.dumps({"action": "finish", "args": {"summary": "Implemented the task."}})
     slug = re.sub(r"[^a-z0-9]+", "_", str(task.get("title", "task")).lower()).strip("_") or "task"
+    step = task.get("checklist_step")
+    if isinstance(step, dict) and step.get("key"):
+        slug = f"{slug[:50]}_{str(step['key']).lower().replace('-', '')}"
     body = (
         f'"""{task.get("key", "T-000")}: implemented per the approved plan."""\n\n\n'
         f'def run() -> str:\n    return "{slug}"\n'

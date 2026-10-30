@@ -7,6 +7,7 @@ from app.llm.architecture_prompt import (
     is_architecture_request,
     is_revision_request,
 )
+from app.llm.checklist_prompt import fake_checklist_answer, is_checklist_request
 from app.llm.contracts import LLMRequest, LLMResponse, TokenUsage
 from app.llm.exceptions import LLMError
 from app.llm.extraction_prompt import fake_extraction_answer, is_extraction_request
@@ -26,10 +27,13 @@ class FakeLLMProvider:
         architecture_text: str | None = None,
         patch_text: str | None = None,
         agent_script: list[str] | None = None,
+        checklist_text: str | None = None,
     ) -> None:
         self._responses = dict(responses or {})
         self._model = model
         self._error = error
+        # Fixed answer for checklist-revision prompts; None echoes the current steps.
+        self._checklist_text = checklist_text
         # Fixed answer for patch prompts; None derives a small valid patch from the context.
         self._patch_text = patch_text
         # Fixed answer for requirements-extraction prompts; None derives one from the document.
@@ -59,6 +63,12 @@ class FakeLLMProvider:
                 self._extraction_text
                 if self._extraction_text is not None
                 else fake_extraction_answer(request.prompt)
+            )
+        if text is None and is_checklist_request(request.system_prompt):
+            text = (
+                self._checklist_text
+                if self._checklist_text is not None
+                else fake_checklist_answer(request.prompt)
             )
         if text is None and is_agent_request(request.system_prompt):
             if self.agent_script is not None:

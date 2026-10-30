@@ -23,6 +23,7 @@ from app.llm.workbench_provider import WorkbenchProvider
 from app.mcp.tools import ToolContext
 from app.repositories.agent import AgentRepository
 from app.repositories.architecture import ArchitectureRepository
+from app.repositories.checklist import ChecklistRepository
 from app.repositories.chunk import ChunkRepository
 from app.repositories.decision import DecisionRepository
 from app.repositories.document import DocumentRepository
@@ -266,6 +267,7 @@ def _patch_service(session: Session, provider: LLMProvider) -> PatchService:
         max_output_tokens=settings.patch_max_output_tokens,
         max_context_chars=settings.patch_max_context_chars,
         decisions=_decision_service(session),
+        checklists=ChecklistRepository(session),
     )
 
 
@@ -345,6 +347,7 @@ def make_agent_service(
             output_cap=settings.agent_test_output_cap,
         ),
         embedder=embedder or get_embedding_provider(),
+        checklists=ChecklistRepository(session),
     )
 
 

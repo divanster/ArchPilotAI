@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import AgentRunPanel from "./AgentRunPanel";
+import ChecklistPanel from "./ChecklistPanel";
 import GitPatchActions from "./GitPatchActions";
 import {
   ApiError,
@@ -8,6 +9,7 @@ import {
   getPatch,
   listPatches,
   reviewPatch,
+  type ChecklistStatus,
   type CodePatchDetail,
   type PatchSummary,
   type PlanTask,
@@ -41,6 +43,9 @@ export default function PatchPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ack, setAck] = useState(false);
+  const [checklistTick, setChecklistTick] = useState(0);
+  const [checklistStatus, setChecklistStatus] =
+    useState<ChecklistStatus | null>(null);
   const [techName, setTechName] = useState("");
   const [techReason, setTechReason] = useState("");
   const [techDone, setTechDone] = useState(false);
@@ -131,6 +136,7 @@ export default function PatchPanel({
       setDetail(done);
       setReason("");
       setRemovalState({});
+      setChecklistTick((n) => n + 1);
       await refresh();
       onChanged();
     }, "Review failed");
@@ -145,6 +151,8 @@ export default function PatchPanel({
     }, "Technology confirmation failed");
 
   const canReview = detail?.status === "proposed";
+  // An approved checklist replaces the task-level actions with its coding steps.
+  const stepMode = checklistStatus === "approved";
   const canSubmitReview = reviewer.trim() !== "" && reason.trim() !== "";
   const allRemovalsConfirmed = removals.every((r) => {
     const s = removalState[removalKey(r)];
@@ -192,16 +200,48 @@ export default function PatchPanel({
         </label>
       )}
       <div className="btn-row">
-        <button type="button" disabled={busy} onClick={() => void generate()}>
+        <button
+          type="button"
+          disabled={busy || stepMode}
+          onClick={() => void generate()}
+        >
           {patches.length > 0 ? "Regenerate patch" : "Generate patch"}
         </button>
       </div>
-      <AgentRunPanel
+      {stepMode && (
+        <p className="sub" role="note">
+          This task is in step-based mode: its checklist is approved, so
+          task-level Generate patch and Run agent are blocked. Run the approved
+          coding steps below.
+        </p>
+      )}
+      {checklistStatus === "proposed" && (
+        <p className="hint" role="note">
+          A checklist is proposed for this task. Task-level Generate patch and
+          Run agent still work, but approving the checklist switches the task to
+          step-based mode.
+        </p>
+      )}
+      <ChecklistPanel
         projectId={projectId}
         planId={planId}
         task={task}
         acknowledge={ack}
         disabled={busy}
+        refreshKey={checklistTick}
+        onOpenPatch={(id) => {
+          void open(id);
+          void refresh().catch(() => undefined);
+        }}
+        onChanged={() => void refresh().catch(() => undefined)}
+        onStatusChange={setChecklistStatus}
+      />
+      <AgentRunPanel
+        projectId={projectId}
+        planId={planId}
+        task={task}
+        acknowledge={ack}
+        disabled={busy || stepMode}
         onOpenPatch={(id) => {
           void open(id);
           void refresh().catch(() => undefined);

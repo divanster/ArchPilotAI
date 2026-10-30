@@ -41,6 +41,8 @@ class AgentCall:
     notes: list[str] = field(default_factory=list)  # patch notes added by before_finish hooks
     # The last automatic static check of the run: {"sig": draft signature, "data": result}.
     check_cache: dict[str, Any] = field(default_factory=dict)
+    # The acceptance criteria of a checklist step run; None checks the whole task.
+    criteria: list[str] | None = None
 
 
 def _existing(draft: Draft, path: str) -> DraftFile:

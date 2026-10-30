@@ -1297,6 +1297,175 @@ export const answerCiPush = (
     body: JSON.stringify(body),
   });
 
+/* ---- Task checklist (Phase 13D) ---------------------------------------- */
+
+export type ChecklistStatus =
+  "proposed" | "approved" | "rejected" | "superseded";
+
+export type ChecklistStepStatus =
+  | "todo"
+  | "running"
+  | "proposed"
+  | "accepted"
+  | "rejected"
+  | "failed"
+  | "stopped";
+
+export interface ChecklistExpectedFile {
+  path: string;
+  /** task | dependency | repository: an existing file; new: a file the step creates. */
+  source: string;
+}
+
+export interface ChecklistCriterionReason {
+  criterion: string;
+  reason: string;
+}
+
+export interface ChecklistStepInput {
+  key: string;
+  title: string;
+  goal: string;
+  acceptance_criteria: string[];
+  expected_files: ChecklistExpectedFile[];
+  depends_on: string[];
+  grouping_reason: string;
+  discovery_note: string;
+  shared_criteria: ChecklistCriterionReason[];
+}
+
+export interface ChecklistStep extends ChecklistStepInput {
+  related_items: { node_id: string; kind: string; label: string }[];
+  criteria_count: number;
+  /** Step quality: the step is valid but may be too large or too vague. */
+  warnings: string[];
+  status: ChecklistStepStatus;
+  resumable: boolean;
+  run: {
+    id: string;
+    status: string;
+    stop_reason: string | null;
+    steps_taken: number;
+    resumed_from_run_id: string | null;
+    started_at: string;
+    finished_at: string | null;
+  } | null;
+  patch: { id: string; version: number; status: string } | null;
+  checks: { tests: string | null; finding_total: number | null };
+}
+
+export interface ChecklistVersion {
+  id: string;
+  version: number;
+  status: ChecklistStatus;
+  proposed_by: string;
+  proposal_reason: string | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface TaskChecklist extends ChecklistVersion {
+  task_key: string;
+  read_only: boolean;
+  warnings: string[];
+  manual_verification: ChecklistCriterionReason[];
+  steps: ChecklistStep[];
+}
+
+export interface ChecklistView {
+  task_key: string;
+  checklist: TaskChecklist | null;
+  next_step: string | null;
+  history: ChecklistVersion[];
+}
+
+const checklistPath = (projectId: string, planId: string, key: string) =>
+  `${taskPath(projectId, planId, key)}/checklist`;
+
+export const getChecklist = (projectId: string, planId: string, key: string) =>
+  request<ChecklistView>(checklistPath(projectId, planId, key));
+
+/** Propose a new checklist version from the task (deterministic, no model call). */
+export const buildChecklist = (
+  projectId: string,
+  planId: string,
+  key: string,
+) =>
+  request<ChecklistView>(checklistPath(projectId, planId, key), {
+    method: "POST",
+  });
+
+export const reviseChecklist = (
+  projectId: string,
+  planId: string,
+  key: string,
+  body: {
+    author: string;
+    reason: string;
+    steps: ChecklistStepInput[];
+    manual_verification: ChecklistCriterionReason[];
+  },
+) =>
+  request<ChecklistView>(checklistPath(projectId, planId, key), {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+/** The agent proposes a revision; it stays proposed until a person decides. */
+export const agentReviseChecklist = (
+  projectId: string,
+  planId: string,
+  key: string,
+  instruction: string,
+) =>
+  request<ChecklistView>(
+    `${checklistPath(projectId, planId, key)}/agent-revision`,
+    { method: "POST", body: JSON.stringify({ instruction }) },
+  );
+
+export const decideChecklist = (
+  projectId: string,
+  planId: string,
+  key: string,
+  decision: "approve" | "reject",
+  body: { by: string; reason: string },
+) =>
+  request<ChecklistView>(
+    `${checklistPath(projectId, planId, key)}/${decision}`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+export const runNextStep = (
+  projectId: string,
+  planId: string,
+  key: string,
+  options: { acknowledge: boolean; restart?: boolean },
+) =>
+  request<AgentRun>(`${checklistPath(projectId, planId, key)}/run-next`, {
+    method: "POST",
+    body: JSON.stringify({
+      acknowledge_blocking_questions: options.acknowledge,
+      restart: options.restart ?? false,
+    }),
+  });
+
+export const resumeStep = (
+  projectId: string,
+  planId: string,
+  key: string,
+  stepKey: string,
+  acknowledge: boolean,
+) =>
+  request<AgentRun>(
+    `${checklistPath(projectId, planId, key)}/steps/${encodeURIComponent(stepKey)}/resume`,
+    {
+      method: "POST",
+      body: JSON.stringify({ acknowledge_blocking_questions: acknowledge }),
+    },
+  );
+
 export const getCiWorkflowTemplate = () =>
   request<CIWorkflowTemplate>("/api/agent/ci/workflow-template");
 

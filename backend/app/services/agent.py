@@ -27,6 +27,7 @@ from app.domain.agent import (
     write_problem,
 )
 from app.domain.architecture import safe_finish_reason
+from app.domain.checklist import Step as ChecklistStep
 from app.domain.execution import (
     DEFAULT_OUTPUT_CAP,
     DEFAULT_TIMEOUT,
@@ -39,6 +40,7 @@ from app.domain.patch import (
     GeneratedPatch,
     PatchInvalidError,
     PatchLimits,
+    content_hash,
     requirement_code,
     stale_failures,
     validate_patch,
@@ -51,6 +53,7 @@ from app.mcp import tools
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.plan import ImplementationPlan, PlanTask
 from app.repositories.agent import AgentRepository
+from app.repositories.checklist import ChecklistRepository
 from app.repositories.patch import PatchRepository
 from app.services.agent_hooks import HookInput, get_hooks
 from app.services.agent_tools import AgentCall
@@ -92,6 +95,26 @@ class HookRequiredError(Exception):
         super().__init__(f"The hook {name} cannot be disabled")
 
 
+class CheckpointStaleError(Exception):
+    """The accepted workspace changed under files the checkpoint changed (HTTP 409)."""
+
+    def __init__(self, paths: Sequence[str]) -> None:
+        self.paths = sorted(paths)
+        super().__init__(
+            "The accepted workspace changed since this checkpoint was saved; restart the step "
+            "instead. Changed: " + ", ".join(self.paths[:20])
+        )
+
+
+@dataclass(frozen=True)
+class StepRun:
+    """What a checklist step run uses instead of the whole task."""
+
+    criteria: list[str]
+    note: str
+    brief: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     max_steps: int
@@ -122,8 +145,11 @@ class AgentService:
         clock: Callable[[], float] = time.monotonic,
         tests: TestRunner | None = None,
         embedder: EmbeddingProvider | None = None,
+        checklists: ChecklistRepository | None = None,
     ) -> None:
         self._embedder = embedder
+        self._checklists = checklists
+        self._step_runs: dict[uuid.UUID, StepRun] = {}
         self._provider = provider
         self._tests = tests or TestRunner(
             UnavailableExecutionProvider(),
@@ -186,10 +212,19 @@ class AgentService:
         acknowledge_blocking_questions: bool = False,
         max_steps: int | None = None,
         deployment: str | None = None,
+        checklist_id: uuid.UUID | None = None,
+        step_key: str | None = None,
+        resume_from: uuid.UUID | None = None,
+        discard_checkpoint: uuid.UUID | None = None,
     ) -> AgentRun:
         plan, task, _ = self._patches.check_gates(
-            project_id, plan_id, task_key, acknowledge_blocking_questions
+            project_id,
+            plan_id,
+            task_key,
+            acknowledge_blocking_questions,
+            checklist_step=checklist_id is not None,
         )
+        overlay = self.checkpoint_overlay(project_id, resume_from) if resume_from else []
         if not _agent_lock.acquire(blocking=False):
             raise PatchBusyError("An agent run is already in progress")
         try:
@@ -210,13 +245,50 @@ class AgentService:
                 model=deployment or self._provider.model_name,
                 deployment=deployment or self._provider.model_name,
                 prompt_version=AGENT_PROMPT_VERSION,
+                checklist_id=checklist_id,
+                checklist_step_key=step_key,
+                resumed_from_run_id=resume_from,
             )
-            run = self._agents.add_run(run, self._patch_repo.workspace(project_id))
+            run = self._agents.add_run(
+                run,
+                self._patch_repo.workspace(project_id),
+                overlay,
+                retire=resume_from or discard_checkpoint,
+            )
         except Exception:
             _agent_lock.release()
             raise
         _active.add(run.id)
         return run
+
+    def checkpoint_overlay(
+        self, project_id: uuid.UUID, run_id: uuid.UUID
+    ) -> list[tuple[str, str, str | None, bool]]:
+        """The changed files of a run's saved draft, to apply on top of the current workspace.
+
+        Raises CheckpointStaleError when an accepted file the checkpoint changed (or a path it
+        created) changed in the workspace since; the person restarts the step then.
+        """
+        current = self._patch_repo.workspace_hashes(project_id)
+        out: list[tuple[str, str, str | None, bool]] = []
+        stale: list[str] = []
+        for f in self._agents.draft(project_id, run_id):
+            if f.base_hash is None:
+                if f.path in current:
+                    stale.append(f.path)
+                else:
+                    out.append((f.path, f.content, None, f.deleted))
+                continue
+            changed = f.deleted or content_hash(f.content) != f.base_hash
+            if not changed:
+                continue
+            if current.get(f.path) != f.base_hash:
+                stale.append(f.path)
+            else:
+                out.append((f.path, f.content, f.base_hash, f.deleted))
+        if stale:
+            raise CheckpointStaleError(stale)
+        return out
 
     # ---- loop ------------------------------------------------------------------------------
 
@@ -260,7 +332,11 @@ class AgentService:
         run.summary = summary
         run.finished_at = now
         run.duration_ms = duration_ms
-        self._agents.drop_draft(run.project_id, run.id)
+        # A failed or stopped checklist step run keeps its draft as the checkpoint to resume from.
+        keep = run.checklist_id is not None and status in ("failed", "stopped") and not run.patch_id
+        if not keep:
+            self._agents.drop_draft(run.project_id, run.id)
+        self._step_runs.pop(run.id, None)
         self._agents.commit()
         logger.info(
             "agent run ended run=%s status=%s reason=%s steps=%d",
@@ -302,6 +378,10 @@ class AgentService:
         )
         brief = self._brief(project_id, task, run.blocking_acknowledged)
         brief[GRAPH_LABEL] = self.graph_context(project_id, task)
+        step_run = self._step_run(project_id, run, draft)
+        if step_run is not None:
+            self._step_runs[run.id] = step_run
+            brief.update(step_run.brief)
         decision_block, brief["flags"] = self._patches.decision_context(project_id, plan, task)
         feedback, based_on = self._patches.feedback_context(project_id, task)
         framework_rules = self._patches.frameworks(project_id, draft.live()).context()
@@ -524,6 +604,65 @@ class AgentService:
                 )
         draft.dirty.clear()
 
+    # ---- checklist steps -------------------------------------------------------------------
+
+    def _step_run(self, project_id: uuid.UUID, run: AgentRun, draft: Draft) -> StepRun | None:
+        """The brief of a checklist step run: this step only, and what earlier steps added."""
+        if run.checklist_id is None or self._checklists is None:
+            return None
+        checklist = self._checklists.get(project_id, run.checklist_id)
+        if checklist is None:
+            raise TaskNotFoundError(run.task_key)
+        steps = [ChecklistStep.from_json(s) for s in checklist.steps]
+        step = next((s for s in steps if s.key == run.checklist_step_key), None)
+        if step is None:
+            raise TaskNotFoundError(run.task_key)
+        accepted: dict[str, list[str]] = {}
+        for other in self._agents.runs_for_checklist(project_id, checklist.id):
+            if other.patch_id is None or other.checklist_step_key in accepted:
+                continue
+            patch = self._patch_repo.get(project_id, other.patch_id)
+            if patch is not None and patch.status == "accepted" and other.checklist_step_key:
+                accepted[other.checklist_step_key] = self._patches.patch_files(project_id, patch.id)
+        block: dict[str, Any] = {
+            "key": step.key,
+            "position": f"{[s.key for s in steps].index(step.key) + 1} of {len(steps)}",
+            "title": step.title,
+            "goal": step.goal,
+            "expected_files": [f.as_json() for f in step.expected_files],
+            "discovery_note": step.discovery_note or None,
+            "depends_on": list(step.depends_on),
+            "related_items": [r.as_json() for r in step.related_items],
+            "accepted_earlier_steps": [
+                {"key": s.key, "title": s.title, "files": accepted[s.key][:20]}
+                for s in steps
+                if s.key in accepted
+            ],
+            "note": "Work on this checklist step only: meet its acceptance criteria. Files "
+            "accepted for earlier steps are already in the workspace; keep them. Later steps "
+            "are done in later runs. Expected files are hints, not requirements.",
+        }
+        brief: dict[str, Any] = {
+            "acceptance_criteria": [cut(c, 600) for c in step.acceptance_criteria],
+            "checklist_step": block,
+        }
+        if run.resumed_from_run_id is not None:
+            brief["checkpoint"] = {
+                "resumed_from_run": str(run.resumed_from_run_id),
+                "changed": [{"path": c.path, "change": c.change} for c in draft.changes()][:50],
+                "note": "This run continues the saved draft of an earlier run of this step; the "
+                "changed files are already in your draft. Check them and continue.",
+            }
+        return StepRun(
+            criteria=list(step.acceptance_criteria),
+            note=f"Checklist step {step.key}: {step.title}",
+            brief=brief,
+        )
+
+    def _criteria(self, run: AgentRun) -> list[str] | None:
+        found = self._step_runs.get(run.id)
+        return found.criteria if found is not None else None
+
     # ---- context ---------------------------------------------------------------------------
 
     def requirements(self, project_id: uuid.UUID, task: PlanTask) -> list[dict[str, str]]:
@@ -592,6 +731,20 @@ class AgentService:
             "items": items,
         }
 
+    def graph_items(self, project_id: uuid.UUID, task: PlanTask) -> list[dict[str, str]]:
+        """The task's graph items and the items they directly affect, unique and sorted."""
+        found = self._graph(project_id, task)
+        if not found["available"]:
+            return []
+        items: dict[str, dict[str, str]] = {}
+        for root in found["roots"]:
+            for node in [root, *root["affected"]]:
+                items.setdefault(
+                    str(node["node_id"]),
+                    {"node_id": str(node["node_id"]), "kind": node["kind"], "label": node["label"]},
+                )
+        return sorted(items.values(), key=lambda i: (i["kind"], i["label"], i["node_id"]))
+
     def affected(
         self, project_id: uuid.UUID, plan: ImplementationPlan, task: PlanTask
     ) -> dict[str, Any]:
@@ -642,6 +795,10 @@ class AgentService:
         """The bounded code-map block of the connected repository, or None without one."""
         text = " ".join([task.title, task.description, *task.acceptance_criteria[:20]])
         return tools.repository_context(self._tools, str(project_id), text)
+
+    def repository_files(self, project_id: uuid.UUID) -> dict[str, Any] | None:
+        """Every file of the repository code map (checklist proposals), or None without one."""
+        return tools.repository_files(self._tools, str(project_id))
 
     @property
     def limits(self) -> PatchLimits:
@@ -727,6 +884,7 @@ class AgentService:
             self, project_id, plan, task, draft, run, warnings, latency_ms, provider, model,
             based_on,
         )  # fmt: skip
+        call.criteria = self._criteria(run)
         if check_cache is not None:
             call.check_cache = check_cache
         tool = get_registry().get("agent", action.name)
@@ -908,6 +1066,9 @@ class AgentService:
         based_on: int | None = None,
     ) -> int:
         changes = draft.changes()
+        step_run = self._step_runs.get(run.id)
+        if step_run is not None:
+            notes = [step_run.note, *notes]
         try:
             detail = self._patches.propose(
                 project_id,
@@ -929,6 +1090,7 @@ class AgentService:
                 acknowledged=run.blocking_acknowledged,
                 based_on_version=based_on,
                 affected=self.affected(project_id, plan, task),
+                criteria=step_run.criteria if step_run is not None else None,
             )
         except PatchInvalidError as exc:
             raise ActionError(

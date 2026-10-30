@@ -43,6 +43,7 @@ from app.llm.patch_prompt import SYSTEM_PROMPT, build_prompt
 from app.models.patch import CodePatch, PatchFile, TechnologyConfirmation, WorkspaceFile
 from app.models.plan import ImplementationPlan, PlanTask
 from app.repositories.architecture import ArchitectureRepository
+from app.repositories.checklist import ChecklistRepository
 from app.repositories.patch import PatchRepository
 from app.repositories.plan import PlanRepository
 from app.repositories.project import ProjectRepository
@@ -172,9 +173,11 @@ class PatchService:
         max_output_tokens: int,
         max_context_chars: int,
         decisions: DecisionService | None = None,
+        checklists: ChecklistRepository | None = None,
     ) -> None:
         self._provider = provider
         self._decisions = decisions
+        self._checklists = checklists
         self._projects = projects
         self._plans = plans
         self._architecture = architecture
@@ -199,6 +202,11 @@ class PatchService:
         if task is None:
             raise TaskNotFoundError(task_key)
         return plan, task, tasks
+
+    def plan_and_task(
+        self, project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str
+    ) -> tuple[ImplementationPlan, PlanTask, Sequence[PlanTask]]:
+        return self._plan_and_task(project_id, plan_id, task_key)
 
     def task_statuses(self, project_id: uuid.UUID, plan_id: uuid.UUID) -> dict[uuid.UUID, str]:
         return {
@@ -239,7 +247,13 @@ class PatchService:
     # ---- generation ------------------------------------------------------------------------
 
     def check_gates(
-        self, project_id: uuid.UUID, plan_id: uuid.UUID, task_key: str, acknowledge: bool
+        self,
+        project_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        task_key: str,
+        acknowledge: bool,
+        *,
+        checklist_step: bool = False,
     ) -> tuple[ImplementationPlan, PlanTask, Sequence[PlanTask]]:
         plan, task, tasks = self._plan_and_task(project_id, plan_id, task_key)
         if plan.status != "approved":
@@ -247,6 +261,16 @@ class PatchService:
                 "plan_not_approved",
                 f"The plan is {plan.status}; only an approved plan can have code generated",
             )
+        if not checklist_step and self._checklists is not None:
+            # A proposed or rejected checklist leaves the task-level flow open; only an
+            # approved one switches the task to step-based coding.
+            checklist = self._checklists.current(project_id, task.id)
+            if checklist is not None and checklist.status == "approved":
+                raise PatchGateError(
+                    "use_checklist",
+                    f"{task.key} has an approved checklist; code it one step at a time "
+                    "(Run next step)",
+                )
         if (
             AI_RECOMMENDATION_FLAG in task.flags
             and not self._patches.confirmations(project_id, plan_id, task.key)
@@ -306,9 +330,21 @@ class PatchService:
         )
 
     def coverage(
-        self, project_id: uuid.UUID, task: PlanTask, files: Mapping[str, str]
+        self,
+        project_id: uuid.UUID,
+        task: PlanTask,
+        files: Mapping[str, str],
+        criteria: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        """Covered/missing per acceptance criterion and linked requirement (domain.coverage)."""
+        """Covered/missing per acceptance criterion and linked requirement (domain.coverage).
+
+        `criteria` (a checklist step's) replaces the task's criteria and drops the requirements.
+        """
+        if criteria is not None:
+            return check_coverage(
+                [CoverageItem("criterion", str(n), t) for n, t in enumerate(criteria, start=1)],
+                files,
+            )
         confirmed = {str(r.id): r for r in self._requirements.list(project_id, "confirmed")}
         items = [
             CoverageItem("criterion", str(n), text)
@@ -378,6 +414,22 @@ class PatchService:
             if dep.key in task.depends_on and "accepted" not in statuses.get(dep.id, set())
         ]
 
+    def accepted_files(self, project_id: uuid.UUID, tasks: Sequence[PlanTask]) -> dict[str, str]:
+        """Path -> task key for the files of the tasks' accepted patches still in the workspace."""
+        workspace = set(self._patches.workspace_hashes(project_id))
+        out: dict[str, str] = {}
+        for task in tasks:
+            for patch in self._patches.for_task(project_id, task.id):
+                if patch.status != "accepted":
+                    continue
+                for pf in self._patches.files(project_id, patch.id):
+                    if pf.path in workspace:
+                        out.setdefault(pf.path, task.key)
+        return out
+
+    def patch_files(self, project_id: uuid.UUID, patch_id: uuid.UUID) -> list[str]:
+        return sorted(f.path for f in self._patches.files(project_id, patch_id))
+
     def propose(
         self,
         project_id: uuid.UUID,
@@ -395,6 +447,7 @@ class PatchService:
         acknowledged: bool,
         based_on_version: int | None = None,
         affected: dict[str, Any] | None = None,
+        criteria: Sequence[str] | None = None,
     ) -> PatchDetail:
         """Validate a generated change set against the workspace and save it as a proposed patch."""
         workspace = {f.path: f for f in self._patches.workspace(project_id)}
@@ -438,7 +491,7 @@ class PatchService:
                 merged.pop(changed.path, None)
             else:
                 merged[changed.path] = changed.content
-        report = self.coverage(project_id, task, merged)
+        report = self.coverage(project_id, task, merged, criteria)
         listed = {(r.file, r.name): r.reason.strip() for r in generated.removals}
         removals: list[dict[str, Any]] = []
         for changed in generated.files:

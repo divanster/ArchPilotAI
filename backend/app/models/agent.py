@@ -50,6 +50,18 @@ class AgentRun(Base):
             ondelete="CASCADE",
             name="fk_agent_run_patch",
         ),
+        ForeignKeyConstraint(
+            ["checklist_id", "project_id"],
+            ["task_checklists.id", "task_checklists.project_id"],
+            ondelete="CASCADE",
+            name="fk_agent_run_checklist",
+        ),
+        ForeignKeyConstraint(
+            ["resumed_from_run_id", "project_id"],
+            ["agent_runs.id", "agent_runs.project_id"],
+            ondelete="CASCADE",
+            name="fk_agent_run_resumed_from",
+        ),
         UniqueConstraint("id", "project_id", name="uq_agent_run_id_project"),
         CheckConstraint(
             "status IN ('running', 'finished', 'stopped', 'failed')", name="ck_agent_run_status"
@@ -90,6 +102,11 @@ class AgentRun(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The hooks and their enabled state when the run started; null on runs from before hooks.
     hooks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    # A run of one step of an approved task checklist (Phase 13D); null for task-level runs.
+    checklist_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    checklist_step_key: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # The failed or stopped step run whose draft checkpoint this run continued from.
+    resumed_from_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
 
 
 class AgentStep(Base):

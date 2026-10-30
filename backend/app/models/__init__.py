@@ -1,5 +1,6 @@
 from app.models.agent import AgentDraftFile, AgentHookSetting, AgentRun, AgentStep
 from app.models.architecture import ArchitectureProposal
+from app.models.checklist import TaskChecklist
 from app.models.chunk_embedding import ChunkEmbedding
 from app.models.decision import ProjectDecision
 from app.models.document import Document
@@ -16,6 +17,7 @@ __all__ = [
     "AgentRun",
     "AgentStep",
     "CodePatch",
+    "TaskChecklist",
     "PatchFile",
     "TechnologyConfirmation",
     "WorkspaceFile",
