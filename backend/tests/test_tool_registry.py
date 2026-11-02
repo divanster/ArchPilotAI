@@ -50,6 +50,8 @@ AGENT_NAMES = {
     "find_references",
     "get_file_dependants",
     "search_repository",
+    "load_skill",
+    "read_skill_file",
     "edit_file",
     "write_file",
     "delete_file",
@@ -93,6 +95,7 @@ def test_agent_read_and_draft_tiers() -> None:
     tiers = {t.name: t.tier for t in get_registry().exposed("agent")}
     assert tiers["read_file"] == "read" and tiers["get_impact"] == "read"
     assert tiers["write_file"] == "draft" and tiers["finish"] == "draft"
+    assert tiers["load_skill"] == "read" and tiers["read_skill_file"] == "read"
 
 
 def test_mcp_server_uses_the_registry_and_stays_read_only() -> None:

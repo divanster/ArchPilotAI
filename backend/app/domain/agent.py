@@ -23,7 +23,7 @@ from app.domain.patch import (
     path_problem,
 )
 
-AGENT_PROMPT_VERSION = "agent-v1"
+AGENT_PROMPT_VERSION = "agent-v2"
 REPEAT_LIMIT = 3  # the same error this many times in a row ends the run
 MAX_RESULT_CHARS = 20_000  # stored and sent result, per step
 MAX_SUMMARY_CHARS = 300
@@ -52,6 +52,9 @@ MESSAGES = {
     "unchanged": "The replacement would not change the file",
     "task_not_found": "No such task in this plan",
     "tool_input": "The request was refused",
+    "skill_not_found": "No such skill (it may be disabled); use a name from the skills list",
+    "skill_file_not_found": "No such file in that skill; load_skill lists its files",
+    "skill_file_binary": "That skill file is not text and cannot be read",
     "patch_invalid": "The draft failed validation and was not turned into a patch",
 }
 
@@ -160,6 +163,15 @@ class SearchRepositoryArgs(_Args):
     prefix: str = Field(default="", max_length=300)
 
 
+class LoadSkillArgs(_Args):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class ReadSkillFileArgs(_Args):
+    name: str = Field(min_length=1, max_length=60)
+    path: str = Field(min_length=1, max_length=300)
+
+
 ARG_MODELS: dict[str, type[_Args]] = {
     "read_file": ReadFileArgs,
     "list_files": ListFilesArgs,
@@ -173,6 +185,8 @@ ARG_MODELS: dict[str, type[_Args]] = {
     "find_references": FindReferencesArgs,
     "get_file_dependants": FileDependantsArgs,
     "search_repository": SearchRepositoryArgs,
+    "load_skill": LoadSkillArgs,
+    "read_skill_file": ReadSkillFileArgs,
     "edit_file": EditFileArgs,
     "write_file": WriteFileArgs,
     "delete_file": DeleteFileArgs,

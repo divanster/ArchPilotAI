@@ -29,6 +29,7 @@ import {
   type CiLoopView,
   type PlanTask,
 } from "./api";
+import AgentSkillSettings from "./AgentSkillSettings";
 
 const POLL_MS = 1500;
 
@@ -904,6 +905,7 @@ export default function AgentRunPanel({
         disabled={running}
         onToggle={(h) => void toggleHook(h)}
       />
+      <AgentSkillSettings projectId={projectId} disabled={running} />
       {run && (
         <div aria-label={`Agent run of ${task.key}`}>
           <p>
@@ -953,6 +955,17 @@ export default function AgentRunPanel({
                 .map((h) => h.name)
                 .join(", ") || "none"}
             </p>
+          )}
+          {run.skills && run.skills.length > 0 && (
+            <ul className="sub" aria-label="Skills loaded by the run">
+              {run.skills.map((s) => (
+                <li key={`${s.source}:${s.name}`}>
+                  Skill loaded: <code>{s.name}</code> ({s.source}
+                  {s.version ? `, version ${s.version}` : ""}, sha256{" "}
+                  {s.content_hash.slice(0, 12)})
+                </li>
+              ))}
+            </ul>
           )}
           {running && run.ci && <CIStatus ci={run.ci} onAnswer={answerCi} />}
           {loop && (

@@ -47,6 +47,7 @@ from app.services.patch import (
 )
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
+from app.services.skills import SkillNotFoundError
 from app.tools import get_registry
 
 router = APIRouter(
@@ -272,6 +273,51 @@ class HookEnabledIn(BaseModel):
     enabled: bool
 
 
+class SkillOut(BaseModel):
+    name: str
+    description: str
+    source: str  # built-in | vendored | project
+    overrides: str | None = None  # a project skill's replaced built-in source
+    license: str
+    version: str
+    content_hash: str
+    enabled: bool
+    file_count: int
+    ignored_keys: list[str] = []
+
+
+class SkillProblemOut(BaseModel):
+    name: str
+    source: str
+    code: str
+    message: str
+
+
+class SkillListOut(BaseModel):
+    skills: list[SkillOut]
+    problems: list[SkillProblemOut]
+
+
+class SkillFileOut(BaseModel):
+    path: str
+    size: int
+    text: bool
+
+
+class SkillDetailOut(SkillOut):
+    body: str
+    files: list[SkillFileOut]
+
+
+class SkillUseOut(BaseModel):
+    """A skill a run loaded: what was read, by name, source, version and content hash."""
+
+    name: str
+    source: str
+    version: str
+    content_hash: str
+
+
 class StepOut(BaseModel):
     step_no: int
     action: str
@@ -321,6 +367,7 @@ class RunResponse(RunSummary):
     steps: list[StepOut]
     jobs: list[JobOut] = []
     hooks: list[HookOut] = []  # the hooks active when the run started
+    skills: list[SkillUseOut] = []  # the skills the run loaded
     usage: RunUsage = RunUsage()  # totals of the model calls of the run
     ci: CILiveOut | None = None  # live CI state while the run is active
     # The CI repair loop of a checklist-step run (Phase 13E): branch, approval, iterations,
@@ -441,6 +488,17 @@ def _hook_log(step: AgentStep) -> list[HookDecisionOut]:
     ]
 
 
+def _skills_used(steps: Sequence[AgentStep]) -> list[SkillUseOut]:
+    seen: dict[tuple[str, str], SkillUseOut] = {}
+    for step in steps:
+        ref = (step.args or {}).get("skill")
+        if step.status != "ok" or not isinstance(ref, dict):
+            continue
+        use = SkillUseOut(**{k: str(ref.get(k, "")) for k in SkillUseOut.model_fields})
+        seen.setdefault((use.name, use.content_hash), use)
+    return list(seen.values())
+
+
 def _call(step: AgentStep) -> ModelCallOut | None:
     found = (step.args or {}).get("call")
     if not isinstance(found, dict):
@@ -501,6 +559,7 @@ def _full(
         ci=CILiveOut(**live) if live else None,
         ci_loop=ci_loop,
         hooks=[HookOut(**h) for h in (run.hooks if run.hooks is not None else hooks)],
+        skills=_skills_used(steps),
         steps=[
             StepOut(
                 step_no=s.step_no,
@@ -774,3 +833,41 @@ def set_hook(
     except HookRequiredError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return [HookOut(**h) for h in service.hook_states(project_id)]
+
+
+@router.get("/agent-skills", response_model=SkillListOut)
+def list_skills(
+    project_id: uuid.UUID, service: AgentReadServiceDep, session: SessionDep
+) -> SkillListOut:
+    if session.get(Project, project_id) is None:
+        raise _not_found(ProjectNotFoundError(project_id))
+    return SkillListOut(**service.skill_states(project_id))
+
+
+@router.get("/agent-skills/{name}", response_model=SkillDetailOut)
+def get_skill(
+    project_id: uuid.UUID, name: str, service: AgentReadServiceDep, session: SessionDep
+) -> SkillDetailOut:
+    if session.get(Project, project_id) is None:
+        raise _not_found(ProjectNotFoundError(project_id))
+    try:
+        return SkillDetailOut(**service.skill_detail(project_id, name))
+    except SkillNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+
+@router.put("/agent-skills/{name}", response_model=SkillListOut)
+def set_skill(
+    project_id: uuid.UUID,
+    name: str,
+    body: HookEnabledIn,
+    service: AgentReadServiceDep,
+    session: SessionDep,
+) -> SkillListOut:
+    if session.get(Project, project_id) is None:
+        raise _not_found(ProjectNotFoundError(project_id))
+    try:
+        service.set_skill_enabled(project_id, name, body.enabled)
+    except SkillNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return SkillListOut(**service.skill_states(project_id))

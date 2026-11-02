@@ -93,6 +93,32 @@ afterEach(() => {
 });
 
 describe("AgentRunPanel", () => {
+  it("shows which skills a run loaded", async () => {
+    setup((url, init) => {
+      if (init?.method === "POST") return json(run(), 202);
+      if (url.endsWith("/agent-runs")) return json([run()]);
+      if (url.endsWith("/agent-skills"))
+        return json({ skills: [], problems: [] });
+      return json(
+        run({
+          status: "finished",
+          skills: [
+            {
+              name: "code-review",
+              source: "vendored",
+              version: "4ae2317",
+              content_hash: "c".repeat(64),
+            },
+          ],
+        }),
+      );
+    });
+    const list = await screen.findByLabelText("Skills loaded by the run");
+    expect(list.textContent).toContain("code-review");
+    expect(list.textContent).toContain("vendored");
+    expect(list.textContent).toContain("cccccccccccc");
+  });
+
   it("starts a run, polls the live step list and links the final patch", async () => {
     let polls = 0;
     const { onOpenPatch } = setup((url, init) => {

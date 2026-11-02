@@ -144,7 +144,7 @@ def test_successful_run_becomes_a_proposed_patch_that_a_person_accepts(
         "run_static_checks",
         "finish",
     ]
-    assert run["prompt_version"] == "agent-v1" and run["patch_id"]
+    assert run["prompt_version"] == "agent-v2" and run["patch_id"]
     assert run["input_tokens"] > 0 and run["duration_ms"] >= 0
     check = next(s for s in run["steps"] if s["action"] == "run_static_checks")
     assert check["result_summary"] == "0 finding(s)"
@@ -152,7 +152,7 @@ def test_successful_run_becomes_a_proposed_patch_that_a_person_accepts(
     patch = client.get(api(pid, f"/patches/{run['patch_id']}")).json()
     assert (patch["status"], patch["prompt_version"], patch["version"]) == (
         "proposed",
-        "agent-v1",
+        "agent-v2",
         1,
     )
     assert patch["notes"] == ["Added hello"] and patch["test_suggestions"] == ["test hello"]

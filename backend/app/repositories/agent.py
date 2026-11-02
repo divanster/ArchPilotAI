@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.models.agent import AgentDraftFile, AgentHookSetting, AgentJob, AgentRun, AgentStep
 from app.models.patch import WorkspaceFile
 
+SKILL_KEY = "skill:"
+
 
 class AgentRepository:
     """Every query is scoped by project."""
@@ -165,6 +167,18 @@ class AgentRepository:
         else:
             row.enabled = enabled
         self.commit()
+
+    # Per-project skill switches reuse the hook settings table under a "skill:" key, so no
+    # migration is needed; hook names never contain a colon.
+    def disabled_skills(self, project_id: uuid.UUID) -> set[str]:
+        return {
+            h.removeprefix(SKILL_KEY)
+            for h in self.disabled_hooks(project_id)
+            if h.startswith(SKILL_KEY)
+        }
+
+    def set_skill_enabled(self, project_id: uuid.UUID, name: str, enabled: bool) -> None:
+        self.set_hook_enabled(project_id, f"{SKILL_KEY}{name}", enabled)
 
     def rollback(self) -> None:
         self._session.rollback()

@@ -1178,6 +1178,36 @@ export interface AgentHook {
   description: string;
   enabled: boolean;
 }
+
+export interface AgentSkill {
+  name: string;
+  description: string;
+  source: "built-in" | "vendored" | "project";
+  overrides?: string | null;
+  license: string;
+  version: string;
+  content_hash: string;
+  enabled: boolean;
+  file_count: number;
+  ignored_keys?: string[];
+}
+
+export interface AgentSkillList {
+  skills: AgentSkill[];
+  problems: { name: string; source: string; code: string; message: string }[];
+}
+
+export interface AgentSkillDetail extends AgentSkill {
+  body: string;
+  files: { path: string; size: number; text: boolean }[];
+}
+
+export interface AgentSkillUse {
+  name: string;
+  source: string;
+  version: string;
+  content_hash: string;
+}
 export interface AgentTestsView {
   command_id: string;
   status: string;
@@ -1288,6 +1318,7 @@ export interface AgentRun extends AgentRunSummary {
   steps: AgentStepView[];
   jobs?: AgentJob[];
   hooks?: AgentHook[];
+  skills?: AgentSkillUse[];
   usage?: AgentUsage;
   ci?: CILive | null;
   ci_loop?: CiLoopView | null;
@@ -1621,6 +1652,25 @@ export const setAgentHookEnabled = (
     `${projectPath(projectId)}/agent-hooks/${encodeURIComponent(name)}`,
     { method: "PUT", body: JSON.stringify({ enabled }) },
   );
+
+export const listAgentSkills = (projectId: string) =>
+  request<AgentSkillList>(`${projectPath(projectId)}/agent-skills`);
+
+export const getAgentSkill = (projectId: string, name: string) =>
+  request<AgentSkillDetail>(
+    `${projectPath(projectId)}/agent-skills/${encodeURIComponent(name)}`,
+  );
+
+export const setAgentSkillEnabled = (
+  projectId: string,
+  name: string,
+  enabled: boolean,
+) =>
+  request<AgentSkillList>(
+    `${projectPath(projectId)}/agent-skills/${encodeURIComponent(name)}`,
+    { method: "PUT", body: JSON.stringify({ enabled }) },
+  );
+
 export interface ChecksStatus {
   ok: boolean;
   tools: Record<string, { available: boolean; version: string | null }>;

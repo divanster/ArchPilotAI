@@ -1,7 +1,9 @@
 import logging
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from functools import lru_cache
+from pathlib import Path
 from types import EllipsisType
 from typing import Annotated
 
@@ -56,10 +58,12 @@ from app.services.graph import GraphService
 from app.services.hybrid import HybridRetrievalService
 from app.services.patch import PatchService
 from app.services.plan import PlanService
-from app.services.project import ProjectService
+from app.services.project import ProjectNotFoundError, ProjectService
+from app.services.repo_map import RepoMapService, RepositoryUnavailableError
 from app.services.requirement import RequirementService
 from app.services.requirement_extraction import RequirementExtractionService
 from app.services.retrieval import RetrievalService
+from app.services.skills import SkillService
 from app.services.static_checks import StaticChecker
 
 logger = logging.getLogger(__name__)
@@ -385,7 +389,21 @@ def make_agent_service(
         ci_loop=ci_loop,
         routing=routing or routing_policy(settings),
         resolver=resolver or (lambda name: provider_for_deployment(provider, name)),
+        skills=SkillService(AgentRepository(session), _project_clone(session)),
     )
+
+
+def _project_clone(session: Session) -> Callable[[uuid.UUID], Path | None]:
+    """The project's cloned workspace folder (where .archpilot/skills/ lives), or None."""
+    service = RepoMapService(session, get_settings().workspace_root)
+
+    def find(project_id: uuid.UUID) -> Path | None:
+        try:
+            return service.clone(project_id)[1]
+        except (RepositoryUnavailableError, ProjectNotFoundError):
+            return None
+
+    return find
 
 
 def get_agent_service(session: SessionDep, provider: LLMProviderDep) -> AgentService:

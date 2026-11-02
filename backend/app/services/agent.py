@@ -97,10 +97,12 @@ from app.services.hooks import Point
 from app.services.patch import PatchBusyError, PatchService, TaskNotFoundError
 from app.services.plan import PlanNotFoundError
 from app.services.project import ProjectNotFoundError
+from app.services.skills import SkillCatalog, SkillService
 from app.services.static_checks import StaticChecker
 from app.tools import Tool, get_registry
 
 logger = logging.getLogger(__name__)
+SKILL_LISTING_CHARS = 600  # a skill's description in the agent's skills list
 
 # One agent run at a time per process: bounds provider cost and temporary-directory use.
 _agent_lock = threading.Lock()
@@ -205,7 +207,10 @@ class AgentService:
         ci_loop: CILoop | None = None,
         routing: RoutingPolicy | None = None,
         resolver: Callable[[str], LLMProvider] | None = None,
+        skills: SkillService | None = None,
     ) -> None:
+        self._skills = skills or SkillService(agents)
+        self._run_skills: dict[uuid.UUID, SkillCatalog] = {}
         self._routing = routing or RoutingPolicy()
         self._resolver = resolver
         self._ci_loop = ci_loop
@@ -418,6 +423,7 @@ class AgentService:
         if not keep:
             self._agents.drop_draft(run.project_id, run.id)
         self._step_runs.pop(run.id, None)
+        self._run_skills.pop(run.id, None)
         self._agents.commit()
         logger.info(
             "agent run ended run=%s status=%s reason=%s steps=%d",
@@ -495,6 +501,13 @@ class AgentService:
         tests_ok, _ = self._tests.status()
         if tests_ok:
             brief["run_tests"] = "available: pytest, ruff, mypy, tsc, npm test"
+        catalog = self.run_skills(run)
+        listing = [
+            {"name": s.name, "description": cut(s.description, SKILL_LISTING_CHARS)}
+            for s in catalog.enabled()
+        ]
+        if listing:
+            brief["skills"] = listing
         check_cache: dict[str, Any] = {}
         steps: list[StepView] = []
         started = self._clock()
@@ -679,6 +692,9 @@ class AgentService:
                 if feed is not None:
                     result["ci"] = feed
             args = {**args, "call": model_call}
+            skill_ref = result.pop("skill", None)
+            if error is None and isinstance(skill_ref, dict):
+                args = {**args, "skill": skill_ref}
             if hook_log:
                 args = {**args, "hooks": hook_log}
             summary = cut(
@@ -1405,6 +1421,24 @@ class AgentService:
             self._log_failures(call.project_id, call.task, failures)
         return failures
 
+    # ---- skills ----------------------------------------------------------------------------
+
+    def run_skills(self, run: AgentRun) -> SkillCatalog:
+        """The skills of a run, read once at its start so every load sees the same content."""
+        found = self._run_skills.get(run.id)
+        if found is None:
+            found = self._run_skills[run.id] = self._skills.catalog(run.project_id)
+        return found
+
+    def skill_states(self, project_id: uuid.UUID) -> dict[str, Any]:
+        return self._skills.states(project_id)
+
+    def skill_detail(self, project_id: uuid.UUID, name: str) -> dict[str, Any]:
+        return self._skills.detail(project_id, name)
+
+    def set_skill_enabled(self, project_id: uuid.UUID, name: str, enabled: bool) -> None:
+        self._skills.set_enabled(project_id, name, enabled)
+
     # ---- hooks -----------------------------------------------------------------------------
 
     def hook_states(self, project_id: uuid.UUID) -> list[dict[str, Any]]:
@@ -1464,6 +1498,7 @@ class AgentService:
             based_on,
         )  # fmt: skip
         call.criteria = self._criteria(run)
+        call.skills = self.run_skills(run)
         if check_cache is not None:
             call.check_cache = check_cache
         ci = self._ci.get(run.id)
