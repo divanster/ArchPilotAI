@@ -48,6 +48,13 @@ from app.domain.patch import (
     stale_failures,
     validate_patch,
 )
+from app.domain.routing import (
+    REASONING_EXHAUSTED,
+    Route,
+    RoutingError,
+    RoutingPolicy,
+    RoutingState,
+)
 from app.embeddings.contracts import EmbeddingProvider
 from app.llm.agent_prompt import build_prompt, build_system_prompt
 from app.llm.contracts import LLMProvider, LLMRequest
@@ -111,6 +118,10 @@ class RunNotFoundError(Exception):
 
 class RunNotRunningError(Exception):
     pass
+
+
+class RoutingPolicyError(Exception):
+    """The routing policy names a deployment that is not marked verified (HTTP 422)."""
 
 
 class HookNotFoundError(Exception):
@@ -192,7 +203,11 @@ class AgentService:
         embedder: EmbeddingProvider | None = None,
         checklists: ChecklistRepository | None = None,
         ci_loop: CILoop | None = None,
+        routing: RoutingPolicy | None = None,
+        resolver: Callable[[str], LLMProvider] | None = None,
     ) -> None:
+        self._routing = routing or RoutingPolicy()
+        self._resolver = resolver
         self._ci_loop = ci_loop
         self._ci: dict[uuid.UUID, _CIRun] = {}
         self._embedder = embedder
@@ -269,6 +284,9 @@ class AgentService:
         resume_from: uuid.UUID | None = None,
         discard_checkpoint: uuid.UUID | None = None,
     ) -> AgentRun:
+        problems = self._routing.problems()
+        if problems:
+            raise RoutingPolicyError("; ".join(problems))
         plan, task, _ = self._patches.check_gates(
             project_id,
             plan_id,
@@ -425,6 +443,27 @@ class AgentService:
             return "time_limit"
         return None
 
+    def _route(self, state: RoutingState) -> tuple[Route | None, str | None]:
+        """The route of the next model call, or the reason the run must stop instead."""
+        try:
+            route = state.route()
+        except RoutingError:
+            return None, "routing_refused"
+        return route, state.budget_stop(route)
+
+    def _provider_for(
+        self, route: Route, cache: dict[str, LLMProvider], run: AgentRun
+    ) -> LLMProvider:
+        if (
+            not self._routing.enabled
+            or self._resolver is None
+            or route.deployment == (run.deployment or self._provider.model_name)
+        ):
+            return self._provider
+        if route.deployment not in cache:
+            cache[route.deployment] = self._resolver(route.deployment)
+        return cache[route.deployment]
+
     def _loop(self, project_id: uuid.UUID, run_id: uuid.UUID) -> None:
         run = self.get_run(project_id, run_id)
         plan = self._plans.get(project_id, run.plan_id)
@@ -486,10 +525,25 @@ class AgentService:
         stalled = 0
         check_totals: list[int] = []
         last_findings: list[dict[str, Any]] = []
+        state = RoutingState(self._routing, run.deployment or self._provider.model_name)
+        routed: dict[str, LLMProvider] = {}
+
+        def stop_run(why: str) -> None:
+            if ci is not None:
+                self._ci_terminal(
+                    ci, _CI_REASONS.get(why, why), project_id, plan, task, draft, run,
+                    warnings, total_latency, based_on, started,
+                )  # fmt: skip
+            else:
+                self._end(run, "stopped", why, self._clock() - started)
+
+        route: Route | None = None
         while True:
             self._agents.refresh(run)
             elapsed = self._clock() - started
             reason = self._limit(run, elapsed)
+            if reason is None:
+                route, reason = self._route(state)
             if ci is not None:
                 if reason is None and ci.loop.revoked():
                     reason = "approval_revoked"
@@ -502,6 +556,7 @@ class AgentService:
             if reason:
                 self._end(run, "stopped", reason, elapsed)
                 return
+            assert route is not None
             step_no = run.steps_taken + 1
             changes = draft.changes()
             context = build_context(
@@ -522,44 +577,61 @@ class AgentService:
                 self._config.context_chars,
                 self._config.last_results,
             )
-            try:
-                response = self._provider.generate(
-                    LLMRequest(
-                        prompt=build_prompt(context, uuid.uuid4().hex[:16]),
-                        system_prompt=system_prompt,
-                        max_output_tokens=self._config.step_max_output_tokens,
-                        temperature=0,
+            request = LLMRequest(
+                prompt=build_prompt(context, uuid.uuid4().hex[:16]),
+                system_prompt=system_prompt,
+                max_output_tokens=self._config.step_max_output_tokens,
+                temperature=0,
+            )
+            response = None
+            while response is None:
+                assert route is not None
+                try:
+                    response = self._provider_for(route, routed, run).generate(request)
+                except LLMReasoningBudgetExhaustedError:
+                    if state.can_escalate(route) and state.escalate(REASONING_EXHAUSTED):
+                        # The light model spent its whole budget on reasoning: retry on heavy.
+                        route, stop = self._route(state)
+                        if stop is None and route is not None:
+                            continue
+                        stop_run(stop or "routing_refused")
+                        return
+                    logger.error("agent provider reasoning budget exhausted run=%s", run_id)
+                    if ci is not None:
+                        run.summary = "Reasoning budget exhausted: raise the deployment's budget."
+                        self._ci_terminal(
+                            ci, "reasoning_budget_exhausted", project_id, plan, task, draft, run,
+                            warnings, total_latency, based_on, started,
+                        )  # fmt: skip
+                        return
+                    self._end(
+                        run,
+                        "failed",
+                        "reasoning_budget_exhausted",
+                        self._clock() - started,
+                        "Reasoning budget exhausted: raise the completion budget of this "
+                        "deployment.",
                     )
-                )
-            except LLMReasoningBudgetExhaustedError:
-                logger.error("agent provider reasoning budget exhausted run=%s", run_id)
-                if ci is not None:
-                    run.summary = "Reasoning budget exhausted: raise the deployment's budget."
-                    self._ci_terminal(
-                        ci, "reasoning_budget_exhausted", project_id, plan, task, draft, run,
-                        warnings, total_latency, based_on, started,
-                    )  # fmt: skip
                     return
-                self._end(
-                    run,
-                    "failed",
-                    "reasoning_budget_exhausted",
-                    self._clock() - started,
-                    "Reasoning budget exhausted: raise the completion budget of this deployment.",
-                )
-                return
-            except Exception as exc:
-                logger.error("agent provider error run=%s error=%s", run_id, type(exc).__name__)
-                self._end(run, "failed", "provider_error", self._clock() - started)
-                return
+                except Exception as exc:
+                    logger.error("agent provider error run=%s error=%s", run_id, type(exc).__name__)
+                    self._end(run, "failed", "provider_error", self._clock() - started)
+                    return
+            assert route is not None
             used_in = response.usage.input_tokens or 0
             used_out = response.usage.output_tokens or 0
+            cost = state.record(route, used_in, used_out)
             model_call = {
                 "prompt_tokens": response.usage.input_tokens,
                 "completion_tokens": response.usage.output_tokens,
                 "reasoning_tokens": response.usage.reasoning_tokens,
                 "finish_reason": response.finish_reason,
                 "latency_ms": response.latency_ms,
+                "deployment": route.deployment,
+                "tier": route.tier,
+                "routing_reason": route.reason,
+                "routing_detail": route.detail,
+                "cost": round(cost, 6),
             }
             run.input_tokens += used_in
             run.output_tokens += used_out
@@ -644,6 +716,12 @@ class AgentService:
                     summary,
                     text,
                 )
+            )
+            state.observe(
+                action_name,
+                error.code if error else None,
+                result,
+                changed=bool(draft.changes()),
             )
             if done:
                 reason = GREEN if ci is not None else "finished"

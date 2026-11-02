@@ -145,6 +145,18 @@ MIXED: dict[str, str | bytes] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def lf_checkouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every git process (including the product's clone) checks files out byte for byte.
+
+    Git for Windows ships core.autocrlf=true in its system config, which turned the clone's
+    LF files into CRLF and changed character counts and the scan.
+    """
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+
+
 def write_tree(root: Path, files: dict[str, str | bytes]) -> None:
     for rel, content in files.items():
         path = root / rel
@@ -297,7 +309,7 @@ def test_generated_and_excluded_files(engine: Engine, mixed: tuple[str, Path]) -
 
 
 def maps_for(engine: Engine, clone: Path, pid: str) -> service_module.RepoMap:
-    workspace = str(clone.parents[2])
+    workspace = str(clone.parents[1])  # clone is <workspace>/git/<project id>
     found = maps(engine, workspace).load(uuid.UUID(pid))
     assert found is not None
     return found

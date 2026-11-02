@@ -12,6 +12,9 @@ class DeploymentSetting(BaseModel):
     max_completion_tokens: int | None = Field(default=None, ge=1, le=200_000)
     reasoning_effort: Literal["", "none", "low", "medium", "high"] | None = None
     verified: bool = False
+    # Estimated price per 1,000 tokens (any currency unit); 0 means "not priced" for cost limits.
+    input_cost_per_1k: float = Field(default=0.0, ge=0, le=1_000_000)
+    output_cost_per_1k: float = Field(default=0.0, ge=0, le=1_000_000)
 
 
 class Settings(BaseSettings):
@@ -135,6 +138,20 @@ class Settings(BaseSettings):
     agent_ci_max_iterations: int = Field(default=5, ge=1, le=20)
     agent_ci_max_edits_per_batch: int = Field(default=5, ge=1, le=50)
     agent_ci_loop_command: Literal["pytest", "ruff", "mypy", "tsc", "npm test"] = "pytest"
+
+    # Model routing (off by default: every call uses the run's chosen deployment). When on, the
+    # light deployment serves file selection, short edits, formatting and simple tool calls; the
+    # heavy one serves checklist proposals, diagnosis of CI or static failures, repair after a
+    # failed attempt and the final self-review, and every call after an escalation. A blank slot
+    # means the run's chosen deployment. Both must be marked verified in workbench_deployments.
+    routing_enabled: bool = False
+    routing_light_deployment: str = Field(default="", max_length=100)
+    routing_heavy_deployment: str = Field(default="", max_length=100)
+    # Per-run limits; 0 = no limit. They end a run with token_limit / heavy_call_limit /
+    # cost_limit (cost is estimated from the deployments' *_cost_per_1k settings).
+    routing_token_limit: int = Field(default=0, ge=0, le=20_000_000)
+    routing_heavy_call_limit: int = Field(default=0, ge=0, le=10_000)
+    routing_cost_limit: float = Field(default=0.0, ge=0, le=1_000_000)
 
     # Maximum accepted size of an uploaded document, in bytes (default 1 MiB).
     max_upload_bytes: int = Field(default=1_048_576, ge=1, le=50 * 1_048_576)

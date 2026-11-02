@@ -6,9 +6,10 @@ read-only, and the agent codes one step per run, starting from the files accepte
 steps. A failed or stopped step run keeps its draft as a checkpoint that a new run resumes from.
 """
 
+import logging
 import secrets
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.domain.checklist import (
     known_files,
     validate_checklist,
 )
+from app.domain.routing import CHECKLIST_PROPOSAL, RoutingError, RoutingPolicy, route_for
 from app.llm.checklist_prompt import (
     SYSTEM_PROMPT,
     ChecklistAnswerError,
@@ -40,6 +42,8 @@ from app.repositories.checklist import ChecklistRepository
 from app.repositories.patch import PatchRepository
 from app.services.agent import AgentService, is_active
 from app.services.patch import PatchGateError
+
+logger = logging.getLogger(__name__)
 
 # Names that stand for software, never for the person who approves or rejects.
 RESERVED_NAMES = frozenset({"agent", "system", "ai", "assistant", "model", "llm", "bot"})
@@ -108,7 +112,11 @@ class ChecklistService:
         checklists: ChecklistRepository,
         agents: AgentRepository,
         patches: PatchRepository,
+        routing: RoutingPolicy | None = None,
+        resolver: Callable[[str], LLMProvider] | None = None,
     ) -> None:
+        self._routing = routing or RoutingPolicy()
+        self._resolver = resolver
         self._provider = provider
         self._agent = agent
         self._patches = agent.patches
@@ -343,13 +351,27 @@ class ChecklistService:
             "instruction": instruction.strip()[:2000],
         }
         try:
-            response = self._provider.generate(
+            route = route_for(self._routing, CHECKLIST_PROPOSAL, self._provider.model_name)
+            provider = self._provider
+            if self._resolver is not None and route.deployment != self._provider.model_name:
+                provider = self._resolver(route.deployment)
+        except RoutingError as exc:
+            raise AgentRevisionError(f"The agent revision failed: {type(exc).__name__}") from exc
+        try:
+            response = provider.generate(
                 LLMRequest(
                     prompt=build_prompt(context, secrets.token_hex(8)),
                     system_prompt=SYSTEM_PROMPT,
                     max_output_tokens=CHECKLIST_MAX_OUTPUT_TOKENS,
                     temperature=0,
                 )
+            )
+            logger.info(
+                "checklist proposal model call deployment=%s reason=%s tokens_in=%s tokens_out=%s",
+                route.deployment,
+                route.reason,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
             )
             raw, manual, reason = parse_answer(response.text)
         except (LLMError, ChecklistAnswerError) as exc:

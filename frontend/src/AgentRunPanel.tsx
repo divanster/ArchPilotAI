@@ -5,6 +5,7 @@ import {
   approveCiLoop,
   deleteCiBranch,
   getAgentDeployments,
+  getAgentRouting,
   getAgentHooks,
   getAgentRun,
   getChecksStatus,
@@ -17,6 +18,7 @@ import {
   stopAgentRun,
   type AgentHook,
   type AgentDeployments,
+  type AgentRouting,
   type AgentJob,
   type AgentRun,
   type AgentStepView,
@@ -32,6 +34,15 @@ const POLL_MS = 1500;
 
 const STOP_LABELS: Record<string, string> = {
   reasoning_budget_exhausted: "reasoning budget exhausted",
+  token_limit: "token limit reached",
+  heavy_call_limit: "heavy-model call limit reached",
+  cost_limit: "cost limit reached",
+};
+
+const ESCALATION_LABELS: Record<string, string> = {
+  invalid_actions: "two invalid actions in a row",
+  repeated_failure: "same failure twice",
+  reasoning_budget_exhausted: "light model exhausted its reasoning budget",
 };
 
 function seconds(ms: number): string {
@@ -499,7 +510,37 @@ function ModelCall({ step }: { step: AgentStepView }) {
       {c.prompt_tokens ?? 0} in / {c.completion_tokens ?? 0} out
       {c.reasoning_tokens ? `, ${c.reasoning_tokens} reasoning` : ""}
       {c.finish_reason ? `, ${c.finish_reason}` : ""}
+      {c.deployment
+        ? ` · ${c.deployment}${c.tier ? ` (${c.tier}` : ""}${
+            c.tier && c.routing_reason ? `, ${c.routing_reason}` : ""
+          }${c.tier ? ")" : c.routing_reason ? ` (${c.routing_reason})` : ""}`
+        : ""}
     </span>
+  );
+}
+
+function RoutingSettings({ routing }: { routing: AgentRouting }) {
+  const limit = (v: number | null) => (v ? String(v) : "off");
+  return (
+    <div className="sub" aria-label="Model routing settings">
+      Model routing: {routing.enabled ? "on" : "off"}
+      {routing.enabled &&
+        ` · light ${routing.light ?? "run deployment"} · heavy ${
+          routing.heavy ?? "run deployment"
+        }`}
+      <br />
+      Budgets: tokens {limit(routing.token_limit)} · heavy calls{" "}
+      {limit(routing.heavy_call_limit)} · cost {limit(routing.cost_limit)}
+      <br />
+      Light: {routing.light_actions.join(", ")}
+      <br />
+      Heavy: {routing.heavy_actions.join(", ")}
+      {routing.problems.map((p) => (
+        <div key={p} role="alert">
+          {p}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -581,6 +622,7 @@ export default function AgentRunPanel({
   const [checks, setChecks] = useState<ChecksStatus | null>(null);
   const [hooks, setHooks] = useState<AgentHook[]>([]);
   const [deployments, setDeployments] = useState<AgentDeployments | null>(null);
+  const [routing, setRouting] = useState<AgentRouting | null>(null);
   const [deployment, setDeployment] = useState("");
   const mounted = useRef(true);
   const runId = run?.id ?? null;
@@ -606,6 +648,15 @@ export default function AgentRunPanel({
       .then((d) => {
         if (mounted.current && d && Array.isArray(d.verified))
           setDeployments(d);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    getAgentRouting()
+      .then((r) => {
+        if (mounted.current && r && Array.isArray(r.light_actions))
+          setRouting(r);
       })
       .catch(() => undefined);
   }, []);
@@ -808,6 +859,7 @@ export default function AgentRunPanel({
             " ? ruff and mypy are required; a run would stop immediately."}
         </p>
       )}
+      {routing && <RoutingSettings routing={routing} />}
       {deployments && deployments.verified.length > 0 && (
         <label>
           Model{" "}
@@ -871,6 +923,27 @@ export default function AgentRunPanel({
               {run.usage.completion_tokens} (reasoning{" "}
               {run.usage.reasoning_tokens}) · {seconds(run.usage.latency_ms)}
             </p>
+          )}
+          {run.usage?.by_deployment && run.usage.by_deployment.length > 0 && (
+            <ul className="sub" aria-label="Usage per deployment">
+              {run.usage.by_deployment.map((d) => (
+                <li key={d.deployment}>
+                  {d.deployment}: {d.calls} calls ({d.heavy_calls} heavy) ·
+                  prompt {d.prompt_tokens} · completion {d.completion_tokens}
+                  {d.cost ? ` · cost ${d.cost.toFixed(4)}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+          {run.usage?.escalations && run.usage.escalations.length > 0 && (
+            <ul className="sub" aria-label="Escalations of the run">
+              {run.usage.escalations.map((e) => (
+                <li key={e.step_no}>
+                  Escalated to {e.deployment ?? "heavy model"} at step{" "}
+                  {e.step_no}: {ESCALATION_LABELS[e.reason] ?? e.reason}
+                </li>
+              ))}
+            </ul>
           )}
           {run.hooks && run.hooks.length > 0 && (
             <p className="sub" aria-label="Active hooks of the run">

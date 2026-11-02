@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 from app.core.config import Settings
+from app.domain.routing import RoutingPolicy
 from app.llm.contracts import LLMProvider
 from app.llm.exceptions import LLMConfigurationError
 from app.llm.fake_provider import FakeLLMProvider
@@ -67,6 +68,23 @@ def deployment_settings(
 
 def verified_deployments(settings: Settings) -> list[str]:
     return sorted(name for name, d in settings.workbench_deployments.items() if d.verified)
+
+
+def routing_policy(settings: Settings) -> RoutingPolicy:
+    """The configured model routing policy and per-run budgets (routing off by default)."""
+    return RoutingPolicy(
+        enabled=settings.routing_enabled,
+        light=settings.routing_light_deployment,
+        heavy=settings.routing_heavy_deployment,
+        verified=frozenset(verified_deployments(settings)),
+        prices={
+            name: (d.input_cost_per_1k, d.output_cost_per_1k)
+            for name, d in settings.workbench_deployments.items()
+        },
+        token_limit=settings.routing_token_limit,
+        heavy_call_limit=settings.routing_heavy_call_limit,
+        cost_limit=settings.routing_cost_limit,
+    )
 
 
 def create_provider(settings: Settings) -> LLMProvider:

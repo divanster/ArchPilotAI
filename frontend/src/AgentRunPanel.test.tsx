@@ -526,6 +526,87 @@ describe("AgentRunPanel", () => {
     expect(screen.getByText(/reasoning budget exhausted/)).toBeTruthy();
   });
 
+  it("shows the model per step, escalations, per-deployment totals and routing settings", async () => {
+    const routed = run({
+      status: "stopped",
+      stop_reason: "heavy_call_limit",
+      usage: {
+        calls: 2,
+        prompt_tokens: 200,
+        completion_tokens: 50,
+        reasoning_tokens: 0,
+        latency_ms: 1000,
+        finish_reasons: { stop: 2 },
+        cost: 0.01,
+        by_deployment: [
+          {
+            deployment: "light-m",
+            calls: 1,
+            heavy_calls: 0,
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            cost: 0,
+          },
+          {
+            deployment: "heavy-m",
+            calls: 1,
+            heavy_calls: 1,
+            prompt_tokens: 100,
+            completion_tokens: 30,
+            cost: 0.01,
+          },
+        ],
+        escalations: [
+          { step_no: 2, reason: "invalid_actions", deployment: "heavy-m" },
+        ],
+      },
+      steps: [
+        {
+          ...run().steps[0],
+          call: {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            reasoning_tokens: 0,
+            finish_reason: "stop",
+            latency_ms: 500,
+            deployment: "light-m",
+            tier: "light",
+            routing_reason: "policy",
+          },
+        },
+      ],
+    });
+    setup((url, init) => {
+      if (url.endsWith("/agent/routing"))
+        return json({
+          enabled: true,
+          light: "light-m",
+          heavy: "heavy-m",
+          token_limit: 5000,
+          heavy_call_limit: null,
+          cost_limit: null,
+          light_actions: ["file_selection"],
+          heavy_actions: ["repair"],
+          problems: [],
+        });
+      if (init?.method === "POST") return json(routed, 202);
+      return url.endsWith("/agent-runs") ? json([routed]) : json(routed);
+    });
+    expect(
+      (await screen.findByLabelText("Model call of step 1")).textContent,
+    ).toContain("light-m (light, policy)");
+    expect(screen.getByLabelText("Usage per deployment").textContent).toContain(
+      "heavy-m: 1 calls (1 heavy)",
+    );
+    expect(
+      screen.getByLabelText("Escalations of the run").textContent,
+    ).toContain("two invalid actions in a row");
+    expect(screen.getByText(/heavy-model call limit reached/)).toBeTruthy();
+    const settings = await screen.findByLabelText("Model routing settings");
+    expect(settings.textContent).toContain("tokens 5000");
+    expect(settings.textContent).toContain("heavy calls off");
+  });
+
   const CI_LIVE: CILive = {
     provider: "github_actions",
     approval: "pending",

@@ -18,14 +18,16 @@ from app.api.deps import (
     make_agent_service,
     provider_for_deployment,
 )
+from app.core.config import get_settings
 from app.domain.checklist import ChecklistInvalidError, step_warnings
 from app.llm.contracts import LLMProvider
+from app.llm.factory import routing_policy
 from app.models.agent import AgentRun
 from app.models.checklist import TaskChecklist
 from app.repositories.agent import AgentRepository
 from app.repositories.checklist import ChecklistRepository
 from app.repositories.patch import PatchRepository
-from app.services.agent import CheckpointStaleError
+from app.services.agent import CheckpointStaleError, RoutingPolicyError
 from app.services.checklist import (
     AgentRevisionError,
     ChecklistNotFoundError,
@@ -55,6 +57,8 @@ def get_checklist_service(session: SessionDep, provider: LLMProviderDep) -> Chec
         ChecklistRepository(session),
         AgentRepository(session),
         PatchRepository(session),
+        routing=routing_policy(get_settings()),
+        resolver=lambda name: provider_for_deployment(provider, name),
     )
 
 
@@ -293,6 +297,8 @@ def _error(exc: Exception) -> HTTPException:
         )
     if isinstance(exc, PatchBusyError):
         return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
+    if isinstance(exc, RoutingPolicyError):
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
     if isinstance(exc, AgentRevisionError):
         return HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     if isinstance(exc, CIResumeRefusedError):
@@ -313,6 +319,7 @@ _HANDLED = (
     ChecklistReadOnlyError,
     CheckpointStaleError,
     PatchBusyError,
+    RoutingPolicyError,
     AgentRevisionError,
     CIResumeRefusedError,
 )

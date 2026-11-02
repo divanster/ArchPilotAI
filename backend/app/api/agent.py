@@ -21,11 +21,13 @@ from app.api.deps import (
     provider_for_deployment,
 )
 from app.core.config import get_settings
+from app.llm.factory import routing_policy
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.project import Project
 from app.services.agent import (
     HookNotFoundError,
     HookRequiredError,
+    RoutingPolicyError,
     RunNotFoundError,
     RunNotRunningError,
     is_active,
@@ -94,6 +96,25 @@ class DeploymentsOut(BaseModel):
     verified: list[str]
 
 
+class RoutingOut(BaseModel):
+    """The model routing policy and per-run budgets (read-only; set through the settings)."""
+
+    enabled: bool
+    light: str | None
+    heavy: str | None
+    token_limit: int | None
+    heavy_call_limit: int | None
+    cost_limit: float | None
+    light_actions: list[str]
+    heavy_actions: list[str]
+    problems: list[str]
+
+
+@checks_router.get("/routing", response_model=RoutingOut)
+def routing() -> RoutingOut:
+    return RoutingOut(**routing_policy(get_settings()).public())
+
+
 @checks_router.get("/deployments", response_model=DeploymentsOut)
 def deployments() -> DeploymentsOut:
     default, verified = agent_deployments()
@@ -108,6 +129,26 @@ class ModelCallOut(BaseModel):
     reasoning_tokens: int | None = None
     finish_reason: str | None = None
     latency_ms: int = 0
+    deployment: str | None = None  # null on calls from before routing was recorded
+    tier: str | None = None  # light | heavy; null when routing is off
+    routing_reason: str | None = None  # policy | escalation | user_selected
+    routing_detail: str | None = None  # the action type, or the escalation trigger
+    cost: float | None = None  # estimated, from the deployment's configured prices
+
+
+class DeploymentUsage(BaseModel):
+    deployment: str
+    calls: int = 0
+    heavy_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+
+
+class EscalationOut(BaseModel):
+    step_no: int  # the first step run on the heavy deployment
+    reason: str  # invalid_actions | repeated_failure | reasoning_budget_exhausted
+    deployment: str | None = None
 
 
 class RunUsage(BaseModel):
@@ -117,6 +158,9 @@ class RunUsage(BaseModel):
     reasoning_tokens: int = 0
     latency_ms: int = 0
     finish_reasons: dict[str, int] = {}
+    cost: float = 0.0
+    by_deployment: list[DeploymentUsage] = []
+    escalations: list[EscalationOut] = []
 
 
 class FindingOut(BaseModel):
@@ -404,11 +448,30 @@ def _call(step: AgentStep) -> ModelCallOut | None:
     return ModelCallOut(**{k: found.get(k) for k in ModelCallOut.model_fields if k in found})
 
 
-def _usage(calls: Sequence[ModelCallOut]) -> RunUsage:
+def _usage(steps: Sequence[tuple[int, ModelCallOut]]) -> RunUsage:
+    calls = [c for _, c in steps]
     reasons: dict[str, int] = {}
     for c in calls:
         if c.finish_reason:
             reasons[c.finish_reason] = reasons.get(c.finish_reason, 0) + 1
+    per: dict[str, DeploymentUsage] = {}
+    escalations: list[EscalationOut] = []
+    escalated = False
+    for step_no, c in steps:
+        if c.deployment:
+            row = per.setdefault(c.deployment, DeploymentUsage(deployment=c.deployment))
+            row.calls += 1
+            row.heavy_calls += 1 if c.tier == "heavy" else 0
+            row.prompt_tokens += c.prompt_tokens or 0
+            row.completion_tokens += c.completion_tokens or 0
+            row.cost = round(row.cost + (c.cost or 0.0), 6)
+        if c.routing_reason == "escalation" and not escalated:
+            escalated = True
+            escalations.append(
+                EscalationOut(
+                    step_no=step_no, reason=c.routing_detail or "", deployment=c.deployment
+                )
+            )
     return RunUsage(
         calls=len(calls),
         prompt_tokens=sum(c.prompt_tokens or 0 for c in calls),
@@ -416,6 +479,9 @@ def _usage(calls: Sequence[ModelCallOut]) -> RunUsage:
         reasoning_tokens=sum(c.reasoning_tokens or 0 for c in calls),
         latency_ms=sum(c.latency_ms for c in calls),
         finish_reasons=reasons,
+        cost=round(sum(c.cost or 0.0 for c in calls), 6),
+        by_deployment=sorted(per.values(), key=lambda r: r.deployment),
+        escalations=escalations,
     )
 
 
@@ -426,7 +492,7 @@ def _full(
     hooks: Sequence[dict[str, Any]] = (),
     ci_loop: dict[str, Any] | None = None,
 ) -> RunResponse:
-    calls = [c for s in steps if (c := _call(s)) is not None]
+    calls = [(s.step_no, c) for s in steps if (c := _call(s)) is not None]
     live = ci_state(run.project_id, run.id) if run.status == "running" else None
     return RunResponse(
         **_summary(run).model_dump(),
@@ -499,6 +565,8 @@ def start_run(
         )
     except NotFound as exc:
         raise _not_found(exc) from exc
+    except RoutingPolicyError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except PatchGateError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, {"code": exc.code, "message": str(exc)}

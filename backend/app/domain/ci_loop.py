@@ -30,10 +30,22 @@ TERMINAL_REASONS = (
     "ci_timeout",
     "approval_revoked",
     "reasoning_budget_exhausted",
+    "heavy_call_limit",
+    "cost_limit",
 )
 # Non-green ends that still hand over a reviewable patch when deterministic validation passes.
 # The others keep the draft as a checkpoint to resume from instead.
-PATCH_ON_STOP = frozenset({NOT_CONVERGING, "step_limit", "token_limit", "time_limit", "ci_timeout"})
+PATCH_ON_STOP = frozenset(
+    {
+        NOT_CONVERGING,
+        "step_limit",
+        "token_limit",
+        "time_limit",
+        "ci_timeout",
+        "heavy_call_limit",
+        "cost_limit",
+    }
+)
 CONVERGENCE_ITERATIONS = 3
 EDIT_ACTIONS = frozenset({"edit_file", "write_file", "delete_file"})
 PROTECTED_BRANCHES = frozenset({"main", "master"})

@@ -158,16 +158,28 @@ def test_every_step_records_its_call_and_the_run_shows_totals(
 ) -> None:
     use(MeteredProvider(agent_script=[action("list_files"), write("src/m.py"), finish()]))
     run = run_of(client, world, start(client, world))
-    assert [s["call"] for s in run["steps"]] == [
-        {
-            "prompt_tokens": 100,
-            "completion_tokens": 50,
-            "reasoning_tokens": 30,
-            "finish_reason": "stop",
-            "latency_ms": 7,
-        }
-    ] * 3
-    assert run["usage"] == {
+    base = {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "reasoning_tokens": 30,
+        "finish_reason": "stop",
+        "latency_ms": 7,
+    }
+    for step in run["steps"]:
+        assert {k: step["call"][k] for k in base} == base
+        assert step["call"]["routing_reason"] == "user_selected"
+    usage = run["usage"]
+    assert {
+        k: usage[k]
+        for k in (
+            "calls",
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "latency_ms",
+            "finish_reasons",
+        )
+    } == {
         "calls": 3,
         "prompt_tokens": 300,
         "completion_tokens": 150,

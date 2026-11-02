@@ -15,11 +15,17 @@ from app.domain.chunking import ChunkSettings
 from app.domain.document_extraction import ExtractionLimits
 from app.domain.execution import ExecutionProvider, UnavailableExecutionProvider
 from app.domain.patch import PatchLimits
+from app.domain.routing import RoutingPolicy
 from app.embeddings.contracts import EmbeddingProvider
 from app.embeddings.factory import create_embedding_provider
 from app.llm.contracts import LLMProvider, LLMRequest, LLMResponse
 from app.llm.exceptions import LLMConfigurationError
-from app.llm.factory import create_provider, deployment_settings, verified_deployments
+from app.llm.factory import (
+    create_provider,
+    deployment_settings,
+    routing_policy,
+    verified_deployments,
+)
 from app.llm.workbench_provider import WorkbenchProvider
 from app.mcp.tools import ToolContext
 from app.repositories.agent import AgentRepository
@@ -335,6 +341,8 @@ def make_agent_service(
     execution: ExecutionProvider | None = None,
     embedder: EmbeddingProvider | None = None,
     ci_loop: CILoop | None | EllipsisType = ...,
+    routing: RoutingPolicy | None = None,
+    resolver: Callable[[str], LLMProvider] | None = None,
 ) -> AgentService:
     settings = get_settings()
     execution = execution or make_execution_provider(session)
@@ -375,6 +383,8 @@ def make_agent_service(
         embedder=embedder or get_embedding_provider(),
         checklists=ChecklistRepository(session),
         ci_loop=ci_loop,
+        routing=routing or routing_policy(settings),
+        resolver=resolver or (lambda name: provider_for_deployment(provider, name)),
     )
 
 

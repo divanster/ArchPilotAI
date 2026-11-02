@@ -1111,6 +1111,26 @@ export interface AgentModelCall {
   reasoning_tokens: number | null;
   finish_reason: string | null;
   latency_ms: number | null;
+  deployment?: string | null;
+  tier?: "light" | "heavy" | null;
+  routing_reason?: "policy" | "escalation" | "user_selected" | null;
+  routing_detail?: string | null;
+  cost?: number | null;
+}
+
+export interface AgentDeploymentUsage {
+  deployment: string;
+  calls: number;
+  heavy_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number;
+}
+
+export interface AgentEscalation {
+  step_no: number;
+  reason: string;
+  deployment?: string | null;
 }
 
 export interface AgentUsage {
@@ -1120,6 +1140,21 @@ export interface AgentUsage {
   reasoning_tokens: number;
   latency_ms: number;
   finish_reasons: Record<string, number>;
+  cost?: number;
+  by_deployment?: AgentDeploymentUsage[];
+  escalations?: AgentEscalation[];
+}
+
+export interface AgentRouting {
+  enabled: boolean;
+  light: string | null;
+  heavy: string | null;
+  token_limit: number | null;
+  heavy_call_limit: number | null;
+  cost_limit: number | null;
+  light_actions: string[];
+  heavy_actions: string[];
+  problems: string[];
 }
 
 export interface AgentDeployments {
@@ -1361,6 +1396,9 @@ export const deleteCiBranch = (
 
 export const getAgentDeployments = () =>
   request<AgentDeployments>("/api/agent/deployments");
+
+export const getAgentRouting = () =>
+  request<AgentRouting>("/api/agent/routing");
 
 export const startAgentRun = (
   projectId: string,
