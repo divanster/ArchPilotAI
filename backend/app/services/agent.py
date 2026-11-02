@@ -685,6 +685,8 @@ class AgentService:
                 )
             except ActionError as exc:
                 error = exc
+                if exc.tool and action_name == "invalid":
+                    action_name = exc.tool
                 path = path or (cut(exc.path, 300) if exc.path else None)
                 result = {"error": exc.code, "message": str(exc), **exc.data}
             if ci is not None and error is None and not done:

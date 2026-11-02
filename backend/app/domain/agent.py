@@ -69,8 +69,10 @@ class ActionError(Exception):
         *,
         path: str | None = None,
         data: dict[str, Any] | None = None,
+        tool: str | None = None,
     ) -> None:
         self.code = code
+        self.tool = tool  # a known tool the reply named but could not call (invalid_* only)
         self.path = path
         self.data = data or {}
         super().__init__(message or MESSAGES.get(code, code))
@@ -227,10 +229,10 @@ def parse_action(
         raise ActionError("invalid_json") from None
     if not isinstance(data, dict) or not isinstance(data.get("action"), str):
         raise ActionError("invalid_shape")
+    name = data["action"]
     args = data.get("args", {})
     if not isinstance(args, dict) or set(data) - {"action", "args", "thought"}:
-        raise ActionError("invalid_shape")
-    name = data["action"]
+        raise ActionError("invalid_shape", tool=name if name in models else None)
     model = models.get(name)
     if model is None:
         raise ActionError("unknown_action", f"Unknown action. Use one of: {', '.join(models)}")
@@ -240,7 +242,9 @@ def parse_action(
         # Locations and error types only: never the offending values.
         problems = [".".join(str(p) for p in e["loc"]) + f": {e['type']}" for e in exc.errors()]
         raise ActionError(
-            "invalid_args", f"{MESSAGES['invalid_args']} ({'; '.join(problems[:5])})"
+            "invalid_args",
+            f"{MESSAGES['invalid_args']} ({'; '.join(problems[:5])})",
+            tool=name,
         ) from None
 
 

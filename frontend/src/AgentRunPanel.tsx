@@ -1001,7 +1001,14 @@ export default function AgentRunPanel({
                   key={s.step_no}
                   className={s.status === "error" ? "hint" : undefined}
                 >
-                  <code>{s.action}</code>
+                  <code>
+                    {s.status === "error" &&
+                    (s.error_code === "invalid_args" ||
+                      s.error_code === "invalid_shape") &&
+                    s.tool
+                      ? `attempted: ${s.tool}`
+                      : s.action}
+                  </code>
                   {s.tier && (
                     <span className="badge" title="Tool tier">
                       {s.tier}

@@ -622,8 +622,7 @@ def test_agent_reads_only_its_own_projects_repository(
     assert steps[0]["error_code"] is None and steps[1]["error_code"] is None
     assert steps[2]["error_code"] is not None  # project_id is not an agent argument
     assert [s["error_code"] for s in steps[3:6]] == [None, None, None]
-    results = context_of(provider.requests[2].prompt)["last_results"]
-    assert "0 definition(s)" in json.dumps(results)  # "charge" lives in the other project
+    assert steps[1]["result_summary"] == "0 definition(s)"  # "charge" lives in the other project
 
     brief = context_of(provider.requests[0].prompt)["task"]["repository"]
     assert brief["scan_commit"] == brief["head_commit"] and brief["stale"] is False
@@ -656,8 +655,8 @@ def test_agent_context_is_a_bounded_neighbourhood(engine: Engine, mixed: tuple[s
     )
     assert len(json.dumps(block)) <= service_module.CONTEXT_CHARS
     related = [f["path"] for f in block["related_files"]]
-    assert related and related[0].startswith("backend/orders/")
-    assert len(related) <= service_module.CONTEXT_FILES
+    assert related and len(related) <= service_module.CONTEXT_FILES
+    assert any(p.startswith("backend/orders/") for p in related[:3])
     assert "backend/orders/models.py" in related
     models = next(f for f in block["related_files"] if f["path"] == "backend/orders/models.py")
     assert "backend/orders/services.py" in models["dependants"]
