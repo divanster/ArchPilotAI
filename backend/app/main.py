@@ -26,6 +26,9 @@ from app.core.config import get_settings
 from app.core.db import get_database, reset_database
 from app.core.logging import configure_logging
 
+# Every method the frontend sends; a missing one fails the browser's CORS preflight.
+CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -41,7 +44,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_methods=CORS_ALLOWED_METHODS,
         allow_headers=["Content-Type"],
     )
     app.include_router(health_router)
