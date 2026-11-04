@@ -18,8 +18,11 @@ class Plain(Static):
     Plain { color: $foreground; background: $surface; padding: 0 1; }
     """
 
-    def __init__(self, text: str = "", *, id: str | None = None, classes: str = "") -> None:
+    def __init__(
+        self, text: str = "", *, id: str | None = None, classes: str = "", focusable: bool = False
+    ) -> None:
         super().__init__(Text(text), id=id, classes=classes, markup=False)
+        self.can_focus = focusable
         self.text = text
 
     def set(self, text: str) -> None:

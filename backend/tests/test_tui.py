@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from textual.pilot import Pilot
-from textual.widgets import Input
+from textual.widgets import DataTable, Input, ListView
 
 from app.core.db import make_session_factory
 from app.llm.contracts import LLMRequest, LLMResponse
@@ -43,6 +43,7 @@ from app.tui.theme import (
     resolve_theme,
 )
 from app.tui.widgets import Cursor, Plain
+from tests.test_checklists import approved_two_steps
 from tests.test_patches import World, create, generate, serve
 from tests.test_patches import world as _world_fixture
 
@@ -472,3 +473,202 @@ def test_live_run_updates_stop_and_resume(client: TestClient, engine: Engine, wo
     deadline = time.monotonic() + 10
     while agent_service._active and time.monotonic() < deadline:
         time.sleep(0.05)
+
+
+# ---- arrow-key navigation ----------------------------------------------------------------------
+
+
+def table(app: ArchPilotApp, selector: str) -> DataTable[Any]:
+    return app.screen.query_one(selector, DataTable)
+
+
+def test_arrows_select_rows_and_enter_activates_on_mission_and_tasks(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    _pid, _plan, tasks = world
+    app = make_app(engine, animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        assert app.screen.focused is table(app, "#projects")
+        assert table(app, "#projects").cursor_type == "row"
+        await pilot.press("down", "up", "enter")
+        assert "Plan:" in text(app, "#mission")
+        await pilot.press("tab")  # to the detail pane
+        assert app.screen.focused is app.screen.query_one("#mission")
+        await pilot.press("left")
+        assert app.screen.focused is table(app, "#projects")
+        await pilot.press("right")
+        assert app.screen.focused is app.screen.query_one("#mission")
+        await pilot.press("shift+tab")
+        assert app.screen.focused is table(app, "#projects")
+
+        await pilot.press("t")  # letter shortcut still works
+        assert isinstance(app.screen, TasksScreen)
+        assert table(app, "#tasks").cursor_type == "row"
+        await pilot.press("down", "down")
+        assert table(app, "#tasks").cursor_row == min(2, len(tasks) - 1)
+        await pilot.press("up")
+        row = table(app, "#tasks").cursor_row
+        await pilot.press("enter")
+        assert isinstance(app.screen, ChecklistScreen)
+        assert app.screen.task_key == list(tasks)[row]
+
+    drive(app, script)
+
+
+def test_checklist_panes_tab_arrows_and_letter_fallbacks(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    approved_two_steps(client, engine, world)
+    app = make_app(engine, animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        await pilot.press("enter", "t", "enter")
+        assert isinstance(app.screen, ChecklistScreen)
+        steps, runs = table(app, "#steps"), table(app, "#runs")
+        assert steps.cursor_type == runs.cursor_type == "row"
+        assert app.screen.focused is steps
+        await pilot.press("tab")
+        assert app.screen.focused is runs
+        await pilot.press("shift+tab")
+        assert app.screen.focused is steps
+        await pilot.press("right")
+        assert app.screen.focused is runs
+        await pilot.press("left")
+        assert app.screen.focused is steps
+
+        assert table(app, "#steps").row_count == 2
+        await pilot.press("down", "enter")  # an unrun step: no navigation, a hint
+        assert isinstance(app.screen, ChecklistScreen)
+        assert table(app, "#steps").cursor_row == 1
+        assert "has not run yet" in text(app, "#status")
+        await pilot.press("p")  # letter shortcut alongside arrows
+        assert text(app, "#status") == "The selected step has no patch."
+
+    drive(app, script)
+
+
+def test_patch_file_list_arrows_enter_and_letter_shortcuts(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    pid = world[0]
+    serve(
+        [
+            create("src/a.py", "def a() -> int:\n    return 1\n"),
+            create("src/b.py", "def b() -> int:\n    return 2\n"),
+        ]
+    )
+    created = generate(client, world)
+    assert created.status_code == 201, created.text
+    patch_id = str(created.json()["id"])
+    app = make_app(engine, animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        await pilot.press("enter")
+        app.open_patch(uuid.UUID(patch_id))
+        await pilot.pause()
+        assert isinstance(app.screen, PatchScreen)
+        files = table(app, "#files")
+        assert files.cursor_type == "row" and app.screen.focused is files
+        assert files.row_count == 2
+        first = text(app, "#diff")
+        await pilot.press("down")
+        await pilot.pause()
+        assert files.cursor_row == 1 and text(app, "#diff") != first
+        await pilot.press("up")
+        await pilot.pause()
+        assert text(app, "#diff") == first
+
+        await pilot.press("enter")  # activate: focus moves to the diff to scroll it
+        assert app.screen.focused is app.screen.query_one("#diff-scroll")
+        await pilot.press("left")
+        assert app.screen.focused is files
+        await pilot.press("tab")
+        assert app.screen.focused is app.screen.query_one("#diff-scroll")
+
+        await pilot.press("colon")  # palette from a focused pane; arrows stay in its input
+        assert isinstance(app.screen, PaletteScreen)
+        await type_text(pilot, "abc")
+        await pilot.press("left", "left", "right")
+        assert app.screen.query_one(Input).value == "abc"
+        await pilot.press("escape")
+        assert isinstance(app.screen, PatchScreen)
+
+        await pilot.press("a")  # letter shortcut still opens the confirmation
+        assert isinstance(app.screen, ConfirmScreen)
+        assert pid
+
+    drive(app, script)
+
+
+def test_palette_opens_from_every_navigable_screen(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    app = make_app(engine, animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        await pilot.press("enter", "t")
+        for expected in (TasksScreen, ChecklistScreen):
+            assert isinstance(app.screen, expected)
+            await pilot.press("colon")
+            assert isinstance(app.screen, PaletteScreen)
+            await pilot.press("escape")
+            assert isinstance(app.screen, expected)
+            await pilot.press("down", "enter")
+
+    drive(app, script)
+
+
+def test_enter_on_the_run_screen_opens_its_patch_like_p(
+    client: TestClient, engine: Engine, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = FakeLLMProvider(agent_script=[action("finish", summary="done")])
+    app = make_app(engine, provider, animation=False)
+    patch_id = uuid.UUID(proposed_patch(client, world))
+    original = Backend.run
+
+    def run_with_patch(self: Backend, project_id: uuid.UUID, run_id: uuid.UUID) -> Any:
+        return original(self, project_id, run_id).model_copy(update={"patch_id": patch_id})
+
+    async def script(pilot: Pilot[None]) -> None:
+        await pilot.press("enter", "t", "g")
+        await until(pilot, lambda: isinstance(app.screen, RunScreen))
+        run = app.screen
+        assert isinstance(run, RunScreen)
+        await until(pilot, lambda: run.view is not None and run.view.status != "running")
+
+        await pilot.press("enter")  # the run has no patch yet
+        assert isinstance(app.screen, RunScreen)
+        assert text(app, "#status") == "This run has no patch yet."
+
+        monkeypatch.setattr(Backend, "run", run_with_patch)
+        run.refresh_run()
+        await pilot.press("enter")
+        assert isinstance(app.screen, PatchScreen) and app.screen.patch_id == patch_id
+        await pilot.press("escape")
+        assert isinstance(app.screen, RunScreen)
+        await pilot.press("p")  # the letter shortcut lands on the same screen
+        assert isinstance(app.screen, PatchScreen) and app.screen.patch_id == patch_id
+
+    drive(app, script)
+
+
+def test_ci_screen_has_no_rows_so_arrows_are_inert_and_the_letter_action_stays(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Backend, "ci", lambda self, p, r: {"branch": "agent/t1-ci"})
+    app = make_app(engine, animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        app.push_screen(CIScreen(uuid.uuid4(), uuid.uuid4()))
+        await pilot.pause()
+        assert not app.screen.query(DataTable) and not app.screen.query(ListView)
+        before = text(app, "#ci")
+        await pilot.press("down", "up", "enter", "left", "right", "tab")
+        assert isinstance(app.screen, CIScreen) and text(app, "#ci") == before
+        await pilot.press("colon")  # the palette still opens
+        assert isinstance(app.screen, PaletteScreen)
+        await pilot.press("escape")
+        assert isinstance(app.screen, CIScreen)
+
+    drive(app, script)

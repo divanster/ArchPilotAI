@@ -56,6 +56,8 @@ class Base(Screen[None]):
     TITLE_LABEL = "ARCHPILOT"
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "back", "Back"),
+        Binding("left", "pane(-1)", "Pane", show=False, priority=True),
+        Binding("right", "pane(1)", "Pane", show=False, priority=True),
     ]
 
     @property
@@ -96,6 +98,13 @@ class Base(Screen[None]):
     def action_back(self) -> None:
         if len(self.app.screen_stack) > 2:
             self.app.pop_screen()
+
+    def action_pane(self, step: int) -> None:
+        """Left/Right move focus between the panes of the screen, like Shift-Tab/Tab."""
+        if step < 0:
+            self.focus_previous()
+        else:
+            self.focus_next()
 
 
 # ---- confirmation (approval tier) --------------------------------------------------------------
@@ -203,12 +212,14 @@ class PaletteScreen(ModalScreen[str | None]):
 
 HELP = """\
 Keyboard only. Global:  :  command palette   ?  help   Esc  back   q  quit
+Up/Down select a row, Enter opens it, Tab/Shift-Tab or Left/Right switch pane.
+The letter keys below always work as well.
 
 Mission control   Enter select project   t  tasks
 Task list         Enter checklist        g  start task-level run
 Checklist         Enter open run         n  run next step   r  resume step   p  patch
-Agent run         s  stop   r  resume   p  patch   c  CI status
-Patch review      a  accept   x  reject   m  commit   u  push   o  pull request
+Agent run         Enter patch   s  stop   r  resume   p  patch   c  CI status
+Patch review      Enter focus diff   a  accept   x  reject   m  commit   u  push   o  pull request
 CI status         a  approve CI branch
 
 Approval-tier actions (accept, CI branch approval, push, pull request) always open a
@@ -242,7 +253,9 @@ class MissionScreen(Base):
         with Horizontal():
             table: DataTable[str] = DataTable(id="projects", cursor_type="row")
             yield _framed(table, "projects")
-            yield _framed(Plain("Select a project and press Enter.", id="mission"), "status")
+            yield _framed(
+                Plain("Select a project and press Enter.", id="mission", focusable=True), "status"
+            )
 
     def on_mount(self) -> None:
         table = self.query_one("#projects", DataTable)
@@ -490,6 +503,7 @@ def render_steps(run: RunResponse) -> str:
 class RunScreen(Base):
     TITLE_LABEL = "AGENT RUN"
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "patch", "Open patch", show=False),
         Binding("s", "stop", "Stop"),
         Binding("r", "resume", "Resume"),
         Binding("p", "patch", "Patch"),
@@ -647,6 +661,11 @@ class PatchScreen(Base):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key.value is not None:
             self.show_file(int(event.row_key.value))
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.row_key.value is not None:
+            self.show_file(int(event.row_key.value))
+            self.query_one("#diff-scroll").focus()
 
     def action_accept(self) -> None:
         target = self.attempt(lambda: self.backend.accept_target(self.project_id, self.patch_id))

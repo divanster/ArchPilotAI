@@ -24,6 +24,7 @@ CSS = """
 Screen { background: $background; }
 #title { color: $accent; text-style: bold; padding: 0 1; }
 .frame { border: heavy $primary; border-title-color: $accent; border-title-style: bold; }
+.frame:focus, .frame:focus-within { border: heavy $accent; }
 DataTable { height: auto; max-height: 20; }
 #statusbar { height: 1; dock: bottom; margin-bottom: 1; }
 #status { width: auto; background: $background; }
