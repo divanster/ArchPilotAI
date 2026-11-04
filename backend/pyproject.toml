@@ -18,7 +18,13 @@ dependencies = [
   "keyring>=25",
   "pypdf>=6,<7",
   "python-docx>=1.1,<2",
+  "typer>=0.12",
+  "textual>=1.0",
+  "rich>=13.7",
 ]
+
+[project.scripts]
+archpilot = "app.cli.main:main"
 
 [project.optional-dependencies]
 dev = [
