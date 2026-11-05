@@ -55,6 +55,7 @@ def run_tui(
     resume: uuid.UUID | None,
     theme: str,
     animation: bool,
+    change: str | None = None,
 ) -> None:
     from app.tui.app import ArchPilotApp
     from app.tui.backend import Backend
@@ -66,6 +67,7 @@ def run_tui(
         resume=resume,
         theme=theme,
         animation=animation,
+        change=change,
     ).run()
 
 
@@ -145,6 +147,9 @@ def code(
     project: Annotated[str | None, typer.Option(help="Project id or name.")] = None,
     task: Annotated[str | None, typer.Option(help="Task key of the approved plan.")] = None,
     resume: Annotated[uuid.UUID | None, typer.Option(help="Agent run id to open.")] = None,
+    change: Annotated[
+        str | None, typer.Option(help="Free-form change request text (needs --project).")
+    ] = None,
     theme: Annotated[
         str | None, typer.Option(help=f"Theme: {', '.join(THEMES)}. NO_COLOR forces mono.")
     ] = None,
@@ -161,7 +166,13 @@ def code(
     if task is not None and project is None and resume is None:
         typer.echo("FAIL  task               --task needs --project", err=True)
         raise typer.Exit(code=2)
-    run_tui(project, task, resume, chosen, not no_animation)
+    if change is not None and project is None:
+        typer.echo("FAIL  change            --change needs --project", err=True)
+        raise typer.Exit(code=2)
+    if change is None:
+        run_tui(project, task, resume, chosen, not no_animation)
+    else:
+        run_tui(project, task, resume, chosen, not no_animation, change=change)
 
 
 def main() -> None:

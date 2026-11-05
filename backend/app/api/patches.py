@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -5,13 +6,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.api.ai import _upstream_error, require_non_production
-from app.api.deps import PatchReviewServiceDep, PatchServiceDep
+from app.api.deps import PatchReviewServiceDep, PatchServiceDep, SessionDep, _repo_paths
 from app.core.config import get_settings
 from app.domain.patch import PatchInvalidError, PatchOutputError
 from app.llm.exceptions import LLMError
 from app.models.patch import CodePatch
+from app.services.change_request import ChangeRequestService
 from app.services.patch import (
     PatchBusyError,
     PatchContextTooLargeError,
@@ -337,18 +340,31 @@ def get_patch(
         raise _not_found(exc) from exc
 
 
+def _drift_check(session: Session, project_id: uuid.UUID, patch_id: uuid.UUID) -> None:
+    """Flag architecture drift of a change-request patch; never blocks the acceptance."""
+    try:
+        ChangeRequestService(session, repo_paths=_repo_paths(session)).after_patch_accepted(
+            project_id, patch_id
+        )
+    except Exception:
+        session.rollback()
+        logging.getLogger(__name__).exception("architecture drift check failed")
+
+
 def _review(
     project_id: uuid.UUID,
     patch_id: uuid.UUID,
     body: ReviewIn,
     service: PatchReviewServiceDep,
     accept: bool,
+    session: Session,
 ) -> PatchResponse:
     method = service.accept if accept else service.reject
     try:
         if accept:
             confirmed = [(c.file, c.name, c.reason) for c in body.confirmed_removals]
             result = service.accept(project_id, patch_id, body.reviewer, body.reason, confirmed)
+            _drift_check(session, project_id, patch_id)
         else:
             result = method(project_id, patch_id, body.reviewer, body.reason)
         return _full(result)
@@ -368,16 +384,24 @@ def _review(
 
 @router.post("/patches/{patch_id}/accept", response_model=PatchResponse)
 def accept_patch(
-    project_id: uuid.UUID, patch_id: uuid.UUID, body: ReviewIn, service: PatchReviewServiceDep
+    project_id: uuid.UUID,
+    patch_id: uuid.UUID,
+    body: ReviewIn,
+    service: PatchReviewServiceDep,
+    session: SessionDep,
 ) -> PatchResponse:
-    return _review(project_id, patch_id, body, service, True)
+    return _review(project_id, patch_id, body, service, True, session)
 
 
 @router.post("/patches/{patch_id}/reject", response_model=PatchResponse)
 def reject_patch(
-    project_id: uuid.UUID, patch_id: uuid.UUID, body: ReviewIn, service: PatchReviewServiceDep
+    project_id: uuid.UUID,
+    patch_id: uuid.UUID,
+    body: ReviewIn,
+    service: PatchReviewServiceDep,
+    session: SessionDep,
 ) -> PatchResponse:
-    return _review(project_id, patch_id, body, service, False)
+    return _review(project_id, patch_id, body, service, False, session)
 
 
 @router.get("/workspace", response_model=WorkspaceResponse)

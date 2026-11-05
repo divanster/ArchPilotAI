@@ -1,12 +1,14 @@
+import re
 import uuid
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from app.domain.architecture import ArchitectureContent, ProposalStatus
 from app.domain.graph import EdgeKind, NodeKind
-from app.domain.plan import SOURCE_MANUAL, build_plan, find_path
+from app.domain.plan import SOURCE_MANUAL, PlanSpec, PlanTaskSpec, build_plan, find_path
+from app.models.architecture import ArchitectureProposal
 from app.models.plan import ImplementationPlan, PlanDependencyEdit, PlanTask
 from app.repositories.architecture import ArchitectureRepository
 from app.repositories.graph import GraphRepository
@@ -18,6 +20,22 @@ from app.services.project import ProjectNotFoundError
 
 def _component_index(source_ref: str) -> int:
     return int(source_ref.removeprefix("components[").removesuffix("]"))
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _changed(old: PlanTask, new: PlanTaskSpec) -> bool:
+    return (
+        old.description != new.description
+        or list(old.acceptance_criteria) != list(new.acceptance_criteria)
+        or sorted(old.requirement_ids) != sorted(str(r) for r in new.requirement_ids)
+    )
+
+
+class EmptyPlanDeltaError(Exception):
+    pass
 
 
 class PlanNotFoundError(Exception):
@@ -92,6 +110,13 @@ class PlanService:
         if not approved:
             raise NoApprovedArchitectureError
         proposal = approved[0]  # newest version first
+        spec, built_at = self._spec_for(project_id, proposal)
+        plan = self._plans.create(project_id, proposal.id, spec, built_at)
+        return self._detail(project_id, plan)
+
+    def _spec_for(
+        self, project_id: uuid.UUID, proposal: ArchitectureProposal
+    ) -> tuple[PlanSpec, datetime | None]:
         nodes = self._graph.nodes(project_id, proposal.id)
         if not nodes:
             raise GraphNotBuiltError
@@ -106,8 +131,53 @@ class PlanService:
         spec = build_plan(
             ArchitectureContent.model_validate(proposal.content), confirmed, component_dependencies
         )
+        return spec, built_at if isinstance(built_at, datetime) else None
+
+    def build_delta(
+        self, project_id: uuid.UUID, proposal_id: uuid.UUID, change_request_id: uuid.UUID
+    ) -> PlanDetail:
+        """A new draft plan holding only the tasks that are new or changed by an approved change
+        request's architecture. The base plan, its tasks and all patches stay untouched."""
+        self._require_project(project_id)
+        proposal = self._architecture.get(project_id, proposal_id)
+        if proposal is None or proposal.status != ProposalStatus.APPROVED.value:
+            raise NoApprovedArchitectureError
+        bases = self._plans.list(project_id, "approved")
+        if not bases:
+            raise PlanNotFoundError(uuid.UUID(int=0))
+        base = bases[0]
+        spec, built_at = self._spec_for(project_id, proposal)
+        known = {(t.kind, _norm(t.title)): t for t in self._plans.tasks(project_id, base.id)}
+        kept: list[PlanTaskSpec] = []
+        for task in spec.tasks:
+            old = known.get((task.kind, _norm(task.title)))
+            if old is None or _changed(old, task):
+                kept.append(task)
+        if not kept:
+            raise EmptyPlanDeltaError("The approved architecture changes no task of the plan")
+        number = self._plans.max_task_number(project_id)
+        renamed = {t.key: f"T-{number + n:03d}" for n, t in enumerate(kept, start=1)}
+        tasks = [
+            replace(
+                t,
+                key=renamed[t.key],
+                order_index=n,
+                depends_on=[renamed[d] for d in t.depends_on if d in renamed],
+                dependency_sources={
+                    renamed[d]: s for d, s in t.dependency_sources.items() if d in renamed
+                },
+            )
+            for n, t in enumerate(kept, start=1)
+        ]
+        delta = replace(spec, tasks=tasks, dependency_count=sum(len(t.depends_on) for t in tasks))
         plan = self._plans.create(
-            project_id, proposal.id, spec, built_at if isinstance(built_at, datetime) else None
+            project_id,
+            proposal.id,
+            delta,
+            built_at,
+            kind="delta",
+            base_plan_id=base.id,
+            change_request_id=change_request_id,
         )
         return self._detail(project_id, plan)
 

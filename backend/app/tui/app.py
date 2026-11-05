@@ -1,5 +1,6 @@
 """ArchPilotApp: the retro terminal interface (Textual + Rich) over the existing services."""
 
+import getpass
 import os
 import uuid
 from typing import ClassVar
@@ -57,6 +58,7 @@ class ArchPilotApp(App[None]):
         resume: uuid.UUID | None = None,
         theme: str = DEFAULT_THEME,
         animation: bool = True,
+        change: str | None = None,
     ) -> None:
         super().__init__()
         self.backend = backend
@@ -66,6 +68,7 @@ class ArchPilotApp(App[None]):
         self._start_project = project
         self._start_task = task
         self._start_resume = resume
+        self._start_change = change
         for t in THEMES.values():
             self.register_theme(t)
         self.theme = theme
@@ -89,8 +92,24 @@ class ArchPilotApp(App[None]):
                     mission.show(self.project)
                 if self._start_task is not None:
                     self.open_checklist(self._start_task)
+                if self._start_change is not None:
+                    self.submit_change(self._start_change)
         except TuiError as exc:
             self.notify(str(exc), title="Error", severity="error", markup=False)
+
+    def submit_change(self, text: str) -> None:
+        if self.project is None:
+            self.notify("Select a project first.", severity="warning", markup=False)
+            return
+        view = self.backend.submit_change(self.project.id, text, getpass.getuser())
+        affected = ", ".join(view.components) or "none named"
+        self.notify(
+            f"{view.key}: {view.impact_class}. {view.reason} Affected components: {affected}. "
+            "Approve it on the Changes page.",
+            title="Change request",
+            markup=False,
+            timeout=15,
+        )
 
     # ---- navigation (used by the screens and the palette) ----------------------------------
 
@@ -160,6 +179,8 @@ class ArchPilotApp(App[None]):
             elif name in ("run", "patch", "ci") and arg:
                 target = uuid.UUID(arg)
                 {"run": self.open_run, "patch": self.open_patch, "ci": self.open_ci}[name](target)
+            elif name == "change" and arg:
+                self.submit_change(arg)
             elif name == "theme":
                 self.set_theme(arg)
             else:

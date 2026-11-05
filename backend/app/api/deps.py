@@ -47,6 +47,7 @@ from app.services.ai_service import AIService
 from app.services.architecture import ArchitectureService
 from app.services.architecture_generation import ArchitectureGenerationService
 from app.services.architecture_lint import lint_config_from_settings
+from app.services.change_request import ChangeRequestService
 from app.services.ci_execution import CIExecutionProvider, settings_targets
 from app.services.ci_loop import CILoop, LoopConfig
 from app.services.credential_store import KeyringCredentialStore
@@ -428,6 +429,7 @@ def get_architecture_service(session: SessionDep) -> ArchitectureService:
         RequirementRepository(session),
         lint_config=lint_config_from_settings(get_settings()),
         on_approved=get_graph_service(session).build,
+        approval_guard=ChangeRequestService(session).check_approval,
     )
 
 
@@ -458,6 +460,47 @@ def get_architecture_generation_service(
 
 ArchitectureGenerationServiceDep = Annotated[
     ArchitectureGenerationService, Depends(get_architecture_generation_service)
+]
+
+
+def _repo_paths(session: Session) -> Callable[[uuid.UUID], list[str]]:
+    """File paths of the project's repository map; empty when there is no clone or map."""
+    service = RepoMapService(session, get_settings().workspace_root)
+
+    def paths(project_id: uuid.UUID) -> list[str]:
+        try:
+            repo_map = service.load(project_id)
+        except Exception:
+            return []
+        return sorted(repo_map.files) if repo_map is not None else []
+
+    return paths
+
+
+def get_change_request_service(
+    session: SessionDep, provider: LLMProviderDep
+) -> ChangeRequestService:
+    return ChangeRequestService(
+        session,
+        generation=get_architecture_generation_service(session, provider),
+        architecture_service=get_architecture_service(session),
+        plan_service=get_plan_service(session),
+        repo_paths=_repo_paths(session),
+    )
+
+
+def get_change_request_read_service(session: SessionDep) -> ChangeRequestService:
+    return ChangeRequestService(
+        session,
+        architecture_service=get_architecture_service(session),
+        plan_service=get_plan_service(session),
+        repo_paths=_repo_paths(session),
+    )
+
+
+ChangeRequestServiceDep = Annotated[ChangeRequestService, Depends(get_change_request_service)]
+ChangeRequestReadServiceDep = Annotated[
+    ChangeRequestService, Depends(get_change_request_read_service)
 ]
 
 

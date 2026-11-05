@@ -107,6 +107,9 @@ class AgentRun(Base):
     checklist_step_key: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # The failed or stopped step run whose draft checkpoint this run continued from.
     resumed_from_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    change_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class AgentStep(Base):

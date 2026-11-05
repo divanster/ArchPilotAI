@@ -30,9 +30,16 @@ from app.services.agent import (
     RunNotRunningError,
     is_active,
 )
+from app.services.change_request import (
+    ChangeRequestInputError,
+    ChangeRequestNotFoundError,
+    ChangeRequestService,
+    ChangeRequestStateError,
+    NoBaselineError,
+    effective_class,
+)
 from app.services.checklist import (
     AgentRevisionError,
-    ChecklistNotFoundError,
     ChecklistReadOnlyError,
     ChecklistService,
     ChecklistStateError,
@@ -74,7 +81,10 @@ _SAFE_ERRORS: tuple[type[Exception], ...] = (
     StalePatchError,
     RemovalsNotConfirmedError,
     ReviewInputError,
-    ChecklistNotFoundError,
+    ChangeRequestInputError,
+    ChangeRequestNotFoundError,
+    ChangeRequestStateError,
+    NoBaselineError,
     ChecklistStateError,
     DeciderError,
     CILoopError,
@@ -110,6 +120,14 @@ def _guard() -> Iterator[None]:
 
 
 # ---- plain views -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChangeView:
+    key: str
+    impact_class: str
+    reason: str
+    components: list[str]
 
 
 @dataclass(frozen=True)
@@ -441,6 +459,20 @@ class Backend:
 
         agent_api._spawn(job)
         return run_id
+
+    # ---- change requests -------------------------------------------------------------------
+
+    def submit_change(self, project_id: uuid.UUID, text: str, author: str) -> ChangeView:
+        """Record a free-form change request and analyse it; a person approves it afterwards."""
+        with self._session() as s:
+            service = ChangeRequestService(s)
+            cr = service.analyse(project_id, service.create(project_id, text, author).id)
+            return ChangeView(
+                key=cr.key,
+                impact_class=effective_class(cr) or "",
+                reason=str((cr.impact or {}).get("reason", "")),
+                components=[str(c["name"]) for c in (cr.impact or {}).get("components", [])],
+            )
 
     def stop_run(self, project_id: uuid.UUID, run_id: uuid.UUID) -> str:
         with self._session() as s:

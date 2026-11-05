@@ -6,6 +6,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.models.agent import AgentDraftFile, AgentHookSetting, AgentJob, AgentRun, AgentStep
+from app.models.change_request import ChangeRequest
 from app.models.patch import WorkspaceFile
 
 SKILL_KEY = "skill:"
@@ -67,6 +68,12 @@ class AgentRepository:
             raise
         self._session.refresh(run)
         return run
+
+    def change_request(self, project_id: uuid.UUID, change_id: uuid.UUID) -> ChangeRequest | None:
+        stmt = select(ChangeRequest).where(
+            ChangeRequest.project_id == project_id, ChangeRequest.id == change_id
+        )
+        return self._session.scalars(stmt).one_or_none()
 
     def get_run(self, project_id: uuid.UUID, run_id: uuid.UUID) -> AgentRun | None:
         stmt = select(AgentRun).where(AgentRun.project_id == project_id, AgentRun.id == run_id)

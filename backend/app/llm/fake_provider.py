@@ -5,6 +5,7 @@ from app.llm.architecture_prompt import (
     fake_architecture_answer,
     fake_revision_answer,
     is_architecture_request,
+    is_change_request,
     is_revision_request,
 )
 from app.llm.checklist_prompt import fake_checklist_answer, is_checklist_request
@@ -81,7 +82,9 @@ class FakeLLMProvider:
                 if self._patch_text is not None
                 else fake_patch_answer(request.prompt)
             )
-        if text is None and is_revision_request(request.system_prompt):
+        if text is None and (
+            is_revision_request(request.system_prompt) or is_change_request(request.system_prompt)
+        ):
             text = (
                 self._architecture_text
                 if self._architecture_text is not None

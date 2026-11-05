@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.domain.architecture import (
+    CHANGE_PROMPT_VERSION,
     PROMPT_VERSION,
     RESPONSE_CHARS_PER_TOKEN,
     REVISION_PROMPT_VERSION,
@@ -28,8 +29,10 @@ from app.domain.architecture import (
 from app.domain.revision import draft_for_revision, findings_for_revision, revision_outcome
 from app.domain.semantic_lint import LintConfig
 from app.llm.architecture_prompt import (
+    CHANGE_SYSTEM_PROMPT,
     REVISION_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
+    build_change_prompt,
     build_prompt,
     build_revision_prompt,
     new_nonce,
@@ -234,6 +237,52 @@ class ArchitectureGenerationService:
         finally:
             _generation_lock.release()
 
+    def propose_change(
+        self,
+        project_id: uuid.UUID,
+        parent_id: uuid.UUID,
+        change_request: dict[str, Any],
+        change_request_id: uuid.UUID,
+        drift: list[dict[str, Any]] | None = None,
+    ) -> ArchitectureProposal:
+        """One model call that revises the approved architecture for a change request, saved as
+        a new draft version linked to its parent. The approved parent is never modified."""
+        if self._projects.get(project_id) is None:
+            raise ProjectNotFoundError(project_id)
+        parent = self._architecture.get(project_id, parent_id)
+        if parent is None:
+            raise ProposalNotFoundError(parent_id)
+        if not _generation_lock.acquire(blocking=False):
+            raise ArchitectureBusyError("An architecture generation is already running")
+        try:
+            context, aliases, catalog = self._build_context(project_id)
+            content = ArchitectureContent.model_validate(parent.content)
+            if referenced_requirement_ids(content) - set(aliases.values()):
+                raise StaleProposalError(
+                    "The approved architecture cites requirements that are no longer confirmed."
+                )
+            by_requirement = {str(rid): alias for alias, rid in aliases.items()}
+            by_passage = {str(s.chunk_id): alias for alias, s in catalog.sources.items()}
+            context["draft"] = draft_for_revision(
+                parent.title, parent.summary, parent.content, by_requirement, by_passage
+            )
+            context["change_request"] = change_request
+            if drift:
+                context["drift"] = drift
+            return self._complete(
+                project_id,
+                context,
+                aliases,
+                catalog,
+                system_prompt=CHANGE_SYSTEM_PROMPT,
+                build=build_change_prompt,
+                prompt_version=CHANGE_PROMPT_VERSION,
+                parent=(parent.id, parent.version),
+                change_request_id=change_request_id,
+            )
+        finally:
+            _generation_lock.release()
+
     def _complete(
         self,
         project_id: uuid.UUID,
@@ -245,6 +294,8 @@ class ArchitectureGenerationService:
         build: Callable[[dict[str, Any], str], str],
         prompt_version: str,
         revised_from: tuple[uuid.UUID, int, int, dict[str, Any]] | None = None,
+        parent: tuple[uuid.UUID, int] | None = None,
+        change_request_id: uuid.UUID | None = None,
     ) -> ArchitectureProposal:
         nonce = new_nonce()
         while nonce in json.dumps(context):
@@ -313,8 +364,9 @@ class ArchitectureGenerationService:
             provider=response.provider,
             model=response.model,
             prompt_version=prompt_version,
-            revised_from_id=revised_from[0] if revised_from else None,
-            revised_from_version=revised_from[1] if revised_from else None,
+            revised_from_id=(revised_from or parent or (None, None))[0],
+            revised_from_version=(revised_from or parent or (None, None))[1],
+            change_request_id=change_request_id,
             revised_from_findings=revised_from[2] if revised_from else None,
             revised_outcome=revision_outcome(revised_from[3], lint) if revised_from else None,
             latency_ms=response.latency_ms,

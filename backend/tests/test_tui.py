@@ -249,6 +249,23 @@ def test_start_options_open_project_and_task(
     drive(app, opened)
 
 
+def test_start_change_option_records_and_analyses_a_change_request(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    pid = world[0]
+    name = make_app(engine).backend.projects()[0].name
+    app = make_app(engine, project=name, change="Fix the typo in the list label", animation=False)
+
+    async def script(pilot: Pilot[None]) -> None:
+        await pilot.pause()
+        await until(pilot, lambda: bool(client.get(f"/api/projects/{pid}/change-requests").json()))
+
+    drive(app, script)
+    created = client.get(f"/api/projects/{pid}/change-requests").json()
+    assert [c["key"] for c in created] == ["CR-001"]
+    assert created[0]["status"] == "analysed" and created[0]["impact_class"] == "code_only"
+
+
 # ---- approval confirmation ---------------------------------------------------------------------
 
 

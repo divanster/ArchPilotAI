@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -12,6 +13,7 @@ from app.api.repository import refresh_quietly
 from app.core.config import get_settings
 from app.domain.git_remote import GitSettingsError
 from app.models.git_remote import GitRemoteSettings
+from app.services.change_request import ChangeRequestService
 from app.services.credential_store import CredentialStoreUnavailableError, KeyringCredentialStore
 from app.services.git_remote import (
     GitRemoteError,
@@ -264,12 +266,16 @@ async def push(project_id: uuid.UUID, body: PushIn, service: GitServiceDep) -> P
 
 @router.post("/patches/{patch_id}/pull-request", response_model=PullRequestOut)
 async def pull_request(
-    project_id: uuid.UUID, patch_id: uuid.UUID, service: GitServiceDep
+    project_id: uuid.UUID, patch_id: uuid.UUID, service: GitServiceDep, session: SessionDep
 ) -> PullRequestOut:
     try:
         result = await run_in_threadpool(service.pull_request, project_id, patch_id)
     except _HANDLED as exc:
         raise _http(exc) from exc
+    try:
+        ChangeRequestService(session).record_pull_request(project_id, patch_id, result.url)
+    except Exception:
+        logging.getLogger(__name__).exception("change request PR link failed")
     return PullRequestOut(**result.__dict__)
 
 

@@ -43,9 +43,11 @@ class PlanRepository:
         return self._session.scalars(stmt).one_or_none()
 
     def list(
-        self, project_id: uuid.UUID, status: str | None = None
+        self, project_id: uuid.UUID, status: str | None = None, kind: str | None = "full"
     ) -> Sequence[ImplementationPlan]:
         stmt = select(ImplementationPlan).where(ImplementationPlan.project_id == project_id)
+        if kind is not None:
+            stmt = stmt.where(ImplementationPlan.kind == kind)
         if status is not None:
             stmt = stmt.where(ImplementationPlan.status == status)
         return self._session.scalars(
@@ -59,6 +61,12 @@ class PlanRepository:
             .order_by(PlanTask.order_index)
         )
         return self._session.scalars(stmt).all()
+
+    def max_task_number(self, project_id: uuid.UUID) -> int:
+        """The highest T-nnn number used by any plan of the project (delta keys continue it)."""
+        keys = self._session.scalars(select(PlanTask.key).where(PlanTask.project_id == project_id))
+        numbers = [int(k[2:]) for k in keys if k.startswith("T-") and k[2:].isdigit()]
+        return max(numbers, default=0)
 
     def task_counts(self, project_id: uuid.UUID) -> Counter[uuid.UUID]:
         stmt = (
@@ -74,6 +82,10 @@ class PlanRepository:
         proposal_id: uuid.UUID,
         spec: PlanSpec,
         graph_built_at: datetime | None,
+        *,
+        kind: str = "full",
+        base_plan_id: uuid.UUID | None = None,
+        change_request_id: uuid.UUID | None = None,
     ) -> ImplementationPlan:
         """Insert a new plan version with all its tasks in one transaction."""
         version = (
@@ -96,6 +108,9 @@ class PlanRepository:
             dependency_count=spec.dependency_count,
             unmapped_node_count=len(spec.unmapped_nodes),
             warnings=list(spec.warnings),
+            kind=kind,
+            base_plan_id=base_plan_id,
+            change_request_id=change_request_id,
         )
         try:
             self._session.add(plan)

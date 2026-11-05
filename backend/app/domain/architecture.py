@@ -20,6 +20,7 @@ from pydantic_core import ErrorDetails, PydanticCustomError
 
 PROMPT_VERSION = "architecture-v6"
 REVISION_PROMPT_VERSION = "architecture-revise-v2"
+CHANGE_PROMPT_VERSION = "architecture-change-v1"
 
 
 class ProposalStatus(StrEnum):

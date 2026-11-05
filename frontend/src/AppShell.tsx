@@ -30,6 +30,7 @@ const PROJECT: NavItem[] = [
     hint: "Open the Graph tab on an architecture version",
   },
   { page: "plan", label: "5 · Plan & build" },
+  { page: "changes", label: "Changes" },
   { page: "repository", label: "6 · Repository" },
 ];
 
@@ -40,6 +41,7 @@ const PAGE_LABEL: Record<Page, string> = {
   requirements: "Requirements",
   architecture: "Architecture",
   plan: "Plan & build",
+  changes: "Changes",
   repository: "Repository",
   playground: "AI Playground",
   providers: "Providers",
@@ -99,6 +101,7 @@ function NavEntry({
     item.page === "requirements" ||
     item.page === "architecture" ||
     item.page === "plan" ||
+    item.page === "changes" ||
     item.page === "repository";
   return (
     <a
@@ -245,6 +248,7 @@ function Breadcrumbs({
     current === "requirements" ||
     current === "architecture" ||
     current === "plan" ||
+    current === "changes" ||
     current === "repository";
   return (
     <nav aria-label="Breadcrumb">

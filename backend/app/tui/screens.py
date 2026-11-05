@@ -181,6 +181,7 @@ COMMANDS = [
     ("mission", "mission control (projects)"),
     ("tasks", "task list of the approved plan"),
     ("checklist <TASK>", "coding checklist of a task"),
+    ("change <TEXT>", "record and analyse a change request"),
     ("run <run-id>", "an agent run"),
     ("patch <patch-id>", "a patch review"),
     ("ci <run-id>", "the CI status of a run"),

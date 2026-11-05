@@ -13,6 +13,7 @@ import ProjectScopedPage from "./ProjectScopedPage";
 import ProjectsPage from "./ProjectsPage";
 import ProvidersPage from "./ProvidersPage";
 import ArchitectureSection from "./ArchitectureSection";
+import ChangesSection from "./ChangesSection";
 import PlanSection from "./PlanSection";
 import RepositoryPage from "./RepositoryPage";
 import RequirementsSection from "./RequirementsSection";
@@ -183,6 +184,16 @@ export default function App() {
               projectDescription={project?.description}
             />
           )}
+        </ProjectScopedPage>
+      )}
+      {route.page === "changes" && (
+        <ProjectScopedPage
+          page="changes"
+          title="Changes"
+          subtitle="Free-form change requests with impact analysis, architecture versions and a change log."
+          projectId={scopedId}
+        >
+          {(id) => <ChangesSection key={id} projectId={id} />}
         </ProjectScopedPage>
       )}
       {route.page === "repository" && (

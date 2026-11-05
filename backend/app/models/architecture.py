@@ -65,6 +65,10 @@ class ArchitectureProposal(Base):
     revised_outcome: Mapped[dict[str, Any] | None] = mapped_column(
         JSON(none_as_null=True), nullable=True
     )
+    # Set on a draft proposed for a change request (Phase 15A); the parent link is revised_from_*.
+    change_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

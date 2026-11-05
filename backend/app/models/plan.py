@@ -6,6 +6,7 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -59,6 +60,14 @@ class ImplementationPlan(Base):
     dependency_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unmapped_node_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # 'delta' plans hold only the new or changed tasks of one change request (Phase 15A).
+    kind: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="full", server_default="full"
+    )
+    base_plan_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    change_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )

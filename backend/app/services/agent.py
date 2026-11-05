@@ -288,6 +288,7 @@ class AgentService:
         step_key: str | None = None,
         resume_from: uuid.UUID | None = None,
         discard_checkpoint: uuid.UUID | None = None,
+        change_request_id: uuid.UUID | None = None,
     ) -> AgentRun:
         problems = self._routing.problems()
         if problems:
@@ -332,6 +333,7 @@ class AgentService:
                 checklist_id=checklist_id,
                 checklist_step_key=step_key,
                 resumed_from_run_id=resume_from,
+                change_request_id=change_request_id,
             )
             run = self._agents.add_run(
                 run,
@@ -485,6 +487,20 @@ class AgentService:
             ]
         )
         brief = self._brief(project_id, task, run.blocking_acknowledged)
+        if run.change_request_id is not None:
+            change = self._agents.change_request(project_id, run.change_request_id)
+            if change is not None:
+                brief["base_task_description"] = brief["description"]
+                brief["description"] = cut(change.text, 2000)
+                brief["change_request"] = {
+                    "key": change.key,
+                    "text": cut(change.text, 2000),
+                    "scope": (
+                        "Free-form change request. Implement exactly this request, staying "
+                        "inside the existing repository and this existing task; do not add "
+                        "components, integrations, technologies or data stores."
+                    ),
+                }
         brief[GRAPH_LABEL] = self.graph_context(project_id, task)
         step_run = self._step_run(project_id, run, draft)
         if step_run is not None:

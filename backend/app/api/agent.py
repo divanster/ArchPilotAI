@@ -21,10 +21,12 @@ from app.api.deps import (
     provider_for_deployment,
 )
 from app.core.config import get_settings
+from app.llm.contracts import LLMProvider
 from app.llm.factory import routing_policy
 from app.models.agent import AgentJob, AgentRun, AgentStep
 from app.models.project import Project
 from app.services.agent import (
+    AgentService,
     HookNotFoundError,
     HookRequiredError,
     RoutingPolicyError,
@@ -606,6 +608,19 @@ def start_run(
     provider: LLMProviderDep,
     body: StartRunIn | None = None,
 ) -> RunResponse:
+    return launch_run(project_id, plan_id, task_key, service, session, provider, body)
+
+
+def launch_run(
+    project_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    task_key: str,
+    service: AgentService,
+    session: Session,
+    provider: LLMProvider,
+    body: StartRunIn | None = None,
+    change_request_id: uuid.UUID | None = None,
+) -> RunResponse:
     body = body or StartRunIn()
     default, verified = agent_deployments()
     if body.deployment and body.deployment != default and body.deployment not in verified:
@@ -621,6 +636,7 @@ def start_run(
             acknowledge_blocking_questions=body.acknowledge_blocking_questions,
             max_steps=body.max_steps,
             deployment=body.deployment,
+            change_request_id=change_request_id,
         )
     except NotFound as exc:
         raise _not_found(exc) from exc

@@ -125,7 +125,17 @@ def test_code_refuses_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     lone = runner.invoke(cli_main.cli, ["code", "--task", "T1"])
     assert lone.exit_code == 2 and "--task needs --project" in lone.output
     assert runner.invoke(cli_main.cli, ["nonsense"]).exit_code == 2
+    lonely = runner.invoke(cli_main.cli, ["code", "--change", "Fix a typo"])
+    assert lonely.exit_code == 2 and "--change needs --project" in lonely.output
     assert called == []
+
+
+def test_code_passes_the_change_request_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli_main, "run_tui", lambda *a, **k: seen.update(args=a, kwargs=k))
+    result = runner.invoke(cli_main.cli, ["code", "--project", "demo", "--change", "Fix the typo"])
+    assert result.exit_code == 0
+    assert seen["args"][0] == "demo" and seen["kwargs"] == {"change": "Fix the typo"}
 
 
 # ---- doctor ------------------------------------------------------------------------------------

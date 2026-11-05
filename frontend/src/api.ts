@@ -1637,6 +1637,152 @@ export const resumeStep = (
     },
   );
 
+/* ---- Change requests (Phase 15A) ---------------------------------------- */
+
+export type ChangeStatus =
+  | "draft"
+  | "analysed"
+  | "approved"
+  | "in_progress"
+  | "done"
+  | "rejected";
+export type ChangeClass = "code_only" | "architecture";
+
+export interface ChangeSummary {
+  id: string;
+  key: string;
+  text: string;
+  author: string;
+  status: ChangeStatus;
+  impact_class: ChangeClass | null;
+  class_override: ChangeClass | null;
+  effective_class: ChangeClass | null;
+  drift_flagged: boolean;
+  created_at: string;
+}
+
+export interface ChangeImpact {
+  impact_class: ChangeClass;
+  reason: string;
+  signals: { kind: string; label: string; evidence: string }[];
+  components: { id: string; name: string }[];
+  decisions: { source: string; ref: string; name: string }[];
+  requirements: { id: string; title: string }[];
+}
+
+export interface DiffItem {
+  key: string;
+  name: string;
+  section?: string;
+}
+
+export interface ArchitectureDiff {
+  components: { added: DiffItem[]; removed: DiffItem[]; changed: DiffItem[] };
+  decisions: { added: DiffItem[]; removed: DiffItem[]; changed: DiffItem[] };
+  removals: { kind: string; key: string; name: string }[];
+}
+
+export interface ChangeProposal {
+  id: string;
+  version: number;
+  status: string;
+  revised_from_id: string | null;
+  diff: ArchitectureDiff | null;
+}
+
+export interface ChangeLog {
+  architecture: {
+    id: string;
+    version: number;
+    status: string;
+    parent_version: number | null;
+  }[];
+  plan_deltas: {
+    id: string;
+    version: number;
+    status: string;
+    base_plan_id: string | null;
+  }[];
+  runs: { id: string; task_key: string; status: string }[];
+  patches: { id: string; task_key: string; status: string }[];
+  ci_runs: { run_id: string }[];
+  pull_request_url: string | null;
+  requirement_ids: string[];
+}
+
+export interface ChangeDetail extends ChangeSummary {
+  impact: ChangeImpact | null;
+  overridden_by: string | null;
+  override_reason: string | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  drift: { kind: string; name: string; detail: string }[];
+  proposals: ChangeProposal[];
+  log: ChangeLog;
+}
+
+const changesPath = (projectId: string, suffix = "") =>
+  `/api/projects/${projectId}/change-requests${suffix}`;
+
+const changePost = <T>(projectId: string, suffix: string, body: unknown = {}) =>
+  request<T>(changesPath(projectId, suffix), {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const listChanges = (projectId: string) =>
+  request<ChangeSummary[]>(changesPath(projectId));
+
+export const getChange = (projectId: string, id: string) =>
+  request<ChangeDetail>(changesPath(projectId, `/${id}`));
+
+export const createChange = (projectId: string, text: string, author: string) =>
+  changePost<ChangeDetail>(projectId, "", { text, author });
+
+export const analyseChange = (projectId: string, id: string) =>
+  changePost<ChangeDetail>(projectId, `/${id}/analyse`);
+
+export const overrideChangeClass = (
+  projectId: string,
+  id: string,
+  body: { impact_class: ChangeClass; by: string; reason: string },
+) =>
+  request<ChangeDetail>(changesPath(projectId, `/${id}/class`), {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+export const decideChange = (
+  projectId: string,
+  id: string,
+  decision: "approve" | "reject",
+  body: { by: string; reason?: string },
+) => changePost<ChangeDetail>(projectId, `/${id}/${decision}`, body);
+
+export const proposeChangeArchitecture = (projectId: string, id: string) =>
+  changePost<ChangeDetail>(projectId, `/${id}/architecture`);
+
+export const proposeArchitectureUpdate = (
+  projectId: string,
+  id: string,
+  by: string,
+) => changePost<ChangeDetail>(projectId, `/${id}/propose-architecture-update`, { by });
+
+export const approveChangeArchitecture = (
+  projectId: string,
+  id: string,
+  confirmedRemovals: { kind: string; key: string; reason: string }[],
+) =>
+  changePost<ChangeDetail>(projectId, `/${id}/architecture/approve`, {
+    confirmed_removals: confirmedRemovals,
+  });
+
+export const createPlanDelta = (projectId: string, id: string) =>
+  changePost<ChangeDetail>(projectId, `/${id}/plan-delta`);
+
+export const runChange = (projectId: string, id: string) =>
+  changePost<AgentRun>(projectId, `/${id}/run`);
+
 export const getCiWorkflowTemplate = () =>
   request<CIWorkflowTemplate>("/api/agent/ci/workflow-template");
 

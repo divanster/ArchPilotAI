@@ -37,6 +37,10 @@ class StaleProposalError(Exception):
     pass
 
 
+class RemovalsNotConfirmedError(StaleProposalError):
+    """A change-request draft removes components or decisions nobody has confirmed removing."""
+
+
 class NothingToReviseError(Exception):
     pass
 
@@ -57,7 +61,9 @@ class ArchitectureService:
         requirements: RequirementRepository,
         lint_config: LintConfig | None = None,
         on_approved: Callable[[uuid.UUID, uuid.UUID], object] | None = None,
+        approval_guard: Callable[[uuid.UUID, ArchitectureProposal], None] | None = None,
     ) -> None:
+        self._approval_guard = approval_guard
         self._on_approved = on_approved
         self._lint_config = lint_config
         self._architecture = architecture
@@ -126,6 +132,8 @@ class ArchitectureService:
                     "The proposal cites requirements that are no longer confirmed; "
                     "it cannot be approved"
                 )
+            if self._approval_guard is not None:
+                self._approval_guard(project_id, proposal)
 
         if change.title is not None:
             proposal.title = change.title

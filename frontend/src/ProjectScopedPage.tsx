@@ -5,7 +5,10 @@ import { useProjectList } from "./useProjectList";
 import { hrefFor, type Page } from "./routes";
 
 interface Props {
-  page: Extract<Page, "documents" | "requirements" | "architecture" | "plan" | "repository">;
+  page: Extract<
+    Page,
+    "documents" | "requirements" | "architecture" | "plan" | "changes" | "repository"
+  >;
   title: string;
   subtitle: string;
   /** The active project, from the URL or the last opened one. Chosen on the Projects page. */

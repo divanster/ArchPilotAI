@@ -9,6 +9,7 @@ from app.api.agent import checks_router as agent_checks_router
 from app.api.agent import router as agent_router
 from app.api.ai import router as ai_router
 from app.api.architecture import router as architecture_router
+from app.api.change_requests import router as change_requests_router
 from app.api.checklists import router as checklists_router
 from app.api.decisions import router as decisions_router
 from app.api.documents import router as documents_router
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(git_remote_router)
     app.include_router(repository_router)
     app.include_router(agent_router)
+    app.include_router(change_requests_router)
     app.include_router(checklists_router)
     app.include_router(agent_checks_router)
     app.include_router(ai_router)
