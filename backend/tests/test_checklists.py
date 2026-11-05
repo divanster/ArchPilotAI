@@ -20,7 +20,9 @@ from app.domain.checklist import (
     ExpectedFile,
     RelatedItem,
     Step,
+    bootstrap_step,
     build_steps,
+    framework_missing,
     order_steps,
     step_warnings,
     validate_checklist,
@@ -383,6 +385,143 @@ def test_validation_of_repeats_manual_checks_and_paths() -> None:
     assert codes_of(ghost, [], criteria, (), known) == {"unknown_path"}
     assert validate_checklist(ghost, [], criteria).steps  # approval re-check skips paths
     assert validate_checklist([raw("S-01", criteria, goal="")], [], criteria).steps
+
+
+class Dec:
+    def __init__(self, area: str, choice: str) -> None:
+        self.area, self.choice, self.reason, self.decided_by = area, choice, "r", "ana"
+
+
+def test_framework_missing_detects_a_django_decision_without_a_project() -> None:
+    django = [Dec("backend", "Django"), Dec("frontend", "React")]
+    assert framework_missing(django, [])
+    assert framework_missing(django, ["README.md", "src/app.py"])
+    assert not framework_missing(django, ["backend/manage.py"])
+    assert not framework_missing(django, ["config/settings.py"])
+    assert not framework_missing(django, ["config/settings/base.py"])
+    assert not framework_missing([Dec("backend", "FastAPI")], [])
+    assert not framework_missing([], [])
+    assert not framework_missing([Dec("frontend", "Django templates")], [])
+
+
+def test_bootstrap_step_is_a_skeleton_without_secrets() -> None:
+    step = bootstrap_step("shop")
+    paths = {f.path for f in step.expected_files}
+    assert step.key == "S-000" and step.title == "Project skeleton"
+    assert {
+        "manage.py",
+        "config/settings.py",
+        "shop/apps.py",
+        "requirements.txt",
+        "pytest.ini",
+    } <= paths
+    assert "tests/test_settings_smoke.py" in paths
+    assert all(f.source == "new" for f in step.expected_files)
+    assert len(step.expected_files) <= 8 and not step.acceptance_criteria
+    assert "Verification command: pytest" in step.goal
+    assert "environment variables" in step.goal and "SQLite" in step.goal
+    assert "models.py" in step.goal and "reason" in step.goal
+    assert step.discovery_note == ""
+    assert step_warnings(step) == []
+
+
+def test_bootstrap_step_asks_for_a_missing_app_label_and_keeps_existing_files() -> None:
+    step = bootstrap_step(None, existing=["requirements.txt"])
+    paths = {f.path for f in step.expected_files}
+    assert "requirements.txt" not in paths and "manage.py" in paths
+    assert not any(p.endswith("apps.py") for p in paths)
+    assert "app label" in step.discovery_note and "state it" in step.discovery_note
+    assert "requirements.txt" in step.discovery_note
+
+
+def test_build_prepends_s000_and_every_step_depends_on_it() -> None:
+    boot = bootstrap_step("shop")
+    result = build_steps("T-1", "Invoices", CRITERIA, Candidates(bootstrap=boot))
+    assert [s.key for s in result.steps][:2] == ["S-000", "S-01"]
+    assert all("S-000" in s.depends_on for s in result.steps[1:])
+    assert sorted(c for s in result.steps for c in s.acceptance_criteria) == sorted(CRITERIA)
+    assert not any(
+        s.key == "S-000" for s in build_steps("T-1", "Invoices", CRITERIA, Candidates()).steps
+    )
+    empty = build_steps("T-1", "Invoices", [], Candidates(bootstrap=boot))
+    assert [s.key for s in empty.steps] == ["S-000", "S-01"] and empty.steps[1].depends_on == (
+        "S-000",
+    )
+    many = [f"Criterion {n} about topic{n}" for n in range(MAX_STEPS * GROUP_MAX_CRITERIA + 1)]
+    assert len(build_steps("T-1", "Big", many, Candidates(bootstrap=boot)).steps) <= MAX_STEPS
+
+
+def test_validation_requires_s000_dependencies() -> None:
+    boot = bootstrap_step("shop").as_json()
+    later = {"key": "S-01", "title": "x", "goal": "g", "acceptance_criteria": CRITERIA}
+    with pytest.raises(ChecklistInvalidError) as err:
+        validate_checklist([boot, later], [], CRITERIA)
+    assert {p.code for p in err.value.problems} == {"bootstrap_dependency"}
+    ok = validate_checklist([boot, {**later, "depends_on": ["S-000"]}], [], CRITERIA)
+    assert [s.key for s in ok.steps] == ["S-000", "S-01"]
+
+
+def test_bootstrap_never_modifies_existing_files() -> None:
+    step = bootstrap_step("shop", existing=["manage.py", "shop/models.py"])
+    assert "manage.py" not in {f.path for f in step.expected_files}
+    assert "manage.py" in step.discovery_note
+    assert all(f.source == "new" for f in step.expected_files)
+
+
+def django_decision(client: TestClient, world: World, reason: str = "team standard") -> None:
+    response = client.post(
+        f"/api/projects/{world[0]}/decisions",
+        json={"area": "backend", "choice": "Django", "reason": reason, "name": "ana"},
+    )
+    assert response.status_code == 201, response.text
+
+
+def test_empty_repo_with_django_decision_gets_s000_first(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    with_criteria(engine, world)
+    django_decision(client, world, "Django, app label: shop")
+    steps = steps_in(proposed(client, world))
+    assert steps[0]["key"] == "S-000" and steps[0]["title"] == "Project skeleton"
+    assert "shop/apps.py" in {f["path"] for f in steps[0]["expected_files"]}
+    assert all("S-000" in s["depends_on"] for s in steps[1:])
+    assert sorted(c for s in steps for c in s["acceptance_criteria"]) == sorted(CRITERIA)
+    settings = next(f for f in steps[0]["expected_files"] if f["path"] == "config/settings.py")
+    assert settings["source"] == "new"
+    assert "secret" in steps[0]["goal"] and "Verification command: pytest" in steps[0]["goal"]
+
+
+def test_missing_app_label_is_noted_in_s000(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    with_criteria(engine, world)
+    django_decision(client, world)
+    first = steps_in(proposed(client, world))[0]
+    assert first["key"] == "S-000" and "app label" in first["discovery_note"]
+
+
+def test_existing_django_project_gets_no_s000(
+    client: TestClient, engine: Engine, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mapped = {
+        "available": True,
+        "files": {"config/settings.py": []},
+        "other_paths": ["manage.py"],
+        "source_roots": ["."],
+    }
+    monkeypatch.setattr(
+        "app.services.agent.AgentService.repository_files", lambda self, pid: mapped
+    )
+    with_criteria(engine, world)
+    django_decision(client, world)
+    assert all(s["key"] != "S-000" for s in steps_in(proposed(client, world)))
+
+
+def test_no_s000_without_a_django_decision(
+    client: TestClient, engine: Engine, world: World
+) -> None:
+    with_criteria(engine, world)
+    assert all(s["key"] != "S-000" for s in steps_in(proposed(client, world)))
 
 
 # ---- API: proposal, revision, approval ---------------------------------------------------------

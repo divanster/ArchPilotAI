@@ -24,7 +24,22 @@ RESPONSE_CHARS_PER_TOKEN = 8  # generous ceiling: a longer reply ignored the out
 
 CHANGES = ("create", "modify", "delete")
 ALLOWED_EXTENSIONS = frozenset(
-    {"py", "ts", "tsx", "js", "json", "md", "toml", "yaml", "yml", "css", "html", "sql", "txt"}
+    {
+        "py",
+        "ts",
+        "tsx",
+        "js",
+        "json",
+        "md",
+        "toml",
+        "yaml",
+        "yml",
+        "css",
+        "html",
+        "sql",
+        "txt",
+        "ini",
+    }
 )
 ALLOWED_DOTFILES = frozenset({".gitignore", ".env.example"})
 MAX_PATH_CHARS = 300

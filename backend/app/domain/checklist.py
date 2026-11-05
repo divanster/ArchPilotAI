@@ -18,14 +18,16 @@ A step covers at most GROUP_MAX_CRITERIA criteria.
 import heapq
 import math
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from app.domain.decisions import DecisionLike
 from app.domain.patch import path_problem
 from app.domain.plan import find_path
 
-STEP_KEY = re.compile(r"^S-\d{2}$")
+BOOTSTRAP_KEY = "S-000"
+STEP_KEY = re.compile(r"^(S-\d{2}|S-000)$")
 MAX_STEPS = 40
 MAX_TITLE_CHARS = 200
 MAX_GOAL_CHARS = 1000
@@ -163,6 +165,7 @@ class Candidates:
     graph_items: Sequence[RelatedItem] = ()
     repository: str = "none"  # one of REPOSITORY_STATES
     source_roots: Sequence[str] = ()  # from the repository summary
+    bootstrap: Step | None = None  # the S-000 step, set when the decided framework is missing
 
 
 @dataclass(frozen=True)
@@ -365,8 +368,95 @@ def discovery_note(candidates: Candidates) -> str:
     return "No repository is connected: file discovery will happen during the run."
 
 
+def framework_missing(decisions: Iterable[DecisionLike], paths: Iterable[str]) -> bool:
+    """Whether the decided backend framework has no project in the repository (Django only).
+
+    Django is missing when the backend decision names it and neither manage.py nor a settings
+    module is among the paths. Without such a decision nothing is missing.
+    """
+    if not any(d.area == "backend" and "django" in d.choice.lower() for d in decisions):
+        return False
+    for path in paths:
+        name = path.rsplit("/", 1)[-1]
+        if name in ("manage.py", "settings.py") or "/settings/" in f"/{path}":
+            return False
+    return True
+
+
+def bootstrap_step(app_label: str | None, existing: Collection[str] = ()) -> Step:
+    """The S-000 "Project skeleton" step of a repository without the decided Django project.
+
+    Files that already exist are left out: the step only creates, it never edits an accepted
+    file. The app label comes from the decisions; when absent the notes ask for it.
+    """
+    wanted = [
+        "manage.py",
+        "config/__init__.py",
+        "config/settings.py",
+        *([f"{app_label}/__init__.py", f"{app_label}/apps.py"] if app_label else []),
+        "requirements.txt",
+        "pytest.ini",
+        "tests/test_settings_smoke.py",
+    ]
+    present = set(existing)
+    files = tuple(ExpectedFile(p, "new") for p in wanted if p not in present)
+    kept = [p for p in wanted if p in present]
+    notes = []
+    if not app_label:
+        notes.append(
+            "The app label is not recorded in the project decisions: please state it in the "
+            "notes; the app package is not created until it is known."
+        )
+    if kept:
+        notes.append(f"Existing files stay unchanged: {', '.join(kept)}.")
+    goal = (
+        "Create the Django project skeleton: manage.py, a settings package (config) that reads "
+        "secrets only from environment variables and holds no secret value, "
+        + (f"the app {app_label}, " if app_label else "")
+        + "requirements.txt with pinned major versions (django, pytest, pytest-django), pytest.ini "
+        "with DJANGO_SETTINGS_MODULE, and one smoke test that loads the settings. Tests use SQLite "
+        "unless the decisions say otherwise. Do not modify existing accepted files except to add "
+        "imports or registrations the app needs; an existing models.py moves into the app only "
+        "as an intentional change listed in this step with a reason. "
+        "Verification command: pytest."
+    )
+    return Step(
+        key=BOOTSTRAP_KEY,
+        title="Project skeleton",
+        goal=goal[:MAX_GOAL_CHARS],
+        acceptance_criteria=(),
+        expected_files=files,
+        grouping_reason="The decided framework is missing from the repository.",
+        discovery_note=" ".join(notes)[:MAX_NOTE_CHARS],
+    )
+
+
 def build_steps(
     task_key: str, task_title: str, criteria: Sequence[str], candidates: Candidates
+) -> Decomposition:
+    """The proposed checklist; S-000 "Project skeleton" comes first when the framework is missing.
+
+    Every other step then depends on S-000. Without `candidates.bootstrap` nothing is added.
+    """
+    boot = candidates.bootstrap
+    result = _build_steps(
+        task_key, task_title, criteria, candidates, MAX_STEPS - 1 if boot else MAX_STEPS
+    )
+    if boot is None:
+        return result
+    later = [
+        replace(s, depends_on=tuple(dict.fromkeys([BOOTSTRAP_KEY, *s.depends_on])))
+        for s in result.steps
+    ]
+    return Decomposition([boot, *later], result.manual, result.warnings)
+
+
+def _build_steps(
+    task_key: str,
+    task_title: str,
+    criteria: Sequence[str],
+    candidates: Candidates,
+    limit: int,
 ) -> Decomposition:
     """The proposed checklist: deterministic cohesive steps in task-criterion order.
 
@@ -407,8 +497,8 @@ def build_steps(
             warnings,
         )
     groups = _group([_facts(c, pool, candidates) for c in coding])
-    if len(groups) > MAX_STEPS:
-        size = math.ceil(len(groups) / MAX_STEPS)
+    if len(groups) > limit:
+        size = math.ceil(len(groups) / limit)
         merged = [groups[i : i + size] for i in range(0, len(groups), size)]
         groups = [
             _Group(
@@ -418,8 +508,7 @@ def build_steps(
             for chunk in merged
         ]
         warnings.append(
-            f"{task_key} needs more than {MAX_STEPS} cohesive steps: neighbouring groups were "
-            "merged."
+            f"{task_key} needs more than {limit} cohesive steps: neighbouring groups were merged."
         )
     keys = [f"S-{n:02d}" for n in range(1, len(groups) + 1)]
     steps: list[Step] = []
@@ -462,7 +551,7 @@ def build_steps(
 def step_warnings(step: Step) -> list[str]:
     """Quality warnings of one step; the step is still valid."""
     out = []
-    if len(step.expected_files) > QUALITY_MAX_FILES:
+    if len(step.expected_files) > QUALITY_MAX_FILES and step.key != BOOTSTRAP_KEY:
         out.append(
             f"{step.key} expects {len(step.expected_files)} files (more than "
             f"{QUALITY_MAX_FILES}); consider splitting it."
@@ -653,6 +742,16 @@ def validate_checklist(
                 shared_criteria=tuple(shared),
             )
         )
+    if BOOTSTRAP_KEY in seen:
+        for step in steps:
+            if step.key != BOOTSTRAP_KEY and BOOTSTRAP_KEY not in step.depends_on:
+                problems.append(
+                    Problem(
+                        "bootstrap_dependency",
+                        f"{step.key} must depend on {BOOTSTRAP_KEY} (Project skeleton)",
+                        step.key,
+                    )
+                )
     in_steps: dict[str, list[Step]] = {}
     for step in steps:
         for criterion in step.acceptance_criteria:

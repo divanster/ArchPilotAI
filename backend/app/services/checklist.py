@@ -10,7 +10,7 @@ import logging
 import secrets
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from app.domain.checklist import (
@@ -20,7 +20,9 @@ from app.domain.checklist import (
     Problem,
     RelatedItem,
     Step,
+    bootstrap_step,
     build_steps,
+    framework_missing,
     known_files,
     validate_checklist,
 )
@@ -237,6 +239,10 @@ class ChecklistService:
         known = known_files(candidates)
         for path in other:
             known.setdefault(path, "repository")
+        decisions = self._patches.decisions_current(project_id)
+        if state != "unavailable" and framework_missing(decisions, known):
+            rules = self._patches.frameworks(project_id, known)
+            candidates = replace(candidates, bootstrap=bootstrap_step(rules.app_label, list(known)))
         return candidates, known
 
     def candidates(

@@ -321,6 +321,9 @@ class PatchService:
         )
         return block, latest.version
 
+    def decisions_current(self, project_id: uuid.UUID) -> list[Any]:
+        return list(self._decisions.current(project_id)) if self._decisions else []
+
     def frameworks(self, project_id: uuid.UUID, paths: Iterable[str]) -> FrameworkRules:
         current = self._decisions.current(project_id) if self._decisions else []
         return FrameworkRules.detect(

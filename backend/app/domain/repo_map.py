@@ -579,6 +579,9 @@ def _dir(path: str) -> str:
     return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
+_CODE_EXTENSIONS = frozenset({"py", "ts", "tsx", "js", "jsx"})
+
+
 class _PythonIndex:
     def __init__(self, paths: Iterable[str]) -> None:
         py = sorted(p for p in paths if extension(p) == "py")
@@ -1023,15 +1026,22 @@ def build_map(scan: ScanResult) -> dict[str, Any]:
 
     source_roots: Counter[str] = Counter()
     test_dirs: set[str] = set()
+    source_dirs = {
+        _dir(p)
+        for p, f in facts.items()
+        if not f.generated and not f.test and extension(p) in _CODE_EXTENSIONS
+    }
     for path, item in facts.items():
         if item.generated:
             continue
         if item.test:
             parts = path.split("/")[:-1]
             top = next((i for i, p in enumerate(parts) if p.lower() in TEST_DIRS), None)
-            test_dirs.add(
-                "/".join(parts[: top + 1]) if top is not None else ("/".join(parts) or ".")
-            )
+            where = "/".join(parts[: top + 1]) if top is not None else "/".join(parts)
+            # Co-located tests do not turn a directory with source files into a test root.
+            if top is None and _dir(path) in source_dirs:
+                continue
+            test_dirs.add(where or ".")
         elif extension(path) == "py":
             root = py_index.location[path][0]
             source_roots[root or "."] += 1

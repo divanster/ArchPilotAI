@@ -344,7 +344,7 @@ def test_run_tests_is_offered_only_with_a_real_provider(
 ) -> None:
     provider = scripted([finish()])
     run_of(client, world, start(client, world))
-    assert "run_tests" not in provider.requests[0].prompt.split("BEGIN_CONTEXT_")[1]
+    assert '"run_tests":' not in provider.requests[0].prompt.split("BEGIN_CONTEXT_")[1]
     configure(monkeypatch, execution=FakeExecutionProvider())
     provider = scripted([finish()])
     run_of(client, world, start(client, world))
