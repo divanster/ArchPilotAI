@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentRunPanel from "./AgentRunPanel";
+import { AdvancedProvider } from "./advanced";
 import type {
   AgentHook,
   AgentJob,
@@ -1097,5 +1098,39 @@ describe("AgentRunPanel CI repair loop", () => {
     setup((u) => (u.endsWith("/agent-runs") ? json([run()]) : json(run())));
     expect(await screen.findByText("running")).toBeTruthy();
     expect(screen.queryByLabelText("CI repair loop")).toBeNull();
+  });
+});
+
+describe("AgentRunPanel with advanced off", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("renders no hooks, skills, routing or tier badges", async () => {
+    const full = run({
+      status: "finished",
+      hooks: [],
+      skills: [
+        { name: "code-review", source: "vendored", version: "4ae2317", content_hash: "c".repeat(64) },
+      ],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/agent/routing"))
+          return json({ enabled: true, light: "l", heavy: "h", token_limit: 1, heavy_call_limit: null, cost_limit: null, light_actions: [], heavy_actions: [], problems: [] });
+        if (url.endsWith("/agent-hooks")) return json([]);
+        if (url.endsWith("/agent-skills")) return json({ skills: [], problems: [] });
+        return url.endsWith("/agent-runs") ? json([full]) : json(full);
+      }),
+    );
+    render(
+      <AdvancedProvider>
+        <AgentRunPanel projectId="p" planId="pl" task={TASK} acknowledge={false} disabled={false} onOpenPatch={vi.fn()} />
+      </AdvancedProvider>,
+    );
+    expect(await screen.findByText("finished")).toBeTruthy();
+    expect(screen.queryByLabelText("Skills loaded by the run")).toBeNull();
+    expect(screen.queryByLabelText("Active hooks of the run")).toBeNull();
+    expect(screen.queryByLabelText("Model routing settings")).toBeNull();
+    expect(screen.queryByLabelText("Agent hooks")).toBeNull();
   });
 });

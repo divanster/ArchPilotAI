@@ -1,3 +1,5 @@
+import { describeFailure, isNetworkFailure, networkMessage } from "./errors";
+
 export interface HealthResponse {
   status: "ok";
   service: string;
@@ -8,6 +10,26 @@ export interface HealthResponse {
 }
 
 const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
+/** True when the API address answers at all, even without CORS permission (opaque response). */
+async function serverAnswers(): Promise<boolean> {
+  try {
+    await fetch(`${API_URL}/health`, { mode: "no-cors" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** fetch that explains a transport failure instead of surfacing "Failed to fetch". */
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if (!isNetworkFailure(e)) throw e;
+    throw new Error(networkMessage(API_URL, await serverAnswers()));
+  }
+}
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch(`${API_URL}/health`);
@@ -36,7 +58,7 @@ export interface ConnectionTestResult {
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
-  const response = await fetch(`${API_URL}/api/settings/providers`);
+  const response = await apiFetch(`${API_URL}/api/settings/providers`);
   if (!response.ok)
     throw new Error(`Could not load providers: ${response.status}`);
   return ((await response.json()) as { providers: ProviderInfo[] }).providers;
@@ -45,7 +67,7 @@ export async function listProviders(): Promise<ProviderInfo[]> {
 export async function testProvider(
   kind: ProviderInfo["kind"],
 ): Promise<ConnectionTestResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_URL}/api/settings/providers/${kind}/test`,
     {
       method: "POST",
@@ -127,6 +149,8 @@ function describeDetail(detail: object): string | null {
 async function errorInfo(
   response: Response,
 ): Promise<{ message: string; detail: unknown }> {
+  // Keep a copy so a non-JSON body (a plain-text 500) can still be read.
+  const copy = typeof response.clone === "function" ? response.clone() : null;
   try {
     const body = (await response.json()) as { detail?: unknown };
     if (typeof body.detail === "string")
@@ -148,13 +172,20 @@ async function errorInfo(
       if (described) return { message: described, detail: body.detail };
     }
   } catch {
-    // fall through to generic message
+    if (response.status >= 500 && copy) {
+      try {
+        const text = (await copy.text()).trim().slice(0, 300);
+        if (text) return { message: text, detail: null };
+      } catch {
+        // fall through to generic message
+      }
+    }
   }
   return { message: `Request failed (${response.status})`, detail: null };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await apiFetch(`${API_URL}${path}`, {
     ...init,
     headers:
       typeof init?.body === "string"
@@ -171,7 +202,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           "Check that the ArchPilotAI backend is running on this address.",
       );
     }
-    throw new ApiError(message, response.status, detail);
+    throw new ApiError(
+      describeFailure(response.status, message),
+      response.status,
+      detail,
+    );
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

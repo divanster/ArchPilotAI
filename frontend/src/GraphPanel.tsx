@@ -9,6 +9,7 @@ import {
   type GraphNode,
   type ImpactMode,
 } from "./api";
+import { useAdvanced } from "./advanced";
 
 const KINDS = [
   "requirement",
@@ -36,6 +37,7 @@ export default function GraphPanel({
   projectId: string;
   proposalId: string;
 }) {
+  const advanced = useAdvanced();
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [orphans, setOrphans] = useState<GraphNode[]>([]);
   const [impact, setImpact] = useState<GraphImpact | null>(null);
@@ -181,18 +183,20 @@ export default function GraphPanel({
           {impact && (
             <section aria-label="Impact">
               <h4>Impact of {impact.root.label}</h4>
-              <div className="seg" role="group" aria-label="Impact mode">
-                {(["direct", "transitive"] as ImpactMode[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    aria-pressed={mode === m}
-                    onClick={() => selected && void select(selected, m)}
-                  >
-                    {m === "direct" ? "Direct" : "Transitive"}
-                  </button>
-                ))}
-              </div>
+              {advanced && (
+                <div className="seg" role="group" aria-label="Impact mode">
+                  {(["direct", "transitive"] as ImpactMode[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={mode === m}
+                      onClick={() => selected && void select(selected, m)}
+                    >
+                      {m === "direct" ? "Direct" : "Transitive"}
+                    </button>
+                  ))}
+                </div>
+              )}
               <p className="note">
                 What depends on this node, up to depth {impact.max_depth}. Paths can pass through a
                 shared requirement, so check each link before relying on it.

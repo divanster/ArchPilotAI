@@ -123,8 +123,12 @@ async function dashboardSettled() {
 describe("Navigation", () => {
   beforeEach(() => {
     window.location.hash = "";
+    window.localStorage.setItem("archpilot.showAdvanced", "1");
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    window.localStorage.removeItem("archpilot.showAdvanced");
+    vi.unstubAllGlobals();
+  });
 
   it("lists every destination and only links the ones that exist", async () => {
     stubFetch(true);

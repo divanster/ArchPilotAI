@@ -10,6 +10,7 @@ import {
 import ArchitectureDiagram from "./ArchitectureDiagram";
 import GraphPanel from "./GraphPanel";
 import ProjectHeader from "./ProjectHeader";
+import { AdvancedDetails, useAdvanced } from "./advanced";
 import { GENERATE_REQUEST, announceGenerating } from "./events";
 import { StatusBadge } from "./ui";
 import { hrefFor } from "./routes";
@@ -252,51 +253,55 @@ function CoverageMatrix({
   return (
     <div className="card">
       <h3>Requirement coverage</h3>
-      <div data-testid="coverage-summary">
-        <p className="sub">
-          {counts.addressed} addressed, {counts.partial} partial, {counts.unresolved} unresolved.
-          This matrix is the model's own claim; a person must review it.
-        </p>
-        <div
-          className="prog"
-          role="img"
-          aria-label={`${counts.addressed} of ${matrix.length} requirements addressed`}
-        >
-          <span style={{ width: `${pct}%` }} />
+      <AdvancedDetails
+        summary={`${counts.addressed} of ${matrix.length} requirements addressed`}
+      >
+        <div data-testid="coverage-summary">
+          <p className="sub">
+            {counts.addressed} addressed, {counts.partial} partial, {counts.unresolved} unresolved.
+            This matrix is the model's own claim; a person must review it.
+          </p>
+          <div
+            className="prog"
+            role="img"
+            aria-label={`${counts.addressed} of ${matrix.length} requirements addressed`}
+          >
+            <span style={{ width: `${pct}%` }} />
+          </div>
         </div>
-      </div>
-      <div className="table-wrap">
-        <table className="data-table" aria-label="Requirement coverage">
-          <thead>
-            <tr>
-              <th>Requirement</th>
-              <th>Components / decisions</th>
-              <th>Proposed verification</th>
-              <th>Status</th>
-              <th>Gap or clarification</th>
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.map((e) => (
-              <tr key={e.requirement_id} data-testid="coverage-row">
-                <td>{titles.get(e.requirement_id) ?? "Unknown requirement"}</td>
-                <td>
-                  {e.related_ids.length === 0
-                    ? "None"
-                    : e.related_ids.map((id) => elements.get(id) ?? id).join(", ")}
-                </td>
-                <td>{e.verification}</td>
-                <td>
-                  <span className={`badge coverage-${e.status}`}>
-                    {COVERAGE_LABELS[e.status]}
-                  </span>
-                </td>
-                <td>{e.gap ? e.gap : "—"}</td>
+        <div className="table-wrap">
+          <table className="data-table" aria-label="Requirement coverage">
+            <thead>
+              <tr>
+                <th>Requirement</th>
+                <th>Components / decisions</th>
+                <th>Proposed verification</th>
+                <th>Status</th>
+                <th>Gap or clarification</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {matrix.map((e) => (
+                <tr key={e.requirement_id} data-testid="coverage-row">
+                  <td>{titles.get(e.requirement_id) ?? "Unknown requirement"}</td>
+                  <td>
+                    {e.related_ids.length === 0
+                      ? "None"
+                      : e.related_ids.map((id) => elements.get(id) ?? id).join(", ")}
+                  </td>
+                  <td>{e.verification}</td>
+                  <td>
+                    <span className={`badge coverage-${e.status}`}>
+                      {COVERAGE_LABELS[e.status]}
+                    </span>
+                  </td>
+                  <td>{e.gap ? e.gap : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </AdvancedDetails>
     </div>
   );
 }
@@ -796,6 +801,7 @@ export default function ArchitectureSection({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const advanced = useAdvanced();
 
   const open = useCallback(
     async (id: string) => {
@@ -874,10 +880,17 @@ export default function ArchitectureSection({
     setSelected(created);
   }
 
+  const newestId = summaries?.[0]?.id;
+  const newestApprovedId = summaries?.find((s) => s.status === "approved")?.id;
+  // Without advanced mode only the newest and the newest approved version are listed.
+  const listedVersions = (summaries ?? []).filter(
+    (s) =>
+      advanced || s.id === newestId || s.id === newestApprovedId || s.id === selected?.id,
+  );
   const versionTabs =
-    summaries && summaries.length > 0 ? (
+    listedVersions.length > 1 || (advanced && listedVersions.length > 0) ? (
       <ul className="arch-tabs" aria-label="Proposal versions">
-        {summaries.map((s) => (
+        {listedVersions.map((s) => (
           <li key={s.id}>
             <button
               type="button"

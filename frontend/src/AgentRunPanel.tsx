@@ -30,6 +30,7 @@ import {
   type PlanTask,
 } from "./api";
 import AgentSkillSettings from "./AgentSkillSettings";
+import { useAdvanced } from "./advanced";
 
 const POLL_MS = 1500;
 
@@ -339,6 +340,7 @@ function CiLoopStatus({
   onResume: (() => Promise<void>) | null;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const advanced = useAdvanced();
   const c = loop.counts;
   const ended = !running;
   return (
@@ -375,10 +377,12 @@ function CiLoopStatus({
         {c.new} new · {c.pre_existing} pre-existing · {c.fixed} fixed ·{" "}
         {c.flaky} flaky · {c.elsewhere} elsewhere
       </p>
-      <p className="sub" aria-label="CI loop budgets">
-        Tokens {loop.tokens_used}/{loop.token_budget} · time{" "}
-        {loop.elapsed_seconds.toFixed(1)}/{loop.time_limit_seconds} s
-      </p>
+      {advanced && (
+        <p className="sub" aria-label="CI loop budgets">
+          Tokens {loop.tokens_used}/{loop.token_budget} · time{" "}
+          {loop.elapsed_seconds.toFixed(1)}/{loop.time_limit_seconds} s
+        </p>
+      )}
       {loop.message && <p className="hint">{loop.message}</p>}
       <CiLoopFailures label="Actionable failures" results={loop.actionable} />
       <CiLoopFailures
@@ -546,8 +550,9 @@ function RoutingSettings({ routing }: { routing: AgentRouting }) {
 }
 
 function HookDecisions({ step }: { step: AgentStepView }) {
+  const advanced = useAdvanced();
   const found = step.hooks ?? [];
-  if (found.length === 0) return null;
+  if (!advanced || found.length === 0) return null;
   return (
     <ul className="sub" aria-label={`Hooks of step ${step.step_no}`}>
       {found.map((h, i) => (
@@ -617,6 +622,7 @@ export default function AgentRunPanel({
   disabled: boolean;
   onOpenPatch: (patchId: string) => void;
 }) {
+  const advanced = useAdvanced();
   const [run, setRun] = useState<AgentRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -860,7 +866,7 @@ export default function AgentRunPanel({
             " ? ruff and mypy are required; a run would stop immediately."}
         </p>
       )}
-      {routing && <RoutingSettings routing={routing} />}
+      {advanced && routing && <RoutingSettings routing={routing} />}
       {deployments && deployments.verified.length > 0 && (
         <label>
           Model{" "}
@@ -900,12 +906,16 @@ export default function AgentRunPanel({
         )}
       </div>
       {error && <p role="alert">{error}</p>}
-      <HookSettings
-        hooks={hooks}
-        disabled={running}
-        onToggle={(h) => void toggleHook(h)}
-      />
-      <AgentSkillSettings projectId={projectId} disabled={running} />
+      {advanced && (
+        <HookSettings
+          hooks={hooks}
+          disabled={running}
+          onToggle={(h) => void toggleHook(h)}
+        />
+      )}
+      {advanced && (
+        <AgentSkillSettings projectId={projectId} disabled={running} />
+      )}
       {run && (
         <div aria-label={`Agent run of ${task.key}`}>
           <p>
@@ -947,7 +957,7 @@ export default function AgentRunPanel({
               ))}
             </ul>
           )}
-          {run.hooks && run.hooks.length > 0 && (
+          {advanced && run.hooks && run.hooks.length > 0 && (
             <p className="sub" aria-label="Active hooks of the run">
               Active hooks:{" "}
               {run.hooks
@@ -956,7 +966,7 @@ export default function AgentRunPanel({
                 .join(", ") || "none"}
             </p>
           )}
-          {run.skills && run.skills.length > 0 && (
+          {advanced && run.skills && run.skills.length > 0 && (
             <ul className="sub" aria-label="Skills loaded by the run">
               {run.skills.map((s) => (
                 <li key={`${s.source}:${s.name}`}>
@@ -1009,7 +1019,7 @@ export default function AgentRunPanel({
                       ? `attempted: ${s.tool}`
                       : s.action}
                   </code>
-                  {s.tier && (
+                  {advanced && s.tier && (
                     <span className="badge" title="Tool tier">
                       {s.tier}
                     </span>

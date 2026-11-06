@@ -3,6 +3,7 @@ import type { Project } from "./api";
 import { EmptyState, ErrorState, LoadingState, PageHeader } from "./ui";
 import { useProjectList } from "./useProjectList";
 import { hrefFor, type Page } from "./routes";
+import NextStepCard from "./NextStepCard";
 
 interface Props {
   page: Extract<
@@ -54,7 +55,10 @@ export default function ProjectScopedPage({
         </>
       )}
       {selected && (
-        <div style={{ marginTop: "var(--space-4)" }}>{children(selected.id, selected)}</div>
+        <div style={{ marginTop: "var(--space-4)" }}>
+          <NextStepCard projectId={selected.id} />
+          {children(selected.id, selected)}
+        </div>
       )}
     </section>
   );

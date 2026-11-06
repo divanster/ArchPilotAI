@@ -17,6 +17,7 @@ import {
   type GitSettings,
 } from "./api";
 import { ErrorState, LoadingState } from "./ui";
+import { looksLikeToken } from "./errors";
 
 const errText = (e: unknown, fallback: string) =>
   e instanceof Error ? e.message : fallback;
@@ -195,6 +196,13 @@ export default function RepositoryPage({ projectId }: { projectId: string }) {
             placeholder="https://github.com/owner/repo"
             onChange={(e) => set("remote_url", e.target.value)}
           />
+          {looksLikeToken(form.remote_url) && (
+            <p role="alert" className="field-warning">
+              This looks like an access token, not a URL. Do not put it here: it would be stored
+              with the settings. Use the "Personal access token" section below (it appears after
+              you save the settings).
+            </p>
+          )}
         </div>
         <div className="field">
           <label htmlFor={id("folder")}>Clone folder</label>
@@ -237,6 +245,11 @@ export default function RepositoryPage({ projectId }: { projectId: string }) {
             value={form.author_email}
             onChange={(e) => set("author_email", e.target.value)}
           />
+          <p className="hint" id={id("email-hint")}>
+            To keep your address private, use your GitHub noreply email: GitHub → Settings →
+            Emails, tick "Keep my email addresses private"; it is shown there as
+            ID+username@users.noreply.github.com.
+          </p>
         </div>
         <div className="field">
           <label htmlFor={id("auth")}>Authentication</label>

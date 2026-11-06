@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlanSection from "./PlanSection";
 import type { ImplementationPlan } from "./api";
+import { AdvancedProvider } from "./advanced";
 
 const PID = "11111111-1111-1111-1111-111111111111";
 const RID = "33333333-3333-3333-3333-333333333333";
@@ -120,7 +121,10 @@ function mockFetch(initial: ImplementationPlan[], post?: () => Response | Implem
 }
 
 describe("PlanSection", () => {
-  beforeEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it("never renders empty rows for blank criteria or untitled requirements", async () => {
@@ -223,6 +227,7 @@ describe("PlanSection", () => {
     await waitFor(() => expect(step()).toMatch(/V1 approved/));
 
     fireEvent.click(screen.getByRole("button", { name: "Rebuild plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Rebuild anyway" }));
     await waitFor(() => expect(screen.getByTestId("plan-status").textContent).toMatch(/draft/i));
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     await waitFor(() => expect(screen.getByTestId("plan-status").textContent).toMatch(/rejected/i));
@@ -310,7 +315,7 @@ describe("PlanSection", () => {
     const labels = () => Array.from(list.querySelectorAll("button.tab")).map((b) => b.textContent);
     expect(labels().some((l) => l?.startsWith("V2"))).toBe(true);
     expect(labels().some((l) => l?.startsWith("V1"))).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Show 2 older drafts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 archived drafts" }));
     expect(labels().some((l) => l?.startsWith("V1"))).toBe(true);
   });
 
@@ -338,6 +343,63 @@ describe("PlanSection", () => {
     unmount();
     render(<PlanSection projectId={PID} projectDescription={"Build a portal.\n2. business objectives"} />);
     expect(await screen.findByText(/2\. business objectives/)).toBeTruthy();
+  });
+
+  it("strips bullet markers and shows real requirement text", async () => {
+    const p = plan();
+    p.tasks[0].acceptance_criteria = ["- Login works", "•", "* "];
+    mockFetch([p]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    const criteria = screen.getByRole("list", { name: "Acceptance criteria for T-001" });
+    expect(Array.from(criteria.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+      "Login works",
+    ]);
+  });
+
+  it("splits a task into tabs with the overview first", async () => {
+    mockFetch([plan({ status: "approved" })]);
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    const tablist = screen.getByRole("tablist", { name: "Sections of T-001" });
+    expect(Array.from(tablist.querySelectorAll("[role=tab]")).map((t) => t.textContent)).toEqual([
+      "Overview",
+      "Checklist",
+      "Agent",
+      "Patch",
+      "Repository",
+    ]);
+    const card = screen.getByTestId("task-T-001");
+    expect(within(card).getByRole("tab", { name: "Overview", selected: true })).toBeTruthy();
+    fireEvent.click(within(card).getByRole("tab", { name: "Patch" }));
+    expect(screen.queryByText("Which IdP?")).toBeNull();
+  });
+
+  it("warns before rebuilding and does not rebuild on cancel", async () => {
+    const fetchMock = mockFetch([plan({ status: "approved" })], () => plan({ id: "pl2", version: 2 }));
+    render(<PlanSection projectId={PID} />);
+    await screen.findByText("T-001 · Implement API");
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild plan" }));
+    const warning = screen.getByRole("alertdialog", { name: "Confirm rebuild" });
+    expect(warning.textContent).toMatch(/new plan version/);
+    expect(warning.textContent).toMatch(/detached from patches accepted/);
+    expect(warning.textContent).toMatch(/older than the last 3 are archived/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(
+      false,
+    );
+  });
+
+  it("hides the dependency editor when advanced is off", async () => {
+    mockFetch([plan()]);
+    render(
+      <AdvancedProvider>
+        <PlanSection projectId={PID} />
+      </AdvancedProvider>,
+    );
+    await screen.findByText("T-001 · Implement API");
+    expect(screen.queryByRole("button", { name: "Edit dependencies" })).toBeNull();
   });
 });
 

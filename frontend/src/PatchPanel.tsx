@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import AgentRunPanel from "./AgentRunPanel";
 import ChecklistPanel from "./ChecklistPanel";
 import GitPatchActions from "./GitPatchActions";
+import { AdvancedDetails } from "./advanced";
 import {
   ApiError,
   confirmTechnology,
@@ -25,18 +26,30 @@ function errText(e: unknown, fallback: string): string {
 const removalKey = (r: { file: string; name: string }) =>
   `${r.file}\u0000${r.name}`;
 
+export type TaskTab =
+  | "overview"
+  | "checklist"
+  | "agent"
+  | "patch"
+  | "repository";
+
 export default function PatchPanel({
   projectId,
   planId,
   task,
   approved,
   onChanged,
+  tab,
+  onLatestPatch,
 }: {
   projectId: string;
   planId: string;
   task: PlanTask;
   approved: boolean;
   onChanged: () => void;
+  /** Which task tab is showing. Left out, every section is shown (the panel on its own). */
+  tab?: TaskTab;
+  onLatestPatch?: (latest: PatchSummary | null) => void;
 }) {
   const [patches, setPatches] = useState<PatchSummary[]>([]);
   const [detail, setDetail] = useState<CodePatchDetail | null>(null);
@@ -71,8 +84,29 @@ export default function PatchPanel({
     void refresh().catch(() => undefined);
   }, [approved, refresh]);
 
+  const latest = patches[0] ?? null;
+  const latestId = latest?.id;
+  useEffect(() => {
+    onLatestPatch?.(latest);
+  }, [latest, onLatestPatch]);
+
+  // The patch tab opens on the newest patch so its status is the first thing seen.
+  const hasDetail = detail !== null;
+  useEffect(() => {
+    if (tab !== "patch" || !latestId || hasDetail) return;
+    let active = true;
+    getPatch(projectId, latestId)
+      .then((d) => active && setDetail(d))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [tab, latestId, hasDetail, projectId]);
+
   if (!approved) return null;
 
+  const show = (t: TaskTab) => tab === undefined || tab === t;
+  const latestAccepted = patches.find((p) => p.status === "accepted") ?? null;
   const removals = detail?.needs_justification
     ? (detail.removed_from_accepted ?? [])
     : [];
@@ -161,94 +195,118 @@ export default function PatchPanel({
 
   return (
     <div data-testid={`patches-${task.key}`}>
-      <h4>Code patch</h4>
-      {needsTech && (
-        <fieldset disabled={busy}>
-          <legend>Confirm technology</legend>
+      <div hidden={!show("patch")}>
+        <h4>Code patch</h4>
+        {needsTech && (
+          <fieldset disabled={busy}>
+            <legend>Confirm technology</legend>
+            <label>
+              Technology name
+              <input
+                value={techName}
+                onChange={(e) => setTechName(e.target.value)}
+              />
+            </label>
+            <label>
+              Reason
+              <input
+                value={techReason}
+                onChange={(e) => setTechReason(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={!techName.trim() || !techReason.trim()}
+              onClick={() => void confirmTech()}
+            >
+              Record confirmation
+            </button>
+            {techDone && <span role="status">Technology confirmed.</span>}
+          </fieldset>
+        )}
+        {task.blocking_questions.length > 0 && (
           <label>
-            Technology name
             <input
-              value={techName}
-              onChange={(e) => setTechName(e.target.value)}
+              type="checkbox"
+              checked={ack}
+              onChange={(e) => setAck(e.target.checked)}
             />
+            Acknowledge blocking questions for this generation
           </label>
-          <label>
-            Reason
-            <input
-              value={techReason}
-              onChange={(e) => setTechReason(e.target.value)}
-            />
-          </label>
+        )}
+        <div className="btn-row">
           <button
             type="button"
-            disabled={!techName.trim() || !techReason.trim()}
-            onClick={() => void confirmTech()}
+            disabled={busy || stepMode}
+            onClick={() => void generate()}
           >
-            Record confirmation
+            {patches.length > 0 ? "Regenerate patch" : "Generate patch"}
           </button>
-          {techDone && <span role="status">Technology confirmed.</span>}
-        </fieldset>
-      )}
-      {task.blocking_questions.length > 0 && (
-        <label>
-          <input
-            type="checkbox"
-            checked={ack}
-            onChange={(e) => setAck(e.target.checked)}
-          />
-          Acknowledge blocking questions for this generation
-        </label>
-      )}
-      <div className="btn-row">
-        <button
-          type="button"
-          disabled={busy || stepMode}
-          onClick={() => void generate()}
-        >
-          {patches.length > 0 ? "Regenerate patch" : "Generate patch"}
-        </button>
+        </div>
+        {stepMode && (
+          <p className="sub" role="note">
+            This task is in step-based mode: its checklist is approved, so
+            task-level Generate patch and Run agent are blocked. Run the
+            approved coding steps below.
+          </p>
+        )}
+        {checklistStatus === "proposed" && (
+          <p className="hint" role="note">
+            A checklist is proposed for this task. Task-level Generate patch
+            and Run agent still work, but approving the checklist switches the
+            task to step-based mode.
+          </p>
+        )}
       </div>
-      {stepMode && (
-        <p className="sub" role="note">
-          This task is in step-based mode: its checklist is approved, so
-          task-level Generate patch and Run agent are blocked. Run the approved
-          coding steps below.
-        </p>
-      )}
-      {checklistStatus === "proposed" && (
-        <p className="hint" role="note">
-          A checklist is proposed for this task. Task-level Generate patch and
-          Run agent still work, but approving the checklist switches the task to
-          step-based mode.
-        </p>
-      )}
-      <ChecklistPanel
-        projectId={projectId}
-        planId={planId}
-        task={task}
-        acknowledge={ack}
-        disabled={busy}
-        refreshKey={checklistTick}
-        onOpenPatch={(id) => {
-          void open(id);
-          void refresh().catch(() => undefined);
-        }}
-        onChanged={() => void refresh().catch(() => undefined)}
-        onStatusChange={setChecklistStatus}
-      />
-      <AgentRunPanel
-        projectId={projectId}
-        planId={planId}
-        task={task}
-        acknowledge={ack}
-        disabled={busy || stepMode}
-        onOpenPatch={(id) => {
-          void open(id);
-          void refresh().catch(() => undefined);
-          onChanged();
-        }}
-      />
+      <div hidden={!show("checklist")}>
+        <ChecklistPanel
+          projectId={projectId}
+          planId={planId}
+          task={task}
+          acknowledge={ack}
+          disabled={busy}
+          refreshKey={checklistTick}
+          onOpenPatch={(id) => {
+            void open(id);
+            void refresh().catch(() => undefined);
+          }}
+          onChanged={() => void refresh().catch(() => undefined)}
+          onStatusChange={setChecklistStatus}
+        />
+      </div>
+      <div hidden={!show("agent")}>
+        <AgentRunPanel
+          projectId={projectId}
+          planId={planId}
+          task={task}
+          acknowledge={ack}
+          disabled={busy || stepMode}
+          onOpenPatch={(id) => {
+            void open(id);
+            void refresh().catch(() => undefined);
+            onChanged();
+          }}
+        />
+      </div>
       {error && <p role="alert">{error}</p>}
+      {tab === "repository" && (
+        <div>
+          {latestAccepted ? (
+            <GitPatchActions
+              key={latestAccepted.id}
+              projectId={projectId}
+              patchId={latestAccepted.id}
+              reviewer={latestAccepted.reviewed_by ?? null}
+            />
+          ) : (
+            <p className="muted">
+              Accept a patch first; then it can be committed, pushed and opened
+              as a pull request here.
+            </p>
+          )}
+        </div>
+      )}
+      <div hidden={!show("patch")}>
       {patches.length > 0 && (
         <ul aria-label={`Patch versions for ${task.key}`}>
           {patches.map((p) => (
@@ -279,6 +337,9 @@ export default function PatchPanel({
             </p>
           )}
           {detail.coverage && detail.coverage.items.length > 0 && (
+            <AdvancedDetails
+              summary={`${detail.coverage.covered} covered · ${detail.coverage.missing} missing · ${detail.coverage.unchecked} unchecked`}
+            >
             <div>
               <strong>
                 {detail.coverage.covered} covered · {detail.coverage.missing}{" "}
@@ -328,6 +389,7 @@ export default function PatchPanel({
                 </ul>
               )}
             </div>
+            </AdvancedDetails>
           )}
           {detail.coverage?.affected && (
             <div>
@@ -364,6 +426,10 @@ export default function PatchPanel({
             </ul>
           )}
           {removals.length > 0 && (
+            <AdvancedDetails
+              summary={`${removals.length} removal(s) from an accepted file need confirmation before accepting.`}
+              forceOpen={unconfirmed.length > 0}
+            >
             <section
               aria-label="Removed from accepted file"
               style={{
@@ -415,6 +481,7 @@ export default function PatchPanel({
                 })}
               </ul>
             </section>
+            </AdvancedDetails>
           )}
           {detail.files.map((f) => (
             <details key={f.path} open>
@@ -453,7 +520,7 @@ export default function PatchPanel({
               Reviewed by {detail.reviewed_by}: {detail.review_reason}
             </p>
           )}
-          {detail.status === "accepted" && (
+          {detail.status === "accepted" && tab === undefined && (
             <GitPatchActions
               key={detail.id}
               projectId={projectId}
@@ -499,6 +566,7 @@ export default function PatchPanel({
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -1579,3 +1579,11 @@ blockquote {
     display: none;
   }
 }
+.link-button { background: none; border: 0; padding: 0; color: var(--accent, #2563eb); text-decoration: underline; cursor: pointer; font: inherit; }
+.advanced-switch { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer; }
+.next-step { border-left: 4px solid var(--accent, #2563eb); margin-bottom: var(--space-4, 1rem); }
+.next-step .eyebrow { margin: 0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted, #6b7280); }
+.button-link { display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; }
+.task-tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; margin: 0.5rem 0; }
+.task-tabs .tab[aria-selected="true"] { font-weight: 600; border-bottom: 2px solid var(--accent, #2563eb); }
+.warn-box, .field-warning { border: 1px solid #d97706; background: #fffbeb; color: #78350f; padding: 0.5rem 0.75rem; border-radius: 6px; margin-top: 0.5rem; }

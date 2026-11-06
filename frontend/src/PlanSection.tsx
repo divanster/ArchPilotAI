@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import PatchPanel from "./PatchPanel";
+import PatchPanel, { type TaskTab } from "./PatchPanel";
 import DecisionsCard from "./DecisionsCard";
 import ProjectHeader from "./ProjectHeader";
 import { StatusBadge } from "./ui";
+import { useAdvanced } from "./advanced";
 import {
   buildPlan,
   decidePlan,
@@ -16,10 +17,52 @@ import {
   type ImplementationPlan,
   type PlanSummary,
   type PlanTask,
+  type PatchSummary,
   type ProposalSummary,
 } from "./api";
 
 const AI_FLAG_PREFIX = "AI recommendation";
+
+const TASK_TABS: [TaskTab, string][] = [
+  ["overview", "Overview"],
+  ["checklist", "Checklist"],
+  ["agent", "Agent"],
+  ["patch", "Patch"],
+  ["repository", "Repository"],
+];
+
+const BULLET_PREFIX = /^\s*(?:[-*•·–—]+|\d+[.)])\s*/;
+
+/** Readable text of a list entry; the payload carries strings but may hold markers or objects. */
+function itemText(item: unknown): string {
+  if (typeof item === "string") {
+    const text = item.replace(BULLET_PREFIX, "").trim();
+    return /[\p{L}\p{N}]/u.test(text) ? text : "";
+  }
+  if (item && typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    for (const k of ["title", "text", "description", "criterion", "name"]) {
+      if (typeof o[k] === "string") return itemText(o[k]);
+    }
+  }
+  return "";
+}
+
+function requirementLabel(item: unknown, titles: Map<string, string>): string {
+  const id =
+    typeof item === "string"
+      ? item
+      : item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
+        ? (item as { id: string }).id
+        : null;
+  if (id) {
+    const known = titles.get(id)?.trim();
+    if (known) return known;
+    const own = itemText(item);
+    return own && own !== id ? own : id;
+  }
+  return itemText(item);
+}
 
 interface EditorFields {
   reason: string;
@@ -198,9 +241,14 @@ function TaskCard({
   open,
   onToggleSection,
   onEdit,
+  approved,
   children,
 }: {
-  children?: ReactNode;
+  children: (
+    tab: TaskTab,
+    reportLatestPatch: (latest: PatchSummary | null) => void,
+  ) => ReactNode;
+  approved: boolean;
   task: PlanTask;
   titles: Map<string, string>;
   allTasks: PlanTask[];
@@ -219,9 +267,17 @@ function TaskCard({
   ) => Promise<void>;
 }) {
   const editButton = useRef<HTMLButtonElement>(null);
+  const advanced = useAdvanced();
+  const [tab, setTab] = useState<TaskTab>("overview");
+  const [latestPatch, setLatestPatch] = useState<PatchSummary | null>(null);
   const reqKey = `${task.id}:req`;
   const acKey = `${task.id}:ac`;
-  const criteria = task.acceptance_criteria.filter((c) => c.trim() !== "");
+  const criteria = (task.acceptance_criteria as unknown[])
+    .map(itemText)
+    .filter((c) => c !== "");
+  const linked = (task.requirement_ids as unknown[])
+    .map((r) => requirementLabel(r, titles))
+    .filter((r) => r !== "");
   return (
     <li className="card" data-testid={`task-${task.key}`}>
       <div className="title-row">
@@ -233,6 +289,31 @@ function TaskCard({
           {task.status}
         </span>
       </div>
+      {latestPatch && (
+        <p className="sub" data-testid={`latest-patch-${task.key}`}>
+          <strong>Latest patch:</strong> v{latestPatch.version}{" "}
+          <StatusBadge status={latestPatch.status} />{" "}
+          <button type="button" className="link-button" onClick={() => setTab("patch")}>
+            open
+          </button>
+        </p>
+      )}
+      <div className="task-tabs" role="tablist" aria-label={`Sections of ${task.key}`}>
+        {TASK_TABS.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            className="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "overview" && (
+        <div role="tabpanel" aria-label={`Overview of ${task.key}`}>
       {task.description && <p className="sub">{task.description}</p>}
       {task.flags.length > 0 && (
         <ul aria-label={`Flags for ${task.key}`}>
@@ -275,7 +356,7 @@ function TaskCard({
               </span>
             ))}
       </p>
-      {editable && (
+      {editable && advanced && (
         <>
           <button
             type="button"
@@ -316,13 +397,13 @@ function TaskCard({
         open={open.has(reqKey)}
         onToggle={(e) => onToggleSection(reqKey, e.currentTarget.open)}
       >
-        <summary>Linked requirements ({task.requirement_ids.length})</summary>
-        {task.requirement_ids.length === 0 ? (
+        <summary>Linked requirements ({linked.length})</summary>
+        {linked.length === 0 ? (
           <p className="muted">None.</p>
         ) : (
           <ul aria-label={`Requirements for ${task.key}`}>
-            {task.requirement_ids.map((id) => (
-              <li key={id}>{titles.get(id)?.trim() || id}</li>
+            {linked.map((label, i) => (
+              <li key={i}>{label}</li>
             ))}
           </ul>
         )}
@@ -357,7 +438,14 @@ function TaskCard({
           </ul>
         </div>
       )}
-      {children}
+        </div>
+      )}
+      {tab !== "overview" && !approved && (
+        <p className="muted">
+          Approve the plan to use the checklist, agent, patches and repository for this task.
+        </p>
+      )}
+      {children(tab, setLatestPatch)}
     </li>
   );
 }
@@ -384,6 +472,8 @@ export default function PlanSection({
   const [author, setAuthor] = useState("");
   const [openSections, setOpenSections] = useState<Set<string>>(new Set());
   const [showOlder, setShowOlder] = useState(false);
+  const [confirmRebuild, setConfirmRebuild] = useState(false);
+  const advanced = useAdvanced();
   const [foreign, setForeign] = useState<string | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const fields: EditorFields = { reason, author, setReason, setAuthor };
@@ -495,10 +585,14 @@ export default function PlanSection({
   const allOpen = sectionKeys.length > 0 && sectionKeys.every((k) => openSections.has(k));
   const sortedSummaries = [...(summaries ?? [])].sort((a, b) => b.version - a.version);
   const latestIds = new Set(sortedSummaries.slice(0, 3).map((s) => s.id));
+  const newestApproved = sortedSummaries.find((s) => s.status === "approved");
   const isVisible = (s: PlanSummary) =>
-    latestIds.has(s.id) || s.status !== "draft" || s.id === selected?.id;
+    advanced
+      ? latestIds.has(s.id) || s.status !== "draft" || s.id === selected?.id
+      : s.id === sortedSummaries[0]?.id || s.id === newestApproved?.id || s.id === selected?.id;
   const older = sortedSummaries.filter((s) => !isVisible(s));
   const shownVersions = showOlder ? sortedSummaries : sortedSummaries.filter(isVisible);
+  const hasPlan = !!summaries && summaries.length > 0;
   const description = projectDescription ? stripTrailingHeading(projectDescription) : projectDescription;
 
   return (
@@ -522,10 +616,36 @@ export default function PlanSection({
           type="button"
           className="primary"
           disabled={busy}
-          onClick={() => void act(() => buildPlan(projectId), "Plan build failed")}
+          onClick={() =>
+            hasPlan ? setConfirmRebuild(true) : void act(() => buildPlan(projectId), "Plan build failed")
+          }
         >
-          {busy ? "Working…" : summaries && summaries.length > 0 ? "Rebuild plan" : "Build plan"}
+          {busy ? "Working…" : hasPlan ? "Rebuild plan" : "Build plan"}
         </button>
+        {confirmRebuild && (
+          <div role="alertdialog" aria-label="Confirm rebuild" className="warn-box">
+            <p>
+              Rebuilding creates a <strong>new plan version</strong>. Tasks in the new version are
+              detached from patches accepted on the current version; the approved plan itself is
+              not changed. Drafts older than the last 3 are archived (hidden from the list).
+            </p>
+            <div className="btn-row">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  setConfirmRebuild(false);
+                  void act(() => buildPlan(projectId), "Plan build failed");
+                }}
+              >
+                Rebuild anyway
+              </button>
+              <button type="button" onClick={() => setConfirmRebuild(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         {error && <p role="alert">{error}</p>}
       </div>
 
@@ -571,7 +691,9 @@ export default function PlanSection({
                     aria-expanded={showOlder}
                     onClick={() => setShowOlder((v) => !v)}
                   >
-                    {showOlder ? "Hide older drafts" : `Show ${older.length} older drafts`}
+                    {showOlder
+                      ? "Hide archived drafts"
+                      : `Show ${older.length} archived drafts`}
                   </button>
                 </li>
               )}
@@ -694,14 +816,19 @@ export default function PlanSection({
                   })
                 }
                 onEdit={edit}
+                approved={selected.status === "approved"}
               >
-                <PatchPanel
-                  projectId={projectId}
-                  planId={selected.id}
-                  task={t}
-                  approved={selected.status === "approved"}
-                  onChanged={() => void refreshPlan()}
-                />
+                {(tab, reportLatest) => (
+                  <PatchPanel
+                    projectId={projectId}
+                    planId={selected.id}
+                    task={t}
+                    approved={selected.status === "approved"}
+                    tab={tab}
+                    onLatestPatch={reportLatest}
+                    onChanged={() => void refreshPlan()}
+                  />
+                )}
               </TaskCard>
             ))}
           </ol>

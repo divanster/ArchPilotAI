@@ -47,6 +47,20 @@ describe("git repository UI", () => {
     vi.unstubAllGlobals();
   });
 
+  it("warns when a token is typed into the URL field and shows the noreply hint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({ detail: { code: "not_configured", message: "x" } }, 404),
+    );
+    render(<RepositoryPage projectId="p1" />);
+    const url = await screen.findByLabelText("Remote URL");
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.change(url, { target: { value: "ghp_abcdefghijklmnopqrstuvwxyz0123" } });
+    expect(screen.getByRole("alert").textContent).toMatch(/looks like an access token/);
+    fireEvent.change(url, { target: { value: "https://github.com/acme/app" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/users\.noreply\.github\.com/)).toBeInTheDocument();
+  });
+
   it("saves the repository form and sends nothing else on load", async () => {
     fetchMock.mockResolvedValueOnce(
       json({ detail: { code: "not_configured", message: "x" } }, 404),

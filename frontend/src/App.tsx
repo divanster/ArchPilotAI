@@ -23,6 +23,7 @@ import {
   setActiveProject,
 } from "./activeProject";
 import { navigate, useRoute } from "./routes";
+import { AdvancedProvider, useAdvanced } from "./advanced";
 
 /** Project list for the shell's name and switcher; only fetched once a project is in play. */
 function useProjects(enabled: boolean) {
@@ -41,6 +42,15 @@ function useProjects(enabled: boolean) {
 }
 
 export default function App() {
+  return (
+    <AdvancedProvider>
+      <AppContent />
+    </AdvancedProvider>
+  );
+}
+
+function AppContent() {
+  const advanced = useAdvanced();
   const [state, setState] = useState<BackendState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [activeId, setActiveId] = useState<string | null>(getActiveProject);
@@ -206,7 +216,13 @@ export default function App() {
           {(id) => <RepositoryPage key={id} projectId={id} />}
         </ProjectScopedPage>
       )}
-      {route.page === "playground" && <AIPlayground />}
+      {route.page === "playground" && advanced && <AIPlayground />}
+      {route.page === "playground" && !advanced && (
+        <p className="state" role="note">
+          The AI Playground is an advanced tool. Turn on “Show advanced” in the top bar to
+          use it.
+        </p>
+      )}
       {route.page === "providers" && <ProvidersPage />}
     </AppShell>
   );

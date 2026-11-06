@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { GENERATE_STATE, requestGenerate } from "./events";
 import { hrefFor, navigate, type Page } from "./routes";
 import { setActiveProject, type ProjectPage } from "./activeProject";
+import { useAdvancedMode } from "./advanced";
 
 export type BackendState = "checking" | "ok" | "unavailable" | "unexpected";
 
@@ -299,6 +300,8 @@ export default function AppShell({
   const [generating, setGenerating] = useState(false);
   const canGenerate = current === "architecture" && !!projectId;
   const close = () => setOpen(false);
+  const { advanced, setAdvanced } = useAdvancedMode();
+  const workspace = WORKSPACE.filter((i) => advanced || i.page !== "playground");
 
   useEffect(() => {
     const onState = (e: Event) => setGenerating((e as CustomEvent<boolean>).detail === true);
@@ -326,7 +329,7 @@ export default function AppShell({
         </div>
         <nav className="nav" aria-label="Primary">
           <p className="nav-h">Workspace</p>
-          {WORKSPACE.map((item) => (
+          {workspace.map((item) => (
             <NavEntry key={item.label} item={item} current={current} onNavigate={close} />
           ))}
           <p className="nav-h">Project</p>
@@ -381,6 +384,15 @@ export default function AppShell({
             />
           </div>
           <div className="topbar-actions">
+            <label className="advanced-switch" title="Show hooks, skills, routing, budgets and other expert detail">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={advanced}
+                onChange={(e) => setAdvanced(e.target.checked)}
+              />{" "}
+              Show advanced
+            </label>
             <button type="button" disabled title="Export is not implemented yet">
               Export brief
             </button>
