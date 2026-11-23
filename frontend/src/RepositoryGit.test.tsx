@@ -341,6 +341,50 @@ describe("git repository UI", () => {
     );
   });
 
+  it.each(["credential_manager", "ssh"])(
+    "renders the actions and falls back to a compare link when %s settings have no pat",
+    async (auth_method) => {
+      const noPat: Record<string, unknown> = settings({ auth_method });
+      delete noPat.pat;
+      expect(noPat).not.toHaveProperty("pat");
+      await committed(noPat);
+      expect(
+        screen.getByRole("button", { name: "Commit to branch" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Push branch" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Create pull request" }),
+      ).not.toBeInTheDocument();
+
+      fetchMock.mockResolvedValueOnce(
+        json({ branch: commitResult.branch, pushed: true }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Push branch" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Confirm push" }),
+      );
+      await screen.findByText(/Pushed/);
+      fetchMock.mockResolvedValueOnce(
+        json({
+          mode: "compare_link",
+          url: "https://github.com/acme/app/compare/main...agent/T-1-add-login",
+          branch: commitResult.branch,
+          base: "main",
+          title: "T-1",
+          message: "Open the link.",
+        }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Open compare link" }),
+      );
+      expect(
+        await screen.findByRole("link", { name: /Compare link for/ }),
+      ).toBeInTheDocument();
+    },
+  );
+
   it("points to Repository settings when none are configured", async () => {
     fetchMock.mockResolvedValueOnce(
       json({ detail: { code: "not_configured", message: "x" } }, 404),

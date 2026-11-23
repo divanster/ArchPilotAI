@@ -87,7 +87,7 @@ export default function GitPatchActions({
       "Pull request failed",
     );
 
-  const hasToken = settings.pat.saved;
+  const hasToken = settings.pat?.saved === true;
 
   return (
     <section aria-label="External repository">

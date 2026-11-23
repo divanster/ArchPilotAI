@@ -587,7 +587,7 @@ function HookSettings({
       </p>
       <ul>
         {hooks.map((h) => (
-          <li key={h.name}>
+          <li key={`${h.name}:${h.point}`}>
             <label>
               <input
                 type="checkbox"

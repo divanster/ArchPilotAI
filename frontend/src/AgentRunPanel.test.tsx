@@ -1101,6 +1101,38 @@ describe("AgentRunPanel CI repair loop", () => {
   });
 });
 
+describe("AgentRunPanel hook list keys", () => {
+  it("renders hooks sharing a name without a duplicate key warning", async () => {
+    const hook = (point: AgentHook["point"]): AgentHook => ({
+      name: "static_checks",
+      point,
+      tools: ["write_file"],
+      order: 10,
+      required: false,
+      description: `Runs ${point}.`,
+      enabled: true,
+    });
+    const hooks = [hook("before_action"), hook("after_action")];
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      setup((url) => {
+        if (url.endsWith("/agent-hooks")) return json(hooks);
+        return url.endsWith("/agent-runs") ? json([run()]) : json(run());
+      });
+      const list = await screen.findByLabelText("Agent hooks");
+      expect(within(list).getAllByRole("checkbox")).toHaveLength(2);
+      const keyWarnings = errors.mock.calls.filter((args) =>
+        args.some(
+          (a) => typeof a === "string" && /same key|unique "key"/.test(a),
+        ),
+      );
+      expect(keyWarnings).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
 describe("AgentRunPanel with advanced off", () => {
   beforeEach(() => window.localStorage.clear());
 
